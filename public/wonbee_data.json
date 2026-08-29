@@ -1,0 +1,366 @@
+{
+  "version": "1.0.0",
+  "author": "WonBee Honeybee",
+  "exportedAt": 1772166656000,
+  "settings": {
+    "theme": "light",
+    "zoom": 100,
+    "useServer": false,
+    "serverUrl": "https://api.wonbee.com/v1"
+  },
+  "tree": [
+    {
+      "id": "folder-root-projects",
+      "parentId": null,
+      "title": "🐝 원비(WonBee) 프로젝트",
+      "type": "folder",
+      "isExpanded": true,
+      "createdAt": 1771734656000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "table-roadmap",
+      "parentId": "folder-root-projects",
+      "title": "🎯 원비 2026 로드맵 & 기능 정의",
+      "type": "table",
+      "createdAt": 1771821056000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "table-tasks",
+      "parentId": "folder-root-projects",
+      "title": "⚡ 개발 스프린트 & 백로그",
+      "type": "table",
+      "createdAt": 1771907456000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "folder-sub-docs",
+      "parentId": "folder-root-projects",
+      "title": "📁 기술 사양 & 레퍼런스",
+      "type": "folder",
+      "isExpanded": true,
+      "createdAt": 1771993856000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "folder-deep-nested",
+      "parentId": "folder-sub-docs",
+      "title": "🍯 무한 뎁스 하위 폴더 (Lv.3)",
+      "type": "folder",
+      "isExpanded": true,
+      "createdAt": 1772080256000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "table-sql-dict",
+      "parentId": "folder-deep-nested",
+      "title": "💻 SQL 쿼리 & 데이터 딕셔너리",
+      "type": "table",
+      "createdAt": 1772123456000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "folder-marketing",
+      "parentId": null,
+      "title": "📢 브랜드 & 마케팅 자료실",
+      "type": "folder",
+      "isExpanded": false,
+      "createdAt": 1771648256000,
+      "updatedAt": 1772166656000
+    },
+    {
+      "id": "table-feedback",
+      "parentId": "folder-marketing",
+      "title": "💌 유저 피드백 & 꿀팁 수집함",
+      "type": "table",
+      "createdAt": 1771993856000,
+      "updatedAt": 1772166656000
+    }
+  ],
+  "tables": {
+    "table-roadmap": {
+      "id": "table-roadmap",
+      "title": "🎯 원비 2026 로드맵 & 기능 정의",
+      "description": "WonBee 서비스의 핵심 기능 개발 및 UX 릴리즈 일정표입니다. 각 행을 클릭하여 세부 노트와 스티커를 확인하세요.",
+      "createdAt": 1771821056000,
+      "updatedAt": 1772166656000,
+      "columns": [
+        { "id": "col-feature", "name": "핵심 모듈명", "type": "text", "width": 220, "isPrimaryKey": true },
+        {
+          "id": "col-status",
+          "name": "진행 상태",
+          "type": "status",
+          "width": 140,
+          "options": [
+            { "id": "done", "label": "완료됨", "color": "#10B981" },
+            { "id": "progress", "label": "개발 진행중", "color": "#F59E0B" },
+            { "id": "review", "label": "UX 검토", "color": "#6366F1" },
+            { "id": "planned", "label": "기획 단계", "color": "#9CA3AF" }
+          ]
+        },
+        {
+          "id": "col-priority",
+          "name": "우선순위",
+          "type": "select",
+          "width": 120,
+          "options": [
+            { "id": "p0", "label": "P0 (긴급)", "color": "#EF4444" },
+            { "id": "p1", "label": "P1 (높음)", "color": "#F97316" },
+            { "id": "p2", "label": "P2 (보통)", "color": "#3B82F6" }
+          ]
+        },
+        { "id": "col-owner", "name": "담당 꿀벌", "type": "text", "width": 130 },
+        { "id": "col-details", "name": "상세 설명 및 기술 구현 메모 (호버하여 전체 확인)", "type": "richText", "width": 340 },
+        { "id": "col-duedate", "name": "마감 목표일", "type": "date", "width": 130 }
+      ],
+      "rows": [
+        {
+          "id": "row-1",
+          "data": {
+            "col-feature": "좌측 무한 뎁스 트리 네비게이션",
+            "col-status": "done",
+            "col-priority": "p0",
+            "col-owner": "꿀벌 리더 🐝",
+            "col-details": "폴더와 테이블을 무한대 계층으로 중첩할 수 있으며, 직관적인 드래그 앤 드롭으로 위치와 뎁스를 실시간 재배치할 수 있는 미니멀 트리 엔진입니다.",
+            "col-duedate": "2026-09-05"
+          },
+          "richContent": "<h2>🐝 무한 뎁스 트리 아키텍처 사양서</h2><p>WonBee 좌측 사이드바는 단일 계층에 얽매이지 않고 <strong>무한 depth</strong>로 폴더를 확장하고 테이블을 정리할 수 있도록 설계되었습니다.</p><ul><li><strong>Parent-Child 관계 기반 정렬:</strong> 각 노드는 <code>parentId</code>와 <code>id</code>로 연결되어 순환 참조 없이 재귀 렌더링됩니다.</li><li><strong>경량 D&D 드롭 인디케이터:</strong> 상/하/내부(자식으로 이동) 3가지 드롭 존을 시각화합니다.</li></ul><blockquote>\"복잡한 메뉴 체계를 단 한 번의 드래그로 깔끔하게 정리하세요!\"</blockquote>",
+          "stickers": [
+            {
+              "id": "stk-1",
+              "title": "💡 UX 핵심 포인트",
+              "content": "폴더 아이콘을 클릭하면 즉시 접고 펼칠 수 있으며, 더블 클릭 시 인라인 이름 변경이 가능합니다.",
+              "color": "amber",
+              "position": { "x": 20, "y": 15 },
+              "completed": true
+            },
+            {
+              "id": "stk-2",
+              "title": "⚡ 성능 최적화",
+              "content": "1,000개 이상의 노드도 React 가상화 및 메모이제이션으로 부드럽게 렌더링됩니다.",
+              "color": "yellow",
+              "position": { "x": 280, "y": 15 },
+              "completed": false
+            }
+          ],
+          "createdAt": 1771907456000,
+          "updatedAt": 1772166656000
+        },
+        {
+          "id": "row-2",
+          "data": {
+            "col-feature": "엑셀형 초경량 데이터 테이블",
+            "col-status": "done",
+            "col-priority": "p0",
+            "col-owner": "비 프론트 아키텍트",
+            "col-details": "컬럼 너비 마우스 드래그 조절, 오름차순/내림차순 정렬, 긴 텍스트 호버 팝오버 툴팁, 실시간 인라인 편집을 지원합니다.",
+            "col-duedate": "2026-09-10"
+          },
+          "richContent": "<h2>📊 미니멀 엑셀 그리드 뷰어</h2><p>WonBee 테이블은 무거운 상용 스프레드시트 엔진의 불필요한 레이아웃을 걷어내고, <strong>가장 핵심적인 타이핑 및 정렬 경험</strong>에 집중합니다.</p>",
+          "stickers": [
+            {
+              "id": "stk-3",
+              "title": "✨ 호버 미리보기 툴팁",
+              "content": "텍스트가 ...으로 잘린 셀에 마우스를 올리면 전체 내용을 즉시 읽을 수 있는 팝오버가 부드럽게 뜹니다.",
+              "color": "blue",
+              "position": { "x": 30, "y": 20 },
+              "completed": true
+            }
+          ],
+          "createdAt": 1771993856000,
+          "updatedAt": 1772166656000
+        },
+        {
+          "id": "row-3",
+          "data": {
+            "col-feature": "TipTap 기반 원노트형 스티커 리치 에디터",
+            "col-status": "progress",
+            "col-priority": "p1",
+            "col-owner": "위지윅 장인 꿀벌",
+            "col-details": "헤드리스 TipTap 에디터에 마이크로소프트 원노트(OneNote) 스타일의 자유 스티커(Sticker) 커스텀 노드 익스텐션을 결합한 하이브리드 문서 도구입니다.",
+            "col-duedate": "2026-09-15"
+          },
+          "richContent": "<h2>📝 OneNote 스타일 스티커 &amp; TipTap 결합</h2><p>원하는 위치에 감성적인 <strong>포스트잇/스티커 카드</strong>를 부착하고, 체크리스트나 핵심 아이디어를 자유롭게 기록할 수 있습니다.</p><p>코드 블록 구문 강조와 이미지/파일 첨부도 간편하게 처리됩니다.</p>",
+          "stickers": [
+            {
+              "id": "stk-4",
+              "title": "📌 원노트 스타일 스티커",
+              "content": "스티커 상단을 드래그하여 문서 내 원하는 곳에 배치하고, 색상을 자유롭게 변경해보세요!",
+              "color": "rose",
+              "position": { "x": 20, "y": 10 },
+              "completed": false
+            }
+          ],
+          "createdAt": 1772080256000,
+          "updatedAt": 1772166656000
+        },
+        {
+          "id": "row-4",
+          "data": {
+            "col-feature": "포터블 데이터 병합 (JSON Merge)",
+            "col-status": "done",
+            "col-priority": "p1",
+            "col-owner": "데이터 엔지니어",
+            "col-details": "동료의 WonBee JSON 워크스페이스를 내 워크스페이스에 부분/전체 병합(Merge)하여 협업할 수 있는 포터블 데이터 파이프라인입니다.",
+            "col-duedate": "2026-09-18"
+          },
+          "richContent": "<h2>🔄 Portable Data Merge 아키텍처</h2><p>로컬에 A, B 테이블이 있는 상태에서 다른 사람의 C, D 테이블 JSON을 Import하면, 기존 데이터를 안전하게 보존하면서 <code>A, B, C, D</code>로 확장 병합됩니다.</p>",
+          "stickers": [],
+          "createdAt": 1772126656000,
+          "updatedAt": 1772166656000
+        },
+        {
+          "id": "row-5",
+          "data": {
+            "col-feature": "USE_SERVER Repository 패턴 & 자동 저장",
+            "col-status": "done",
+            "col-priority": "p0",
+            "col-owner": "시스템 아키텍트",
+            "col-details": "Serverless (IndexedDB 브라우저 스토리지)와 Server (REST API) 환경을 단일 인터페이스로 분리하고, 400ms 디바운스 자동 저장 훅을 제공합니다.",
+            "col-duedate": "2026-09-20"
+          },
+          "richContent": "<h2>💾 저장소 추상화 (Repository Pattern)</h2><p>UI 레이어는 데이터가 IndexedDB에 저장되는지, 백엔드 서버에 저장되는지 알 필요 없이 동일한 <code>IWorkspaceRepository</code> 메서드를 호출합니다.</p>",
+          "stickers": [],
+          "createdAt": 1772146656000,
+          "updatedAt": 1772166656000
+        }
+      ]
+    },
+    "table-tasks": {
+      "id": "table-tasks",
+      "title": "⚡ 개발 스프린트 & 백로그",
+      "description": "이번 주 원비 개발팀의 주요 스프린트 태스크 목록입니다.",
+      "createdAt": 1771907456000,
+      "updatedAt": 1772166656000,
+      "columns": [
+        { "id": "col-task", "name": "작업 항목", "type": "text", "width": 240, "isPrimaryKey": true },
+        { "id": "col-checked", "name": "완료 여부", "type": "checkbox", "width": 100 },
+        {
+          "id": "col-tag",
+          "name": "영역",
+          "type": "select",
+          "width": 130,
+          "options": [
+            { "id": "ui", "label": "UI/UX", "color": "#EC4899" },
+            { "id": "perf", "label": "성능 최적화", "color": "#8B5CF6" },
+            { "id": "db", "label": "IndexedDB/API", "color": "#06B6D4" }
+          ]
+        },
+        { "id": "col-est", "name": "예상 시간 (h)", "type": "number", "width": 120 },
+        { "id": "col-note", "name": "작업 참고사항", "type": "text", "width": 300 }
+      ],
+      "rows": [
+        {
+          "id": "task-1",
+          "data": {
+            "col-task": "우측 하단 FAB 줌 컨트롤 (Zoom In/Out/Reset)",
+            "col-checked": true,
+            "col-tag": "ui",
+            "col-est": 3,
+            "col-note": "부드러운 CSS transform 배율 적용 (70% ~ 150%)"
+          },
+          "createdAt": 1772080256000,
+          "updatedAt": 1772166656000
+        },
+        {
+          "id": "task-2",
+          "data": {
+            "col-task": "CSV / TXT 파일 원클릭 테이블 생성 Import",
+            "col-checked": true,
+            "col-tag": "db",
+            "col-est": 4,
+            "col-note": "구분자 자동 감지 및 헤더 파싱"
+          },
+          "createdAt": 1772086656000,
+          "updatedAt": 1772166656000
+        },
+        {
+          "id": "task-3",
+          "data": {
+            "col-task": "다크 모드 & 웜 앰버 테마 토글",
+            "col-checked": true,
+            "col-tag": "ui",
+            "col-est": 2,
+            "col-note": "WCAG AA 대비를 만족하는 미니멀리스트 웜 그레이/허니 옐로우"
+          },
+          "createdAt": 1772096656000,
+          "updatedAt": 1772166656000
+        }
+      ]
+    },
+    "table-sql-dict": {
+      "id": "table-sql-dict",
+      "title": "💻 SQL 쿼리 & 데이터 딕셔너리",
+      "description": "자주 사용하는 SQL 템플릿과 쿼리 스니펫 사전입니다.",
+      "createdAt": 1772123456000,
+      "updatedAt": 1772166656000,
+      "columns": [
+        { "id": "col-name", "name": "쿼리 명칭", "type": "text", "width": 200, "isPrimaryKey": true },
+        {
+          "id": "col-dbtype",
+          "name": "DBMS",
+          "type": "select",
+          "width": 130,
+          "options": [
+            { "id": "pg", "label": "PostgreSQL", "color": "#336791" },
+            { "id": "my", "label": "MySQL", "color": "#00758F" },
+            { "id": "sqlite", "label": "SQLite/IndexedDB", "color": "#003B57" }
+          ]
+        },
+        { "id": "col-sql", "name": "SQL 코드 스니펫", "type": "code", "width": 380 },
+        { "id": "col-desc", "name": "용도 및 실행 설명", "type": "text", "width": 280 }
+      ],
+      "rows": [
+        {
+          "id": "sql-1",
+          "data": {
+            "col-name": "최근 7일간 수정된 테이블 조회",
+            "col-dbtype": "pg",
+            "col-sql": "SELECT id, title, updated_at FROM wonbee_tables WHERE updated_at >= NOW() - INTERVAL 7 DAY ORDER BY updated_at DESC;",
+            "col-desc": "최근 활성화된 워크스페이스 테이블 통계 집계용"
+          },
+          "richContent": "<h3>SQL 쿼리 상세</h3><pre><code>-- 최근 업데이트 인덱스 스캔\nEXPLAIN ANALYZE\nSELECT id, title, updated_at \nFROM wonbee_tables \nWHERE updated_at &gt;= NOW() - INTERVAL '7 days' \nORDER BY updated_at DESC;</code></pre>",
+          "stickers": [
+            {
+              "id": "stk-sql-1",
+              "title": "⚡ 인덱스 팁",
+              "content": "updated_at 컬럼에 B-Tree 인덱스가 걸려있어야 풀 스캔을 방지할 수 있습니다.",
+              "color": "green",
+              "position": { "x": 20, "y": 10 },
+              "completed": true
+            }
+          ],
+          "createdAt": 1772136656000,
+          "updatedAt": 1772166656000
+        }
+      ]
+    },
+    "table-feedback": {
+      "id": "table-feedback",
+      "title": "💌 유저 피드백 & 꿀팁 수집함",
+      "description": "WonBee 사용자들의 소중한 리뷰와 기능 제안입니다.",
+      "createdAt": 1771993856000,
+      "updatedAt": 1772166656000,
+      "columns": [
+        { "id": "col-user", "name": "작성자", "type": "text", "width": 140, "isPrimaryKey": true },
+        { "id": "col-rating", "name": "만족도 (1-5)", "type": "number", "width": 120 },
+        { "id": "col-comment", "name": "피드백 내용", "type": "richText", "width": 380 },
+        { "id": "col-action", "name": "반영 계획", "type": "text", "width": 200 }
+      ],
+      "rows": [
+        {
+          "id": "fb-1",
+          "data": {
+            "col-user": "미니멀리스트 디자이너",
+            "col-rating": 5,
+            "col-comment": "노션보다 가볍고 엑셀보다 예쁩니다! 꿀벌 캐릭터 원비가 너무 귀엽고 스티커 기능이 진짜 편리하네요.",
+            "col-action": "V1 마스코트 인터랙션 추가 완료"
+          },
+          "createdAt": 1772080256000,
+          "updatedAt": 1772166656000
+        }
+      ]
+    }
+  }
+}
