@@ -197,6 +197,17 @@
 }
 
 /* TipTap Table Styles with Resizable Cells & Dark Mode */
+.tiptap img,
+.prose img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  display: block;
+  margin: 0.75rem 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .tiptap table {
   border-collapse: collapse;
   table-layout: fixed;

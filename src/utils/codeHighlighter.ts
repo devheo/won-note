@@ -87,8 +87,23 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
     }
   }
 
-  // 4. XML / HTML Heuristic Detection
-  if (trimmed.startsWith('<?xml') || (trimmed.startsWith('<') && trimmed.endsWith('>') && /<\/[a-z0-9_-]+>/i.test(trimmed))) {
+  // Ignore rich HTML tags like <img, <table, <p>, etc. from being classified as code
+  if (
+    trimmed.includes('<img') ||
+    trimmed.includes('<table') ||
+    trimmed.includes('<sticker-node') ||
+    (trimmed.startsWith('<p>') && trimmed.endsWith('</p>'))
+  ) {
+    return { isCode: false, language: 'plaintext' };
+  }
+
+  // 4. XML / HTML Code Heuristic Detection (explicit <?xml, <!DOCTYPE, <html> or pure XML structures)
+  if (
+    trimmed.startsWith('<?xml') ||
+    trimmed.startsWith('<!DOCTYPE') ||
+    (trimmed.startsWith('<html') && trimmed.endsWith('</html>')) ||
+    (trimmed.startsWith('<svg') && trimmed.endsWith('</svg>'))
+  ) {
     return { isCode: true, language: 'markup', reason: 'XML/HTML' };
   }
 

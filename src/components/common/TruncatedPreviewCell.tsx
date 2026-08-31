@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
-import { Maximize2, Sparkles, Copy, Check } from 'lucide-react';
+import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon } from 'lucide-react';
 import { detectLanguage } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
 import { cleanTextValue } from '../../utils/textSanitizer';
@@ -26,14 +26,29 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const rawString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
-  const displayString = columnType !== 'richText' ? cleanTextValue(rawString) : rawString;
-  const detectedCode = detectLanguage(displayString);
+  const hasImage = rawString.includes('<img');
+  const hasTable = rawString.includes('<table');
+  const isRich =
+    columnType === 'richText' ||
+    hasImage ||
+    hasTable ||
+    rawString.includes('<sticker-node') ||
+    rawString.includes('<h1>') ||
+    rawString.includes('<h2>') ||
+    rawString.includes('<strong>') ||
+    (rawString.startsWith('<p>') && rawString.includes('</p>'));
+
+  const displayPlainText = cleanTextValue(rawString);
+  const detectedCode = !isRich ? detectLanguage(displayPlainText) : { isCode: false, language: 'plaintext' as const };
+
+  const imageMatch = rawString.match(/<img[^>]+src="([^">]+)"/i);
+  const firstImageSrc = imageMatch ? imageMatch[1] : null;
 
   const onMouseEnterWithCoords = () => {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       // Position calculation to ensure popover stays within viewport bounds
-      const popoverWidth = Math.min(Math.max(rect.width * 1.6, 320), 540);
+      const popoverWidth = Math.min(Math.max(rect.width * 1.8, 360), 580);
       let left = rect.left;
       if (left + popoverWidth > window.innerWidth - 20) {
         left = window.innerWidth - popoverWidth - 20;
@@ -51,7 +66,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const handleCopyText = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(displayString);
+      await navigator.clipboard.writeText(displayPlainText || rawString);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
@@ -69,21 +84,40 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       {/* Visible Cell Content (Truncated) */}
       <div
         ref={textRef}
-        className="w-full truncate text-sm font-normal text-stone-800 dark:text-stone-200"
+        className="w-full truncate text-xs font-normal text-stone-800 dark:text-stone-200 flex items-center gap-1.5"
       >
-        {renderCustomContent ? renderCustomContent(value) : displayString}
+        {renderCustomContent ? (
+          renderCustomContent(value)
+        ) : hasImage ? (
+          <div className="flex items-center gap-1.5 truncate">
+            {firstImageSrc ? (
+              <img
+                src={firstImageSrc}
+                alt="thumb"
+                className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0"
+              />
+            ) : (
+              <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+            )}
+            <span className="truncate text-xs text-stone-700 dark:text-stone-300">
+              {displayPlainText || '[이미지]'}
+            </span>
+          </div>
+        ) : (
+          displayPlainText || <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+        )}
       </div>
 
       {/* Quick edit button on cell hover */}
       {onOpenEditor && (
         <button
-          id={`quick-edit-${displayString.slice(0, 10)}`}
+          id={`quick-edit-${displayPlainText.slice(0, 10)}`}
           onClick={(e) => {
             e.stopPropagation();
             onOpenEditor();
           }}
           title="세부 리치 에디터 열기"
-          className="opacity-0 group-hover/cell:opacity-100 transition-opacity ml-1.5 p-1 rounded hover:bg-amber-100 dark:hover:bg-stone-800 text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 flex-shrink-0"
+          className="opacity-0 group-hover/cell:opacity-100 transition-opacity ml-1.5 p-1 rounded hover:bg-amber-100 dark:hover:bg-[#333333] text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 flex-shrink-0"
         >
           <Maximize2 className="w-3.5 h-3.5" />
         </button>
@@ -99,15 +133,19 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             maxWidth: `${popoverPos.width}px`,
             zIndex: 9999,
           }}
-          className="animate-in fade-in zoom-in-95 duration-150 p-3 bg-stone-900/95 dark:bg-[#181a20]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto"
+          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-stone-900/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto"
         >
           <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-800 text-[11px] text-stone-400 font-medium">
-            <span className="flex items-center gap-1 text-amber-400">
+            <span className="flex items-center gap-1 text-amber-400 font-semibold">
               <Sparkles className="w-3 h-3" />
-              전체 내용 미리보기 {detectedCode.isCode && `(${detectedCode.language.toUpperCase()})`}
+              {hasImage
+                ? '이미지 및 서식 내용 미리보기'
+                : detectedCode.isCode
+                ? `코드 미리보기 (${detectedCode.language.toUpperCase()})`
+                : '전체 내용 미리보기'}
             </span>
             <div className="flex items-center gap-2">
-              <span>{displayString.length}자</span>
+              <span>{(displayPlainText || rawString).length}자</span>
               {!detectedCode.isCode && (
                 <button
                   onClick={handleCopyText}
@@ -121,15 +159,20 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             </div>
           </div>
 
-          {detectedCode.isCode ? (
+          {isRich ? (
+            <div
+              className="max-h-72 overflow-y-auto leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar prose dark:prose-invert tiptap"
+              dangerouslySetInnerHTML={{ __html: rawString }}
+            />
+          ) : detectedCode.isCode ? (
             <CodeBlockViewer
-              code={displayString}
+              code={displayPlainText}
               language={detectedCode.language}
               maxHeight="max-h-60"
             />
           ) : (
             <div className="max-h-52 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar">
-              {displayString}
+              {displayPlainText}
             </div>
           )}
 

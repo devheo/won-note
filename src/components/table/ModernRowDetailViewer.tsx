@@ -454,10 +454,34 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                             maxHeight="max-h-72"
                           />
                         ) : (() => {
-                          const cleanedString = col.type !== 'richText' ? cleanTextValue(val) : String(val ?? '');
-                          if (!cleanedString) {
+                          const strVal = String(val ?? '');
+                          if (!strVal || strVal.trim() === '') {
                             return <span className="text-stone-400 dark:text-[#777777] italic">(비어 있음)</span>;
                           }
+
+                          const isRichHtml =
+                            col.type === 'richText' ||
+                            strVal.includes('<img') ||
+                            strVal.includes('<table') ||
+                            strVal.includes('<sticker-node') ||
+                            strVal.includes('<h1>') ||
+                            strVal.includes('<h2>') ||
+                            strVal.includes('<h3>') ||
+                            strVal.includes('<strong>') ||
+                            strVal.includes('<em>') ||
+                            strVal.includes('<blockquote>') ||
+                            (strVal.startsWith('<p>') && strVal.includes('</p>'));
+
+                          if (isRichHtml) {
+                            return (
+                              <div
+                                className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap"
+                                dangerouslySetInnerHTML={{ __html: strVal }}
+                              />
+                            );
+                          }
+
+                          const cleanedString = cleanTextValue(strVal);
                           const detected = detectLanguage(cleanedString);
                           if (detected.isCode) {
                             return (
@@ -465,14 +489,6 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                 code={cleanedString}
                                 language={detected.language}
                                 maxHeight="max-h-80"
-                              />
-                            );
-                          }
-                          if (col.type === 'richText' && cleanedString.includes('<')) {
-                            return (
-                              <div
-                                className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words"
-                                dangerouslySetInnerHTML={{ __html: cleanedString }}
                               />
                             );
                           }

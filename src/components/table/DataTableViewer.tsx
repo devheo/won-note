@@ -141,7 +141,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   }, [table.id]);
 
   // Column Resizing state
-  const resizingColumnRef = useRef<{ id: string; startX: number; startWidth: number } | null>(null);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => {
     const map: Record<string, number> = {};
     table.columns.forEach((c) => {
@@ -167,41 +166,41 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const handleResizeStart = (e: React.MouseEvent, colId: string, currentWidth: number) => {
     e.preventDefault();
     e.stopPropagation();
-    resizingColumnRef.current = {
-      id: colId,
-      startX: e.clientX,
-      startWidth: currentWidth,
-    };
+
+    const startX = e.clientX;
+    const startWidth = currentWidth || 160;
+    let latestWidth = startWidth;
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
-      if (!resizingColumnRef.current) return;
-      const delta = moveEvent.clientX - resizingColumnRef.current.startX;
-      const newWidth = Math.max(80, resizingColumnRef.current.startWidth + delta);
+      const delta = moveEvent.clientX - startX;
+      const newWidth = Math.max(60, startWidth + delta);
+      latestWidth = newWidth;
 
       setColumnWidths((prev) => ({
         ...prev,
-        [resizingColumnRef.current!.id]: newWidth,
+        [colId]: newWidth,
       }));
     };
 
     const handleMouseUp = () => {
-      if (resizingColumnRef.current) {
-        const finishedId = resizingColumnRef.current.id;
-        const finalWidth = columnWidths[finishedId];
-        if (finalWidth) {
-          const updatedCols = table.columns.map((c) =>
-            c.id === finishedId ? { ...c, width: finalWidth } : c
-          );
-          onUpdateTable({
-            ...table,
-            columns: updatedCols,
-            updatedAt: Date.now(),
-          });
-        }
-      }
-      resizingColumnRef.current = null;
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+
+      if (latestWidth && !isNaN(latestWidth)) {
+        setColumnWidths((prev) => ({
+          ...prev,
+          [colId]: latestWidth,
+        }));
+
+        const updatedCols = table.columns.map((c) =>
+          c.id === colId ? { ...c, width: latestWidth } : c
+        );
+        onUpdateTable({
+          ...table,
+          columns: updatedCols,
+          updatedAt: Date.now(),
+        });
+      }
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -938,7 +937,23 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
       {/* Excel-like Data Grid Container with High Dark Contrast */}
       <div className="flex-1 overflow-auto custom-scrollbar relative bg-white dark:bg-[#181818]">
-        <table className="w-full border-collapse text-left text-xs table-fixed">
+        <table
+          style={{
+            minWidth: `${80 + 144 + visibleColumns.reduce((sum, col) => sum + (columnWidths[col.id] || col.width || 160), 0)}px`,
+            width: '100%',
+          }}
+          className="border-collapse text-left text-xs table-fixed"
+        >
+          <colgroup>
+            <col style={{ width: '80px' }} />
+            {visibleColumns.map((col) => (
+              <col
+                key={col.id}
+                style={{ width: `${columnWidths[col.id] || col.width || 160}px` }}
+              />
+            ))}
+            <col style={{ width: '144px' }} />
+          </colgroup>
           {/* Table Header Row */}
           <thead className="sticky top-0 z-30 bg-stone-100/95 dark:bg-[#222222]/95 backdrop-blur-md border-b border-stone-200 dark:border-[#383838] shadow-2xs">
             <tr>
@@ -1158,7 +1173,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         ) : (
                           <TruncatedPreviewCell
                             value={rawVal}
-                            columnType={col.name}
+                            columnType={col.type}
                             onOpenEditor={() => onOpenRowDetail(row, rIdx)}
                             renderCustomContent={(val) => {
                               if (col.type === 'checkbox') {
