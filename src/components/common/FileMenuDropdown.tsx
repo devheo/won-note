@@ -13,12 +13,14 @@ import {
   Database,
   Check,
   Sparkles,
+  ClipboardPaste,
 } from 'lucide-react';
 
 interface FileMenuDropdownProps {
   activeTable: TableDocument | null;
   workspace: WorkspaceData;
   onOpenDataPortability: () => void;
+  onOpenTextPaste: () => void;
   onAddNewTable: () => void;
   onAddNewFolder: () => void;
   onImportCsvToNewTable: (fileName: string, columns: TableColumn[], rows: TableRow[]) => void;
@@ -29,6 +31,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
   activeTable,
   workspace,
   onOpenDataPortability,
+  onOpenTextPaste,
   onAddNewTable,
   onAddNewFolder,
   onImportCsvToNewTable,
@@ -327,11 +330,27 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
           </button>
 
           <button
+            onClick={() => {
+              onOpenTextPaste();
+              setIsOpen(false);
+            }}
+            className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between text-purple-700 dark:text-purple-300 font-medium transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              <ClipboardPaste className="w-3.5 h-3.5 text-purple-500" />
+              텍스트 붙여넣기 (TXT / TSV / 엑셀)
+            </span>
+            <span className="text-[10px] px-1 py-0.2 rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-semibold">
+              직접 입력
+            </span>
+          </button>
+
+          <button
             onClick={() => txtInputRef.current?.click()}
             className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center gap-2 transition-colors"
           >
-            <FileText className="w-3.5 h-3.5 text-purple-500" />
-            TXT / TSV 텍스트 가져오기
+            <FileText className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+            TXT / TSV 파일 가져오기 (.txt)
           </button>
 
           <button

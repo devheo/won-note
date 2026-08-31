@@ -20,6 +20,7 @@ import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer'
 import { RichEditorModal } from './components/editor/RichEditorModal';
 import { ZoomControls } from './components/common/ZoomControls';
 import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
+import { TextPasteModal } from './components/modals/TextPasteModal';
 import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
@@ -91,6 +92,7 @@ export default function App() {
   const [selectedDetailRow, setSelectedDetailRow] = useState<TableRow | null>(null);
   const [selectedDetailRowIndex, setSelectedDetailRowIndex] = useState<number>(0);
   const [isDataPortabilityOpen, setIsDataPortabilityOpen] = useState(false);
+  const [isTextPasteOpen, setIsTextPasteOpen] = useState(false);
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false);
 
   // Repository Instance
@@ -527,6 +529,7 @@ export default function App() {
               activeTable={activeTable}
               workspace={workspace}
               onOpenDataPortability={() => setIsDataPortabilityOpen(true)}
+              onOpenTextPaste={() => setIsTextPasteOpen(true)}
               onAddNewTable={() => handleAddTable(null)}
               onAddNewFolder={() => handleAddFolder(null)}
               onImportCsvToNewTable={handleImportCsvToNewTable}
@@ -675,7 +678,14 @@ export default function App() {
         }}
       />
 
-      {/* 7. Server Mode Settings Modal */}
+      {/* 7. Text / TSV / Raw Data Paste Modal */}
+      <TextPasteModal
+        isOpen={isTextPasteOpen}
+        onClose={() => setIsTextPasteOpen(false)}
+        onImportNewTable={handleImportCsvToNewTable}
+      />
+
+      {/* 8. Server Mode Settings Modal */}
       <ServerSettingsModal
         isOpen={isServerSettingsOpen}
         onClose={() => setIsServerSettingsOpen(false)}
