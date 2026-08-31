@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { TableDocument, WorkspaceData, TableColumn, TableRow } from '../../types';
+import { parseDelimitedText } from '../../utils/csvParser';
 import {
   FileText,
   FileSpreadsheet,
@@ -125,7 +126,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     setIsOpen(false);
   };
 
-  // 4. Import CSV
+  // 4. Import CSV / TXT / TSV
   const handleCsvFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -134,71 +135,26 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     reader.onload = (evt) => {
       try {
         const text = evt.target?.result as string;
-        const lines = text
-          .split(/\r\n|\n/)
-          .map((l) => l.trim())
-          .filter((l) => l.length > 0);
-
-        if (lines.length === 0) {
-          showToast('빈 CSV 파일입니다.');
+        if (!text || !text.trim()) {
+          showToast('빈 파일입니다.');
           return;
         }
 
-        const parseCsvLine = (line: string): string[] => {
-          const result: string[] = [];
-          let current = '';
-          let insideQuote = false;
-
-          for (let i = 0; i < line.length; i++) {
-            const char = line[i];
-            if (char === '"' || char === "'") {
-              if (insideQuote && line[i + 1] === char) {
-                current += char;
-                i++;
-              } else {
-                insideQuote = !insideQuote;
-              }
-            } else if ((char === ',' || char === '\t') && !insideQuote) {
-              result.push(current.trim());
-              current = '';
-            } else {
-              current += char;
-            }
-          }
-          result.push(current.trim());
-          return result;
-        };
-
-        const headerTokens = parseCsvLine(lines[0]);
-        const columns: TableColumn[] = headerTokens.map((name, idx) => ({
-          id: `col-${idx}-${Date.now().toString(36)}`,
-          name: name.replace(/^["']|["']$/g, '').trim() || `컬럼 ${idx + 1}`,
-          type: idx === 0 ? 'text' : idx === 1 ? 'status' : 'text',
-          width: idx === 0 ? 200 : 160,
-          isPrimaryKey: idx === 0,
-        }));
-
-        const rows: TableRow[] = lines.slice(1).map((line, rIdx) => {
-          const cells = parseCsvLine(line);
-          const data: Record<string, any> = {};
-          columns.forEach((col, cIdx) => {
-            data[col.id] = cells[cIdx] ? cells[cIdx].replace(/^["']|["']$/g, '').trim() : '';
-          });
-          return {
-            id: `row-csv-${rIdx}-${Date.now().toString(36)}`,
-            data,
-            richContent: '',
-            stickers: [],
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          };
+        const result = parseDelimitedText(text, {
+          forcedDelimiter: 'auto',
+          hasHeader: true,
         });
 
-        const cleanName = file.name.replace(/\.[^/.]+$/, '');
-        onImportCsvToNewTable(cleanName, columns, rows);
-        showToast(`'${cleanName}' CSV 테이블이 생성되었습니다!`);
+        if (result.columns.length === 0) {
+          showToast('유효한 데이터 열을 찾을 수 없습니다.');
+          return;
+        }
+
+        const cleanName = file.name.replace(/\.[^/.]+$/, '') || '가져온 테이블';
+        onImportCsvToNewTable(cleanName, result.columns, result.rows);
+        showToast(`'${cleanName}' (${result.rows.length}개 행) 테이블이 생성되었습니다!`);
       } catch (err) {
-        showToast('CSV 파싱에 실패했습니다.');
+        showToast('파일 파싱에 실패했습니다.');
       }
     };
     reader.readAsText(file);

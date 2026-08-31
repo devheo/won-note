@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TableColumn, TableRow } from '../../types';
+import { parseDelimitedText } from '../../utils/csvParser';
 import {
   FileText,
   ClipboardPaste,
@@ -25,7 +26,7 @@ export const TextPasteModal: React.FC<TextPasteModalProps> = ({
 }) => {
   const [pastedText, setPastedText] = useState('');
   const [tableName, setTableName] = useState(defaultTableName);
-  const [delimiter, setDelimiter] = useState<'auto' | 'tab' | 'comma' | 'pipe' | 'space'>('auto');
+  const [delimiter, setDelimiter] = useState<'auto' | 'tab' | 'comma' | 'pipe' | 'semicolon' | 'space'>('auto');
   const [hasHeader, setHasHeader] = useState(true);
   const [previewColumns, setPreviewColumns] = useState<TableColumn[]>([]);
   const [previewRows, setPreviewRows] = useState<TableRow[]>([]);
@@ -43,151 +44,20 @@ export const TextPasteModal: React.FC<TextPasteModalProps> = ({
     if (!pastedText.trim()) {
       setPreviewColumns([]);
       setPreviewRows([]);
+      setDetectedDelimiterName('자동 감지');
       setErrorMsg(null);
       return;
     }
 
     try {
-      const lines = pastedText
-        .split(/\r\n|\n/)
-        .map((l) => l.trim())
-        .filter((l) => l.length > 0);
-
-      if (lines.length === 0) {
-        setPreviewColumns([]);
-        setPreviewRows([]);
-        return;
-      }
-
-      // Determine delimiter
-      let activeDelimiter = '\t';
-      let delName = '탭(Tab) 구분자';
-
-      if (delimiter === 'auto') {
-        const firstFewLines = lines.slice(0, 5).join('\n');
-        const tabCount = (firstFewLines.match(/\t/g) || []).length;
-        const commaCount = (firstFewLines.match(/,/g) || []).length;
-        const pipeCount = (firstFewLines.match(/\|/g) || []).length;
-
-        if (tabCount >= commaCount && tabCount >= pipeCount && tabCount > 0) {
-          activeDelimiter = '\t';
-          delName = '탭(Tab - 엑셀/노션 복사)';
-        } else if (commaCount >= pipeCount && commaCount > 0) {
-          activeDelimiter = ',';
-          delName = '쉼표(CSV Comma)';
-        } else if (pipeCount > 0) {
-          activeDelimiter = '|';
-          delName = '파이프(Markdown |)';
-        } else {
-          activeDelimiter = '\t';
-          delName = '공백/기본 탭';
-        }
-      } else if (delimiter === 'tab') {
-        activeDelimiter = '\t';
-        delName = '탭(Tab)';
-      } else if (delimiter === 'comma') {
-        activeDelimiter = ',';
-        delName = '쉼표(Comma)';
-      } else if (delimiter === 'pipe') {
-        activeDelimiter = '|';
-        delName = '파이프(|)';
-      } else if (delimiter === 'space') {
-        activeDelimiter = ' ';
-        delName = '공백(Space)';
-      }
-
-      setDetectedDelimiterName(delName);
-
-      // Parse lines with delimiter & quotes support
-      const parseLine = (line: string): string[] => {
-        if (activeDelimiter === '|') {
-          // Markdown table format cleanup: | Col1 | Col2 |
-          const trimmed = line.replace(/^\||\|$/g, '');
-          return trimmed.split('|').map((s) => s.trim());
-        }
-
-        if (activeDelimiter === ' ') {
-          return line.split(/\s+/).filter(Boolean);
-        }
-
-        const result: string[] = [];
-        let current = '';
-        let insideQuote = false;
-
-        for (let i = 0; i < line.length; i++) {
-          const char = line[i];
-          if (char === '"' || char === "'") {
-            if (insideQuote && line[i + 1] === char) {
-              current += char;
-              i++;
-            } else {
-              insideQuote = !insideQuote;
-            }
-          } else if (char === activeDelimiter && !insideQuote) {
-            result.push(current.trim());
-            current = '';
-          } else {
-            current += char;
-          }
-        }
-        result.push(current.trim());
-        return result;
-      };
-
-      // Filter out markdown divider rows like |---|---|
-      const validLines = lines.filter((l) => !l.match(/^\|?(\s*:?-+:?\s*\|?)+$/));
-      if (validLines.length === 0) return;
-
-      let headers: string[] = [];
-      let dataLines: string[] = [];
-
-      if (hasHeader) {
-        headers = parseLine(validLines[0]);
-        dataLines = validLines.slice(1);
-      } else {
-        const firstTokenCount = parseLine(validLines[0]).length;
-        headers = Array.from({ length: firstTokenCount }, (_, i) => `열 ${i + 1}`);
-        dataLines = validLines;
-      }
-
-      // Max column count among all lines
-      let maxCols = headers.length;
-      dataLines.forEach((l) => {
-        const cnt = parseLine(l).length;
-        if (cnt > maxCols) maxCols = cnt;
+      const result = parseDelimitedText(pastedText, {
+        forcedDelimiter: delimiter,
+        hasHeader,
       });
 
-      // Fill in headers if some lines have more columns
-      while (headers.length < maxCols) {
-        headers.push(`열 ${headers.length + 1}`);
-      }
-
-      const cols: TableColumn[] = headers.map((name, idx) => ({
-        id: `col-${idx}-${Date.now().toString(36)}`,
-        name: name.replace(/^["']|["']$/g, '').trim() || `열 ${idx + 1}`,
-        type: idx === 0 ? 'text' : idx === 1 ? 'status' : 'text',
-        width: idx === 0 ? 200 : 160,
-        isPrimaryKey: idx === 0,
-      }));
-
-      const rows: TableRow[] = dataLines.map((line, rIdx) => {
-        const cells = parseLine(line);
-        const data: Record<string, any> = {};
-        cols.forEach((col, cIdx) => {
-          data[col.id] = cells[cIdx] ? cells[cIdx].replace(/^["']|["']$/g, '').trim() : '';
-        });
-        return {
-          id: `row-paste-${rIdx}-${Date.now().toString(36)}`,
-          data,
-          richContent: '',
-          stickers: [],
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-        };
-      });
-
-      setPreviewColumns(cols);
-      setPreviewRows(rows);
+      setDetectedDelimiterName(result.delimiterName);
+      setPreviewColumns(result.columns);
+      setPreviewRows(result.rows);
       setErrorMsg(null);
     } catch (err: any) {
       setErrorMsg(err.message || '텍스트 파싱 중 오류가 발생했습니다.');
@@ -333,9 +203,10 @@ OneNote 스티커 메모\t디자인팀\t검토중\t2026-09-05\t포스트잇 드�
                 className="px-2.5 py-1 bg-white dark:bg-[#1c1c1c] border border-stone-200 dark:border-[#3e3e3e] rounded-lg text-xs text-stone-800 dark:text-[#e0e0e0] outline-none focus:border-amber-500"
               >
                 <option value="auto">자동 감지 (Auto)</option>
-                <option value="tab">탭 (Tab - 엑셀/노션)</option>
+                <option value="tab">탭 (Tab - 엑셀/노션/TSV)</option>
                 <option value="comma">쉼표 (Comma - CSV)</option>
-                <option value="pipe">파이프 (| - 마크다운)</option>
+                <option value="pipe">파이프 (| - 마크다운 표)</option>
+                <option value="semicolon">세미콜론 (Semicolon ;)</option>
                 <option value="space">공백 (Space)</option>
               </select>
             </div>
