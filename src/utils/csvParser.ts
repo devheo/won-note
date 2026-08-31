@@ -1,4 +1,4 @@
-import { TableColumn, TableRow, ColumnType } from '../types';
+import { TableColumn, TableRow, ColumnType, ColumnOption } from '../types';
 
 export interface ParseResult {
   delimiter: string;
@@ -208,14 +208,27 @@ export function parseDelimitedText(
     const colId = `col-${idx}-${Date.now().toString(36)}`;
 
     // Sample column values to determine appropriate column type
-    const sampleValues = dataGrid.slice(0, 30).map((row) => row[idx] || '').filter(Boolean);
+    const sampleValues = dataGrid.slice(0, 50).map((row) => row[idx] || '').filter(Boolean);
     const colType = inferColumnType(colName, sampleValues, idx);
+
+    // Auto-generate options for select / status columns based on unique distinct values
+    let options: ColumnOption[] | undefined = undefined;
+    if (colType === 'select' || colType === 'status') {
+      const distinctVals = Array.from(new Set(sampleValues.map((s) => s.trim()).filter(Boolean)));
+      const palette = ['#F59E0B', '#3B82F6', '#10B981', '#8B5CF6', '#EC4899', '#06B6D4', '#6366F1', '#14B8A6'];
+      options = distinctVals.map((val, vIdx) => ({
+        id: val,
+        label: val,
+        color: palette[vIdx % palette.length],
+      }));
+    }
 
     return {
       id: colId,
       name: colName,
       type: colType,
       width: idx === 0 ? 180 : colType === 'richText' ? 320 : 160,
+      options,
       isPrimaryKey: idx === 0,
     };
   });

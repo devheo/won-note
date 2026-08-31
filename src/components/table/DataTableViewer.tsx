@@ -1084,11 +1084,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 className="w-full bg-white dark:bg-[#242424] border border-amber-500 rounded px-1.5 py-0.5 outline-none text-xs text-stone-900 dark:text-[#ffffff]"
                               >
                                 <option value="">선택 안 함</option>
-                                {col.options?.map((opt) => (
-                                  <option key={opt.id} value={opt.id} className="dark:bg-[#1f1f1f]">
-                                    {opt.label}
-                                  </option>
-                                ))}
+                                {col.options && col.options.length > 0 ? (
+                                  col.options.map((opt) => (
+                                    <option key={opt.id} value={opt.label || opt.id} className="dark:bg-[#1f1f1f]">
+                                      {opt.label}
+                                    </option>
+                                  ))
+                                ) : (
+                                  editingValue && (
+                                    <option value={editingValue} className="dark:bg-[#1f1f1f]">
+                                      {editingValue}
+                                    </option>
+                                  )
+                                )}
                               </select>
                             ) : col.type === 'checkbox' ? (
                               <input
@@ -1137,18 +1145,47 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                               }
 
                               if (col.type === 'status' || col.type === 'select') {
-                                const option = col.options?.find((o) => o.id === val);
-                                if (!option) return <span className="text-stone-400 dark:text-[#777777] italic">미정</span>;
+                                if (val === undefined || val === null || val === '') {
+                                  return <span className="text-stone-400 dark:text-[#777777] italic">미정</span>;
+                                }
+
+                                // Check if option matches by ID or by label
+                                const strVal = String(val);
+                                const option = col.options?.find(
+                                  (o) => o.id === strVal || o.label === strVal
+                                );
+
+                                if (option) {
+                                  return (
+                                    <span
+                                      style={{
+                                        backgroundColor: `${option.color}25`,
+                                        color: option.color,
+                                        borderColor: `${option.color}50`,
+                                      }}
+                                      className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border"
+                                    >
+                                      {option.label}
+                                    </span>
+                                  );
+                                }
+
+                                // If value is directly given as a string (e.g. '자기앞', '거액', '완료') but no option exists
+                                const defaultTagColors = ['#F59E0B', '#3B82F6', '#10B981', '#8B5CF6', '#EC4899', '#06B6D4'];
+                                let hash = 0;
+                                for (let i = 0; i < strVal.length; i++) hash = (hash << 5) - hash + strVal.charCodeAt(i);
+                                const color = defaultTagColors[Math.abs(hash) % defaultTagColors.length];
+
                                 return (
                                   <span
                                     style={{
-                                      backgroundColor: `${option.color}25`,
-                                      color: option.color,
-                                      borderColor: `${option.color}50`,
+                                      backgroundColor: `${color}25`,
+                                      color: color,
+                                      borderColor: `${color}50`,
                                     }}
                                     className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border"
                                   >
-                                    {option.label}
+                                    {strVal}
                                   </span>
                                 );
                               }

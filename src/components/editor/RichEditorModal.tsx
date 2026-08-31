@@ -295,11 +295,19 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                     className="bg-transparent font-medium text-stone-800 dark:text-stone-200 outline-none text-xs cursor-pointer"
                   >
                     <option value="" className="text-stone-400">선택 없음</option>
-                    {col.options?.map((opt) => (
-                      <option key={opt.id} value={opt.id} className="dark:bg-stone-900">
-                        {opt.label}
-                      </option>
-                    ))}
+                    {col.options && col.options.length > 0 ? (
+                      col.options.map((opt) => (
+                        <option key={opt.id} value={opt.label || opt.id} className="dark:bg-stone-900">
+                          {opt.label}
+                        </option>
+                      ))
+                    ) : (
+                      currentRowData[col.id] && (
+                        <option value={currentRowData[col.id]} className="dark:bg-stone-900">
+                          {currentRowData[col.id]}
+                        </option>
+                      )
+                    )}
                   </select>
                 ) : col.type === 'checkbox' ? (
                   <input
