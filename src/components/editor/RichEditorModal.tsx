@@ -10,6 +10,8 @@ import { TableHeader } from '@tiptap/extension-table-header';
 import { StickerExtension } from './StickerExtension';
 import { TableRow as TableRowType, TableColumn, AutoSaveStatus } from '../../types';
 import { useAutoSave } from '../../hooks/useAutoSave';
+import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer';
+import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import {
   X,
   Bold,
@@ -42,6 +44,9 @@ import {
   Trash2,
   Columns,
   Rows,
+  FileText,
+  Edit3,
+  Database,
 } from 'lucide-react';
 
 interface RichEditorModalProps {
@@ -64,10 +69,57 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   const [currentRowData, setCurrentRowData] = useState<Record<string, any>>({});
   const [richContent, setRichContent] = useState<string>('');
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'editor' | 'fields' | 'stickers'>('editor');
   const [isTableMenuOpen, setIsTableMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const tableMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // Targets for rich editing: richText columns, long text columns (e.g. 내용, 처리방법), + general note
+  const richTargets = React.useMemo(() => {
+    const list: { id: string; name: string; isColumn: boolean; type?: string }[] = [];
+    
+    // Prioritize richText and text columns suitable for rich document editing
+    columns.forEach((col) => {
+      if (col.type === 'richText' || col.type === 'text' || col.name.includes('내용') || col.name.includes('방법') || col.name.includes('메모') || col.name.includes('설명')) {
+        list.push({
+          id: col.id,
+          name: col.name,
+          isColumn: true,
+          type: col.type,
+        });
+      }
+    });
+
+    // If no text/richText columns found, add remaining columns
+    if (list.length === 0) {
+      columns.forEach((col) => {
+        list.push({
+          id: col.id,
+          name: col.name,
+          isColumn: true,
+          type: col.type,
+        });
+      });
+    }
+
+    // Add general note
+    list.push({
+      id: '__richContent__',
+      name: '추가 상세 노트',
+      isColumn: false,
+    });
+
+    return list;
+  }, [columns]);
+
+  // Default target is the first richText column or first target
+  const [selectedTargetId, setSelectedTargetId] = useState<string>(() => {
+    const firstRich = columns.find((c) => c.type === 'richText');
+    if (firstRich) return firstRich.id;
+    return columns[0]?.id || '__richContent__';
+  });
+
+  const selectedTargetIdRef = useRef<string>(selectedTargetId);
+  selectedTargetIdRef.current = selectedTargetId;
 
   // Close table menu when clicking outside
   useEffect(() => {
@@ -85,10 +137,36 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   // Sync state when row changes
   useEffect(() => {
     if (row) {
-      setCurrentRowData(row.data || {});
+      const sanitized: Record<string, any> = { ...(row.data || {}) };
+      columns.forEach((col) => {
+        if (sanitized[col.id] !== undefined && sanitized[col.id] !== null) {
+          const val = sanitized[col.id];
+          if (typeof val === 'string' && val.includes('<') && val.includes('>')) {
+            const isComplex =
+              val.includes('<table') ||
+              val.includes('<img') ||
+              val.includes('sticker') ||
+              val.includes('<h1') ||
+              val.includes('<h2') ||
+              val.includes('<h3') ||
+              val.includes('<ul') ||
+              val.includes('<ol');
+            if (!isComplex) {
+              sanitized[col.id] = cleanTextValue(val);
+            }
+          }
+        }
+      });
+
+      setCurrentRowData(sanitized);
       setRichContent(row.richContent || '');
+      
+      const firstRich = columns.find((c) => c.type === 'richText');
+      const initialId = firstRich ? firstRich.id : richTargets[0]?.id || '__richContent__';
+      setSelectedTargetId(initialId);
+      selectedTargetIdRef.current = initialId;
     }
-  }, [row]);
+  }, [row?.id, columns, richTargets]);
 
   // Combined state object for auto-save hook
   const combinedRowState: TableRowType | null = row
@@ -144,40 +222,110 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }),
       StickerExtension,
     ],
-    content: row?.richContent || '',
+    content: row ? (columns.find((c) => c.type === 'richText') ? String(row.data[columns.find((c) => c.type === 'richText')!.id] || '') : row.richContent || '') : '',
     editorProps: {
       attributes: {
         class:
-          'prose dark:prose-invert max-w-none focus:outline-none min-h-[320px] text-sm text-stone-800 dark:text-[#f0f0f0] leading-relaxed font-sans',
+          'prose dark:prose-invert max-w-none focus:outline-none min-h-[300px] text-sm text-stone-800 dark:text-[#f0f0f0] leading-relaxed font-sans',
       },
     },
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
-      setRichContent(html);
+      const currentTarget = selectedTargetIdRef.current;
+      if (currentTarget === '__richContent__') {
+        setRichContent(html);
+      } else {
+        const targetCol = columns.find((c) => c.id === currentTarget);
+        const isComplexRich =
+          html.includes('<table') ||
+          html.includes('<img') ||
+          html.includes('sticker') ||
+          html.includes('<h1') ||
+          html.includes('<h2') ||
+          html.includes('<h3') ||
+          html.includes('<ul') ||
+          html.includes('<ol') ||
+          html.includes('<blockquote') ||
+          html.includes('<pre') ||
+          html.includes('<strong>') ||
+          html.includes('<em>') ||
+          html.includes('<s>');
+
+        if (targetCol && targetCol.type !== 'richText') {
+          // Plain column: always strip <p>...</p> tags
+          const plain = cleanHtmlToPlainText(html);
+          setCurrentRowData((prev) => ({
+            ...prev,
+            [currentTarget]: plain,
+          }));
+        } else if (!isComplexRich) {
+          // Plain text in richText column: store clean plain text without <p> wrappers
+          const plain = cleanHtmlToPlainText(html);
+          setCurrentRowData((prev) => ({
+            ...prev,
+            [currentTarget]: plain,
+          }));
+        } else {
+          setCurrentRowData((prev) => ({
+            ...prev,
+            [currentTarget]: html,
+          }));
+        }
+      }
     },
   });
 
+  // Switch target field
+  const handleSwitchTarget = (targetId: string) => {
+    setSelectedTargetId(targetId);
+    selectedTargetIdRef.current = targetId;
+
+    if (editor) {
+      const content = targetId === '__richContent__'
+        ? (richContent || '')
+        : String(currentRowData[targetId] ?? '');
+      editor.commands.setContent(content);
+    }
+  };
+
   // Keep TipTap in sync if opened row changes
   useEffect(() => {
-    if (editor && row && row.richContent !== undefined) {
-      if (editor.getHTML() !== row.richContent) {
-        editor.commands.setContent(row.richContent || '');
-      }
+    if (editor && row) {
+      const initialContent = selectedTargetId === '__richContent__'
+        ? (row.richContent || '')
+        : String(row.data[selectedTargetId] ?? '');
+      editor.commands.setContent(initialContent);
     }
   }, [row?.id, editor]);
 
   if (!isOpen || !row) return null;
 
   const handleCellChange = (columnId: string, val: any) => {
+    const targetCol = columns.find((c) => c.id === columnId);
+    const cleaned = typeof val === 'string' && targetCol?.type !== 'richText' ? cleanTextValue(val) : val;
+
     setCurrentRowData((prev) => ({
       ...prev,
-      [columnId]: val,
+      [columnId]: cleaned,
     }));
+    // If the changed field is the currently active editing field in TipTap, update editor too
+    if (columnId === selectedTargetId && editor) {
+      if (editor.getHTML() !== String(cleaned ?? '')) {
+        editor.commands.setContent(String(cleaned ?? ''));
+      }
+    }
   };
 
   const handleInsertSticker = (color: 'amber' | 'yellow' | 'green' | 'blue' | 'rose' | 'purple' = 'amber') => {
     if (editor) {
       editor.chain().focus().insertSticker({ color }).run();
+    }
+  };
+
+  const handleInsertSqlBlock = () => {
+    if (editor) {
+      const sampleSql = `-- SQL Query\nSELECT \n  id, name, created_at \nFROM \n  my_table \nWHERE \n  status = 'ACTIVE'\nORDER BY \n  id DESC;`;
+      editor.chain().focus().setCodeBlock().insertContent(sampleSql).run();
     }
   };
 
@@ -196,6 +344,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
   const primaryColumn = columns.find((c) => c.isPrimaryKey) || columns[0];
   const primaryTitle = primaryColumn ? String(currentRowData[primaryColumn.id] || '새 데이터 항목') : '데이터 세부 정보';
+  const currentTargetName = richTargets.find((t) => t.id === selectedTargetId)?.name || '내용';
 
   return (
     <div
@@ -277,38 +426,26 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         </div>
 
         {/* Quick Structured Properties Bar */}
-        <div className="px-6 py-3 bg-stone-50/80 dark:bg-stone-900/30 border-b border-stone-200 dark:border-stone-800 overflow-x-auto flex items-center gap-4 text-xs">
-          <div className="text-[11px] font-semibold text-stone-400 uppercase tracking-wider whitespace-nowrap">
+        <div className="px-6 py-2.5 bg-stone-50/80 dark:bg-stone-900/30 border-b border-stone-200 dark:border-stone-800 overflow-x-auto flex items-center gap-3 text-xs">
+          <div className="text-[11px] font-bold text-stone-400 dark:text-stone-500 uppercase tracking-wider whitespace-nowrap">
             속성 필드:
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2.5">
             {columns.map((col) => (
               <div
                 key={col.id}
-                className="flex items-center gap-1.5 bg-white dark:bg-stone-800 px-2.5 py-1 rounded-md border border-stone-200/80 dark:border-stone-700/60 flex-shrink-0"
+                className="flex items-center gap-1.5 bg-white dark:bg-stone-800 px-2.5 py-1 rounded-lg border border-stone-200/80 dark:border-stone-700/60 flex-shrink-0"
               >
                 <span className="text-stone-400 font-medium">{col.name}:</span>
                 {col.type === 'status' || col.type === 'select' ? (
-                  <select
-                    value={currentRowData[col.id] || ''}
-                    onChange={(e) => handleCellChange(col.id, e.target.value)}
-                    className="bg-transparent font-medium text-stone-800 dark:text-stone-200 outline-none text-xs cursor-pointer"
-                  >
-                    <option value="" className="text-stone-400">선택 없음</option>
-                    {col.options && col.options.length > 0 ? (
-                      col.options.map((opt) => (
-                        <option key={opt.id} value={opt.label || opt.id} className="dark:bg-stone-900">
-                          {opt.label}
-                        </option>
-                      ))
-                    ) : (
-                      currentRowData[col.id] && (
-                        <option value={currentRowData[col.id]} className="dark:bg-stone-900">
-                          {currentRowData[col.id]}
-                        </option>
-                      )
-                    )}
-                  </select>
+                  <div className="min-w-[130px]">
+                    <SelectOrCustomInput
+                      value={cleanTextValue(currentRowData[col.id])}
+                      options={col.options}
+                      placeholder="미정/선택 없음"
+                      onChange={(val) => handleCellChange(col.id, val)}
+                    />
+                  </div>
                 ) : col.type === 'checkbox' ? (
                   <input
                     type="checkbox"
@@ -319,17 +456,17 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 ) : col.type === 'date' ? (
                   <input
                     type="date"
-                    value={currentRowData[col.id] || ''}
+                    value={cleanTextValue(currentRowData[col.id]) || ''}
                     onChange={(e) => handleCellChange(col.id, e.target.value)}
                     className="bg-transparent text-stone-800 dark:text-stone-200 outline-none text-xs"
                   />
                 ) : (
                   <input
                     type="text"
-                    value={currentRowData[col.id] ?? ''}
+                    value={cleanTextValue(currentRowData[col.id])}
                     onChange={(e) => handleCellChange(col.id, e.target.value)}
                     placeholder="값 입력..."
-                    className="bg-transparent text-stone-800 dark:text-stone-200 outline-none text-xs max-w-[140px]"
+                    className="bg-transparent text-stone-800 dark:text-stone-200 outline-none text-xs min-w-[90px] max-w-[200px]"
                   />
                 )}
               </div>
@@ -337,7 +474,36 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           </div>
         </div>
 
-        {/* TipTap Custom Minimal Formatting Toolbar */}
+        {/* Target Field Switcher Tabs (e.g. 내용 | 처리방법 | 추가 상세 노트) */}
+        <div className="px-6 py-2 bg-stone-100/70 dark:bg-stone-900/60 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
+            <span className="text-[11px] font-bold text-stone-500 dark:text-stone-400 mr-1 flex items-center gap-1">
+              <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+              서식 편집 대상:
+            </span>
+            {richTargets.map((field) => (
+              <button
+                key={field.id}
+                type="button"
+                onClick={() => handleSwitchTarget(field.id)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                  selectedTargetId === field.id
+                    ? 'bg-amber-500 text-stone-950 shadow-sm font-bold'
+                    : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700'
+                }`}
+              >
+                <span>{field.name}</span>
+                {field.isColumn && <span className="text-[10px] opacity-75 font-normal">(열 데이터)</span>}
+              </button>
+            ))}
+          </div>
+
+          <div className="text-[11px] text-amber-700 dark:text-amber-400 font-medium whitespace-nowrap">
+            현재 <strong>[{currentTargetName}]</strong> 서식 편집 중
+          </div>
+        </div>
+
+        {/* Formatting Toolbar */}
         {editor && (
           <div className="px-6 py-2 border-b border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-1">
@@ -450,53 +616,61 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
                   editor.isActive('codeBlock') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400' : 'text-stone-600 dark:text-stone-300'
                 }`}
-                title="코드 / SQL 블록"
+                title="코드 블록"
               >
-                <FileCode className="w-3.5 h-3.5" />
+                <Code className="w-3.5 h-3.5" />
+              </button>
+
+              <button
+                type="button"
+                onClick={handleInsertSqlBlock}
+                className="px-2 py-1 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors flex items-center gap-1 text-xs font-mono font-semibold"
+                title="SQL 쿼리 블록 템플릿 삽입"
+              >
+                <Database className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                <span>SQL</span>
               </button>
 
               <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
 
               {/* Image Upload Button */}
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleImageUpload}
-                accept="image/*"
-                className="hidden"
-              />
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
-                title="이미지 첨부"
+                title="이미지 삽입"
               >
                 <ImageIcon className="w-3.5 h-3.5" />
               </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handleImageUpload}
+              />
 
-              <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-              {/* TipTap Rich Table Controls Dropdown */}
+              {/* Table Tools Dropdown Menu */}
               <div className="relative" ref={tableMenuRef}>
                 <button
                   type="button"
                   onClick={() => setIsTableMenuOpen(!isTableMenuOpen)}
-                  className={`px-2 py-1 rounded text-xs flex items-center gap-1 font-medium transition-colors ${
+                  className={`px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors ${
                     editor.isActive('table')
-                      ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-700'
-                      : 'hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc]'
+                      ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold'
+                      : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
                   }`}
-                  title="리치 에디터 표 삽입 및 행/열 관리"
+                  title="표 도구 메뉴"
                 >
-                  <TableIcon className="w-3.5 h-3.5 text-amber-500" />
-                  <span>표 (Table)</span>
-                  <ChevronDown className="w-3 h-3 text-stone-400" />
+                  <TableIcon className="w-3.5 h-3.5" />
+                  <span>표</span>
+                  <ChevronDown className="w-3 h-3 opacity-60" />
                 </button>
 
                 {isTableMenuOpen && (
-                  <div className="absolute left-0 top-full mt-1 w-56 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1.5 z-50 text-xs text-stone-700 dark:text-[#cccccc] animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
+                  <div className="absolute left-0 top-full mt-1.5 w-48 bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl z-50 p-1.5 text-xs">
                     <div className="px-2 py-1 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
-                      표 생성
+                      표 삽입
                     </div>
                     <button
                       type="button"
@@ -597,28 +771,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       type="button"
                       disabled={!editor.isActive('table')}
                       onClick={() => {
-                        editor.chain().focus().toggleHeaderRow().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors"
-                    >
-                      <span>헤더 행(Header) 토글</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().mergeOrSplit().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors"
-                    >
-                      <span>셀 병합 / 분할</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
                         editor.chain().focus().deleteTable().run();
                         setIsTableMenuOpen(false);
                       }}
@@ -636,7 +788,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             <div className="flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 rounded-lg border border-amber-200/60 dark:border-amber-900/40">
               <span className="text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1">
                 <StickyNote className="w-3 h-3" />
-                원노트 스티커 삽입:
+                스티커 메모:
               </span>
               <div className="flex items-center gap-1">
                 {(['amber', 'yellow', 'green', 'blue', 'rose', 'purple'] as const).map((color) => (
@@ -659,24 +811,24 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           </div>
         )}
 
-        {/* TipTap Editor Scrollable Body Area */}
+        {/* Scrollable Body Area */}
         <div className="flex-1 p-6 overflow-y-auto min-h-[350px]">
           <EditorContent editor={editor} />
         </div>
 
-        {/* Modal Footer Info */}
+        {/* Modal Footer */}
         <div className="px-6 py-2.5 border-t border-stone-200 dark:border-stone-800 bg-stone-50/60 dark:bg-stone-900/60 flex items-center justify-between text-xs text-stone-500">
           <div className="flex items-center gap-2">
-            <span>💡 <strong>꿀팁:</strong> 마크다운 문법(#, *, -)과 원노트 스티커를 결합해 풍부한 노트를 만드세요.</span>
+            <span>💡 <strong>작성 팁:</strong> 상단 탭을 전환하여 <strong>[{columns.filter(c => c.type === 'richText').map(c => c.name).join(', ') || '각 필드'}]</strong>의 서식 내용을 자유롭게 수정하세요.</span>
           </div>
           <button
             onClick={() => {
               forceSave();
               onClose();
             }}
-            className="px-4 py-1.5 bg-stone-900 dark:bg-stone-100 hover:bg-amber-500 dark:hover:bg-amber-400 text-stone-100 dark:text-stone-900 font-semibold rounded-lg transition-colors"
+            className="px-5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg transition-colors shadow-sm"
           >
-            완료
+            완료 및 닫기
           </button>
         </div>
       </div>

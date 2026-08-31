@@ -1,6 +1,9 @@
 import React, { useRef, useState } from 'react';
 import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
-import { Maximize2, Sparkles } from 'lucide-react';
+import { Maximize2, Sparkles, Copy, Check } from 'lucide-react';
+import { detectLanguage } from '../../utils/codeHighlighter';
+import { CodeBlockViewer } from './CodeBlockViewer';
+import { cleanTextValue } from '../../utils/textSanitizer';
 
 interface TruncatedPreviewCellProps {
   value: any;
@@ -19,15 +22,18 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
 }) => {
   const { textRef, isHovered, handleMouseEnter, handleMouseLeave } = useTruncatedTooltip();
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [copied, setCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const displayString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+  const rawString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
+  const displayString = columnType !== 'richText' ? cleanTextValue(rawString) : rawString;
+  const detectedCode = detectLanguage(displayString);
 
   const onMouseEnterWithCoords = () => {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       // Position calculation to ensure popover stays within viewport bounds
-      const popoverWidth = Math.min(Math.max(rect.width * 1.5, 280), 480);
+      const popoverWidth = Math.min(Math.max(rect.width * 1.6, 320), 540);
       let left = rect.left;
       if (left + popoverWidth > window.innerWidth - 20) {
         left = window.innerWidth - popoverWidth - 20;
@@ -40,6 +46,17 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       });
     }
     handleMouseEnter();
+  };
+
+  const handleCopyText = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(displayString);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy', err);
+    }
   };
 
   return (
@@ -82,19 +99,39 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             maxWidth: `${popoverPos.width}px`,
             zIndex: 9999,
           }}
-          className="animate-in fade-in zoom-in-95 duration-150 p-3 bg-stone-900/95 dark:bg-stone-900/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto"
+          className="animate-in fade-in zoom-in-95 duration-150 p-3 bg-stone-900/95 dark:bg-[#181a20]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto"
         >
-          <div className="flex items-center justify-between gap-2 pb-1.5 mb-1.5 border-b border-stone-800 text-[11px] text-stone-400 font-medium">
+          <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-800 text-[11px] text-stone-400 font-medium">
             <span className="flex items-center gap-1 text-amber-400">
               <Sparkles className="w-3 h-3" />
-              전체 내용 미리보기 ({columnType})
+              전체 내용 미리보기 {detectedCode.isCode && `(${detectedCode.language.toUpperCase()})`}
             </span>
-            <span>{displayString.length}자</span>
+            <div className="flex items-center gap-2">
+              <span>{displayString.length}자</span>
+              {!detectedCode.isCode && (
+                <button
+                  onClick={handleCopyText}
+                  className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-stone-800 hover:bg-stone-700 text-stone-300 text-[10px] transition-colors"
+                  title="내용 복사"
+                >
+                  {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                  <span>{copied ? '복사됨' : '복사'}</span>
+                </button>
+              )}
+            </div>
           </div>
 
-          <div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-stone-200 font-sans text-xs">
-            {displayString}
-          </div>
+          {detectedCode.isCode ? (
+            <CodeBlockViewer
+              code={displayString}
+              language={detectedCode.language}
+              maxHeight="max-h-60"
+            />
+          ) : (
+            <div className="max-h-52 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar">
+              {displayString}
+            </div>
+          )}
 
           {onOpenEditor && (
             <div className="mt-2 pt-2 border-t border-stone-800 flex justify-end">
@@ -104,7 +141,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
                   handleMouseLeave();
                   onOpenEditor();
                 }}
-                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold rounded-md flex items-center gap-1.5 text-[11px] transition-colors"
+                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-semibold rounded-md flex items-center gap-1.5 text-[11px] transition-colors shadow-sm"
               >
                 <Maximize2 className="w-3 h-3" />
                 에디터에서 열기
@@ -116,3 +153,4 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
     </div>
   );
 };
+

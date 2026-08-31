@@ -2,6 +2,9 @@ import React, { useState, useRef, useMemo, useEffect } from 'react';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
 import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
 import { ColumnManagerModal } from '../modals/ColumnManagerModal';
+import { AddRowModal } from '../modals/AddRowModal';
+import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
+import { cleanTextValue } from '../../utils/textSanitizer';
 import {
   Plus,
   ArrowUpDown,
@@ -62,6 +65,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [isColumnManagerOpen, setIsColumnManagerOpen] = useState(false);
   const [hiddenColumnIds, setHiddenColumnIds] = useState<Set<string>>(new Set());
 
+  // Add Row Modal State (Opens popup instead of just inserting empty row)
+  const [isAddRowModalOpen, setIsAddRowModalOpen] = useState(false);
+  const [addRowPosition, setAddRowPosition] = useState<'bottom' | 'top'>('bottom');
+
   // Row Action Dropdown Menu
   const [isRowMenuOpen, setIsRowMenuOpen] = useState(false);
   const rowMenuRef = useRef<HTMLDivElement | null>(null);
@@ -75,6 +82,39 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [dropTargetRowId, setDropTargetRowId] = useState<string | null>(null);
   const [dropIndicatorPosition, setDropIndicatorPosition] = useState<'above' | 'below' | null>(null);
 
+  // Inline Cell Editing state
+  const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
+  const [editingValue, setEditingValue] = useState<any>('');
+
+  // Inline Cell Commit
+  const commitCellEdit = (rowId: string, colId: string, val: any) => {
+    const targetCol = table.columns.find((c) => c.id === colId);
+    const cleaned = typeof val === 'string' && targetCol?.type !== 'richText'
+      ? cleanTextValue(val)
+      : val;
+
+    const updatedRows = table.rows.map((row) => {
+      if (row.id === rowId) {
+        return {
+          ...row,
+          data: {
+            ...row.data,
+            [colId]: cleaned,
+          },
+          updatedAt: Date.now(),
+        };
+      }
+      return row;
+    });
+
+    onUpdateTable({
+      ...table,
+      rows: updatedRows,
+      updatedAt: Date.now(),
+    });
+    setEditingCell(null);
+  };
+
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
       if (rowMenuRef.current && !rowMenuRef.current.contains(e.target as Node)) {
@@ -83,14 +123,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       if (densityMenuRef.current && !densityMenuRef.current.contains(e.target as Node)) {
         setIsDensityMenuOpen(false);
       }
+      if (editingCell) {
+        const target = e.target as HTMLElement;
+        if (!target.closest('[data-editing-cell="true"]')) {
+          commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
+        }
+      }
     };
     window.addEventListener('mousedown', handleOutsideClick);
     return () => window.removeEventListener('mousedown', handleOutsideClick);
-  }, []);
+  }, [editingCell, editingValue, table]);
 
-  // Inline Cell Editing state
-  const [editingCell, setEditingCell] = useState<{ rowId: string; colId: string } | null>(null);
-  const [editingValue, setEditingValue] = useState<any>('');
+  // Reset editing cell whenever table changes
+  useEffect(() => {
+    setEditingCell(null);
+    setEditingValue('');
+  }, [table.id]);
 
   // Column Resizing state
   const resizingColumnRef = useRef<{ id: string; startX: number; startWidth: number } | null>(null);
@@ -175,44 +223,34 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
   };
 
-  // Add Row to Bottom
-  const handleAddRowBottom = () => {
-    const newRowId = `row-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`;
-    const newRow: TableRow = {
-      id: newRowId,
-      data: {
-        title: `새 항목 #${table.rows.length + 1}`,
-      },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    const updated = {
-      ...table,
-      rows: [...table.rows, newRow],
-      updatedAt: Date.now(),
-    };
-    onUpdateTable(updated);
+  // Trigger Add Row Modal (Opens Popup as requested by user)
+  const handleOpenAddRowModal = (pos: 'bottom' | 'top' = 'bottom') => {
+    setAddRowPosition(pos);
+    setIsAddRowModalOpen(true);
+    setIsRowMenuOpen(false);
   };
 
-  // Add Row to Top
-  const handleAddRowTop = () => {
+  // Commit Row created from Modal
+  const handleCreateRowFromModal = (
+    rowData: Record<string, any>,
+    richContent?: string,
+    pos: 'bottom' | 'top' = 'bottom'
+  ) => {
     const newRowId = `row-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`;
     const newRow: TableRow = {
       id: newRowId,
-      data: {
-        title: `새 항목 (상단)`,
-      },
+      data: rowData,
+      richContent: richContent || undefined,
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
 
-    const updated = {
+    const newRows = pos === 'top' ? [newRow, ...table.rows] : [...table.rows, newRow];
+    onUpdateTable({
       ...table,
-      rows: [newRow, ...table.rows],
+      rows: newRows,
       updatedAt: Date.now(),
-    };
-    onUpdateTable(updated);
+    });
   };
 
   // Duplicate Selected Rows
@@ -400,30 +438,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setDropIndicatorPosition(null);
   };
 
-  // Inline Cell Commit
-  const commitCellEdit = (rowId: string, colId: string, val: any) => {
-    const updatedRows = table.rows.map((row) => {
-      if (row.id === rowId) {
-        return {
-          ...row,
-          data: {
-            ...row.data,
-            [colId]: val,
-          },
-          updatedAt: Date.now(),
-        };
-      }
-      return row;
-    });
-
-    onUpdateTable({
-      ...table,
-      rows: updatedRows,
-      updatedAt: Date.now(),
-    });
-    setEditingCell(null);
-  };
-
   // Toggle Single Row Selection
   const toggleSelectRow = (rowId: string) => {
     setSelectedRowIds((prev) => {
@@ -546,22 +560,52 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
     // Sort
     if (sortColumnId) {
+      const targetCol = table.columns.find((c) => c.id === sortColumnId);
+
+      const getDisplayValue = (val: any): string => {
+        if (val === undefined || val === null) return '';
+        const cleaned = cleanTextValue(val).trim();
+        if (targetCol && (targetCol.type === 'select' || targetCol.type === 'status')) {
+          const opt = targetCol.options?.find(
+            (o) => o.id === cleaned || o.label === cleaned || o.id === String(val) || o.label === String(val)
+          );
+          if (opt) return opt.label.trim();
+        }
+        return cleaned;
+      };
+
       list.sort((a, b) => {
-        const valA = a.data[sortColumnId];
-        const valB = b.data[sortColumnId];
+        const rawA = a.data[sortColumnId];
+        const rawB = b.data[sortColumnId];
 
-        if (valA === undefined || valA === null) return 1;
-        if (valB === undefined || valB === null) return -1;
+        const strA = getDisplayValue(rawA);
+        const strB = getDisplayValue(rawB);
 
-        if (typeof valA === 'number' && typeof valB === 'number') {
-          return sortDirection === 'asc' ? valA - valB : valB - valA;
+        const isAEmpty = strA === '' && (rawA === undefined || rawA === null || rawA === '');
+        const isBEmpty = strB === '' && (rawB === undefined || rawB === null || rawB === '');
+
+        if (isAEmpty && isBEmpty) return 0;
+        if (isAEmpty) return 1;
+        if (isBEmpty) return -1;
+
+        if (targetCol?.type === 'checkbox') {
+          const boolA = Boolean(rawA);
+          const boolB = Boolean(rawB);
+          if (boolA === boolB) return 0;
+          return sortDirection === 'asc' ? (boolA ? -1 : 1) : (boolA ? 1 : -1);
         }
 
-        const strA = String(valA);
-        const strB = String(valB);
-        return sortDirection === 'asc'
-          ? strA.localeCompare(strB, 'ko-KR')
-          : strB.localeCompare(strA, 'ko-KR');
+        const numA = Number(strA);
+        const numB = Number(strB);
+        if (
+          targetCol?.type === 'number' ||
+          (!isNaN(numA) && !isNaN(numB) && strA !== '' && strB !== '')
+        ) {
+          return sortDirection === 'asc' ? numA - numB : numB - numA;
+        }
+
+        const comp = strA.localeCompare(strB, 'ko', { numeric: true, sensitivity: 'base' });
+        return sortDirection === 'asc' ? comp : -comp;
       });
     }
 
@@ -720,7 +764,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           <div className="relative flex items-center" ref={rowMenuRef}>
             <button
               id="btn-add-table-row"
-              onClick={handleAddRowBottom}
+              onClick={() => handleOpenAddRowModal('bottom')}
               className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-l-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all active:scale-98"
             >
               <Plus className="w-3.5 h-3.5" />
@@ -737,24 +781,18 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             {isRowMenuOpen && (
               <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
                 <button
-                  onClick={() => {
-                    handleAddRowTop();
-                    setIsRowMenuOpen(false);
-                  }}
+                  onClick={() => handleOpenAddRowModal('top')}
                   className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
                 >
                   <ArrowUp className="w-3.5 h-3.5 text-amber-500" />
-                  맨 위에 새 행 추가
+                  맨 위에 새 행 추가 (팝업)
                 </button>
                 <button
-                  onClick={() => {
-                    handleAddRowBottom();
-                    setIsRowMenuOpen(false);
-                  }}
+                  onClick={() => handleOpenAddRowModal('bottom')}
                   className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
                 >
                   <ArrowDown className="w-3.5 h-3.5 text-amber-500" />
-                  맨 아래에 새 행 추가
+                  맨 아래에 새 행 추가 (팝업)
                 </button>
 
                 {selectedRowIds.size > 0 && (
@@ -1003,9 +1041,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       target.tagName === 'BUTTON' ||
                       target.closest('button') ||
                       target.closest('input') ||
-                      target.closest('select')
+                      target.closest('select') ||
+                      target.closest('[data-editing-cell="true"]')
                     ) {
                       return;
+                    }
+                    if (editingCell) {
+                      commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
                     }
                     onOpenRowDetail(row, rIdx);
                   }}
@@ -1065,39 +1107,28 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         key={col.id}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
+                          if (editingCell) {
+                            commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
+                          }
                           setEditingCell({ rowId: row.id, colId: col.id });
                           setEditingValue(rawVal ?? '');
                         }}
                         className={`px-3 ${heightClass} border-r border-stone-200/70 dark:border-[#2d2d2d] font-sans text-xs relative overflow-hidden text-stone-900 dark:text-[#f0f0f0]`}
                       >
                         {isEditing ? (
-                          <div className="w-full" onClick={(e) => e.stopPropagation()}>
+                          <div data-editing-cell="true" className="w-full" onClick={(e) => e.stopPropagation()}>
                             {col.type === 'status' || col.type === 'select' ? (
-                              <select
+                              <SelectOrCustomInput
                                 autoFocus
                                 value={editingValue}
-                                onChange={(e) => {
-                                  setEditingValue(e.target.value);
-                                  commitCellEdit(row.id, col.id, e.target.value);
+                                options={col.options}
+                                placeholder="선택 안 함"
+                                onChange={(val) => {
+                                  setEditingValue(val);
+                                  commitCellEdit(row.id, col.id, val);
                                 }}
                                 onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
-                                className="w-full bg-white dark:bg-[#242424] border border-amber-500 rounded px-1.5 py-0.5 outline-none text-xs text-stone-900 dark:text-[#ffffff]"
-                              >
-                                <option value="">선택 안 함</option>
-                                {col.options && col.options.length > 0 ? (
-                                  col.options.map((opt) => (
-                                    <option key={opt.id} value={opt.label || opt.id} className="dark:bg-[#1f1f1f]">
-                                      {opt.label}
-                                    </option>
-                                  ))
-                                ) : (
-                                  editingValue && (
-                                    <option value={editingValue} className="dark:bg-[#1f1f1f]">
-                                      {editingValue}
-                                    </option>
-                                  )
-                                )}
-                              </select>
+                              />
                             ) : col.type === 'checkbox' ? (
                               <input
                                 type="checkbox"
@@ -1150,9 +1181,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 }
 
                                 // Check if option matches by ID or by label
-                                const strVal = String(val);
+                                const strVal = cleanTextValue(val);
                                 const option = col.options?.find(
-                                  (o) => o.id === strVal || o.label === strVal
+                                  (o) => o.id === strVal || o.label === strVal || o.id === String(val) || o.label === String(val)
                                 );
 
                                 if (option) {
@@ -1289,7 +1320,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                 >
                   <p>데이터 행이 없습니다.</p>
                   <button
-                    onClick={handleAddRowBottom}
+                    onClick={() => handleOpenAddRowModal('bottom')}
                     className="mt-2 px-3 py-1.5 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs hover:bg-amber-400"
                   >
                     첫 번째 행 추가하기 🐝
@@ -1315,6 +1346,16 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           <span>WonBee Realtime Data Grid</span>
         </div>
       </div>
+
+      {/* Add Row Modal (Popup as requested) */}
+      <AddRowModal
+        isOpen={isAddRowModalOpen}
+        onClose={() => setIsAddRowModalOpen(false)}
+        columns={table.columns}
+        tableName={table.title}
+        insertPosition={addRowPosition}
+        onAddRow={handleCreateRowFromModal}
+      />
 
       {/* Column Manager Modal */}
       <ColumnManagerModal

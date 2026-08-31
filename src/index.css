@@ -268,3 +268,87 @@
   cursor: col-resize;
 }
 
+/* Prism.js Syntax Highlighting Theme (Dark Elegant Theme) */
+code[class*="language-"],
+pre[class*="language-"] {
+  color: #e2e8f0;
+  font-family: 'JetBrains Mono', monospace;
+  direction: ltr;
+  text-align: left;
+  white-space: pre-wrap;
+  word-spacing: normal;
+  word-break: break-all;
+  line-height: 1.5;
+  tab-size: 2;
+  hyphens: none;
+}
+
+/* SQL & Code Syntax Tokens */
+.token.comment,
+.token.prolog,
+.token.doctype,
+.token.cdata {
+  color: #64748b;
+  font-style: italic;
+}
+
+.token.punctuation {
+  color: #94a3b8;
+}
+
+.token.property,
+.token.tag,
+.token.boolean,
+.token.number,
+.token.constant,
+.token.symbol,
+.token.deleted {
+  color: #f97316; /* Orange / Amber for numbers and constants */
+}
+
+.token.selector,
+.token.attr-name,
+.token.string,
+.token.char,
+.token.builtin,
+.token.inserted {
+  color: #10b981; /* Green for strings and text literals */
+}
+
+.token.operator,
+.token.entity,
+.token.url,
+.language-css .token.string,
+.style .token.string {
+  color: #38bdf8; /* Light Cyan for operators */
+}
+
+.token.atrule,
+.token.attr-value,
+.token.keyword {
+  color: #38bdf8; /* Cyan for SQL / Code Keywords (SELECT, FROM, WHERE) */
+  font-weight: 600;
+}
+
+.token.function,
+.token.class-name {
+  color: #fbbf24; /* Amber/Yellow for Functions (COUNT, SUM, AVG, etc.) */
+  font-weight: 600;
+}
+
+.token.regex,
+.token.important,
+.token.variable {
+  color: #c084fc; /* Purple for variables */
+}
+
+.token.important,
+.token.bold {
+  font-weight: bold;
+}
+
+.token.italic {
+  font-style: italic;
+}
+
+

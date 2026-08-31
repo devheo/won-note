@@ -24,6 +24,10 @@ import {
   HelpCircle,
   FolderOpen,
 } from 'lucide-react';
+import { detectLanguage } from '../../utils/codeHighlighter';
+import { CodeBlockViewer } from '../common/CodeBlockViewer';
+import { cleanTextValue } from '../../utils/textSanitizer';
+import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 
 interface ModernRowDetailViewerProps {
   isOpen: boolean;
@@ -57,23 +61,41 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
   const [editingColId, setEditingColId] = useState<string | null>(null);
   const [editValue, setEditValue] = useState<any>('');
 
+  // Reset editing state whenever row changes, drawer opens/closes, or index changes
+  useEffect(() => {
+    setEditingColId(null);
+    setEditValue('');
+  }, [isOpen, row?.id, currentIndex]);
+
+  const handleClose = () => {
+    setEditingColId(null);
+    setEditValue('');
+    onClose();
+  };
+
+  const handleNavigate = (newIdx: number) => {
+    setEditingColId(null);
+    setEditValue('');
+    onNavigate(newIdx);
+  };
+
   // Keyboard navigation
   useEffect(() => {
     if (!isOpen) return;
 
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        handleClose();
       } else if (e.key === 'ArrowLeft' && currentIndex > 0) {
-        onNavigate(currentIndex - 1);
+        handleNavigate(currentIndex - 1);
       } else if (e.key === 'ArrowRight' && currentIndex < totalRows - 1) {
-        onNavigate(currentIndex + 1);
+        handleNavigate(currentIndex + 1);
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, currentIndex, totalRows, onClose, onNavigate]);
+  }, [isOpen, currentIndex, totalRows, handleClose, handleNavigate]);
 
   if (!isOpen || !row) return null;
 
@@ -93,16 +115,22 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
 
   // Commit field edit in viewer
   const handleSaveField = (colId: string) => {
+    const targetCol = columns.find((c) => c.id === colId);
+    const cleaned = typeof editValue === 'string' && targetCol?.type !== 'richText'
+      ? cleanTextValue(editValue)
+      : editValue;
+
     const updated: TableRow = {
       ...row,
       data: {
         ...row.data,
-        [colId]: editValue,
+        [colId]: cleaned,
       },
       updatedAt: Date.now(),
     };
     onUpdateRow(updated);
     setEditingColId(null);
+    setEditValue('');
   };
 
   // Get primary title of row
@@ -143,7 +171,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
     <div
       id="modern-row-detail-modal"
       className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200"
-      onClick={onClose}
+      onClick={handleClose}
     >
       <div
         className="bg-white dark:bg-[#1e1e1e] border border-stone-200 dark:border-[#383838] rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col transition-all duration-150 mat-shadow-3"
@@ -175,7 +203,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
             {/* Prev / Next Row Navigation */}
             <div className="flex items-center bg-stone-200/60 dark:bg-[#2c2c2c] rounded-lg p-0.5 mr-1 border border-stone-300/40 dark:border-[#383838]">
               <button
-                onClick={() => onNavigate(currentIndex - 1)}
+                onClick={() => handleNavigate(currentIndex - 1)}
                 disabled={currentIndex === 0}
                 className="p-1 rounded text-stone-600 dark:text-[#cccccc] hover:bg-white dark:hover:bg-[#383838] disabled:opacity-30 transition-colors"
                 title="이전 행 (←)"
@@ -183,7 +211,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                 <ChevronLeft className="w-4 h-4" />
               </button>
               <button
-                onClick={() => onNavigate(currentIndex + 1)}
+                onClick={() => handleNavigate(currentIndex + 1)}
                 disabled={currentIndex >= totalRows - 1}
                 className="p-1 rounded text-stone-600 dark:text-[#cccccc] hover:bg-white dark:hover:bg-[#383838] disabled:opacity-30 transition-colors"
                 title="다음 행 (→)"
@@ -206,7 +234,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
             <button
               onClick={() => {
                 onOpenRichEditor(row);
-                onClose();
+                handleClose();
               }}
               className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-colors"
             >
@@ -216,7 +244,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
 
             {/* Close */}
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="p-1.5 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-[#2c2c2c] rounded-lg transition-colors ml-1"
             >
               <X className="w-5 h-5" />
@@ -243,11 +271,14 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                 const val = row.data[col.id];
                 const isEditing = editingColId === col.id;
                 const isCopied = copiedKey === col.id;
+                const isRichOrLong = col.type === 'richText' || (typeof val === 'string' && (val.length > 60 || val.includes('\n')));
 
                 return (
                   <div
                     key={col.id}
-                    className="p-3 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333] hover:border-amber-500/50 dark:hover:border-amber-500/50 transition-all group/field relative"
+                    className={`p-3 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333] hover:border-amber-500/50 dark:hover:border-amber-500/50 transition-all group/field relative ${
+                      isRichOrLong ? 'col-span-1 md:col-span-2' : ''
+                    }`}
                   >
                     {/* Field Header */}
                     <div className="flex items-center justify-between mb-1.5">
@@ -257,6 +288,11 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                         {col.isPrimaryKey && (
                           <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-600 dark:text-amber-400 font-bold">
                             PK
+                          </span>
+                        )}
+                        {col.type === 'richText' && (
+                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-indigo-500/15 text-indigo-600 dark:text-indigo-400 font-medium">
+                            서식 지원
                           </span>
                         )}
                       </div>
@@ -273,7 +309,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                           <button
                             onClick={() => {
                               setEditingColId(col.id);
-                              setEditValue(val ?? '');
+                              setEditValue(cleanTextValue(val));
                             }}
                             className="p-1 rounded text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
                             title="빠른 수정"
@@ -286,21 +322,16 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
 
                     {/* Field Value */}
                     {isEditing ? (
-                      <div className="mt-2 flex items-center gap-1.5">
+                      <div className="mt-2 space-y-2">
                         {col.type === 'status' || col.type === 'select' ? (
-                          <select
+                          <SelectOrCustomInput
                             autoFocus
+                            size="md"
                             value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            className="w-full bg-white dark:bg-[#1e1e1e] border border-amber-500 rounded-lg px-2.5 py-1 text-xs outline-none text-stone-900 dark:text-[#f5f5f5]"
-                          >
-                            <option value="">선택 안 함</option>
-                            {col.options?.map((opt) => (
-                              <option key={opt.id} value={opt.id}>
-                                {opt.label}
-                              </option>
-                            ))}
-                          </select>
+                            options={col.options}
+                            placeholder="선택 안 함"
+                            onChange={(newVal) => setEditValue(newVal)}
+                          />
                         ) : col.type === 'checkbox' ? (
                           <label className="flex items-center gap-2 cursor-pointer">
                             <input
@@ -313,6 +344,15 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               {editValue ? '선택됨 (True)' : '선택 안 됨 (False)'}
                             </span>
                           </label>
+                        ) : isRichOrLong ? (
+                          <textarea
+                            autoFocus
+                            rows={4}
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            className="w-full bg-white dark:bg-[#1e1e1e] border border-amber-500 rounded-lg p-2 text-xs outline-none text-stone-900 dark:text-[#f5f5f5] leading-relaxed resize-y"
+                            placeholder="내용을 입력하세요..."
+                          />
                         ) : (
                           <input
                             autoFocus
@@ -323,39 +363,77 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               if (e.key === 'Enter') handleSaveField(col.id);
                               if (e.key === 'Escape') setEditingColId(null);
                             }}
-                            className="w-full bg-white dark:bg-[#1e1e1e] border border-amber-500 rounded-lg px-2.5 py-1 text-xs outline-none text-stone-900 dark:text-[#f5f5f5]"
+                            className="w-full bg-white dark:bg-[#1e1e1e] border border-amber-500 rounded-lg px-2.5 py-1.5 text-xs outline-none text-stone-900 dark:text-[#f5f5f5]"
                           />
                         )}
 
-                        <button
-                          onClick={() => handleSaveField(col.id)}
-                          className="px-2 py-1 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs"
-                        >
-                          저장
-                        </button>
-                        <button
-                          onClick={() => setEditingColId(null)}
-                          className="px-2 py-1 bg-stone-200 dark:bg-[#333333] text-stone-600 dark:text-[#cccccc] rounded-lg text-xs"
-                        >
-                          취소
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handleSaveField(col.id)}
+                            className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs transition-colors"
+                          >
+                            저장
+                          </button>
+                          <button
+                            onClick={() => setEditingColId(null)}
+                            className="px-3 py-1 bg-stone-200 dark:bg-[#333333] hover:bg-stone-300 dark:hover:bg-[#404040] text-stone-600 dark:text-[#cccccc] rounded-lg text-xs transition-colors"
+                          >
+                            취소
+                          </button>
+                          {col.type === 'richText' && (
+                            <button
+                              onClick={() => {
+                                onOpenRichEditor(row);
+                                onClose();
+                              }}
+                              className="ml-auto text-[11px] text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1 font-semibold"
+                            >
+                              <Sparkles className="w-3 h-3" />
+                              서식 에디터로 확장
+                            </button>
+                          )}
+                        </div>
                       </div>
                     ) : (
-                      <div className="text-stone-900 dark:text-[#e0e0e0] font-medium min-h-[22px] flex items-center">
+                      <div className="text-stone-900 dark:text-[#e0e0e0] font-medium min-h-[22px]">
                         {col.type === 'status' || col.type === 'select' ? (
                           (() => {
-                            const option = col.options?.find((o) => o.id === val);
-                            if (!option) return <span className="text-stone-400 italic">미정</span>;
+                            if (val === undefined || val === null || val === '') {
+                              return <span className="text-stone-400 dark:text-[#777777] italic">미정</span>;
+                            }
+                            const strVal = cleanTextValue(val);
+                            const option = col.options?.find(
+                              (o) => o.id === strVal || o.label === strVal || o.id === String(val) || o.label === String(val)
+                            );
+                            if (option) {
+                              return (
+                                <span
+                                  style={{
+                                    backgroundColor: `${option.color}20`,
+                                    color: option.color,
+                                    borderColor: `${option.color}40`,
+                                  }}
+                                  className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border"
+                                >
+                                  {option.label}
+                                </span>
+                              );
+                            }
+                            const defaultTagColors = ['#F59E0B', '#3B82F6', '#10B981', '#8B5CF6', '#EC4899', '#06B6D4'];
+                            let hash = 0;
+                            for (let i = 0; i < strVal.length; i++) hash = (hash << 5) - hash + strVal.charCodeAt(i);
+                            const color = defaultTagColors[Math.abs(hash) % defaultTagColors.length];
+
                             return (
                               <span
                                 style={{
-                                  backgroundColor: `${option.color}20`,
-                                  color: option.color,
-                                  borderColor: `${option.color}40`,
+                                  backgroundColor: `${color}20`,
+                                  color: color,
+                                  borderColor: `${color}40`,
                                 }}
                                 className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold border"
                               >
-                                {option.label}
+                                {strVal}
                               </span>
                             );
                           })()
@@ -370,20 +448,40 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                             {val ? '✓ 활성됨' : '미체크'}
                           </span>
                         ) : col.type === 'code' ? (
-                          <code className="px-2 py-1 rounded bg-stone-100 dark:bg-[#1e1e1e] border border-stone-200 dark:border-[#333333] text-amber-700 dark:text-amber-300 font-mono text-[11px] block w-full overflow-x-auto">
-                            {String(val ?? '')}
-                          </code>
-                        ) : (
-                          <p className="whitespace-pre-wrap break-words leading-relaxed">
-                            {val !== undefined && val !== null && String(val) !== '' ? (
-                              String(val)
-                            ) : (
-                              <span className="text-stone-400 dark:text-[#777777] italic">
-                                (비어 있음)
-                              </span>
-                            )}
-                          </p>
-                        )}
+                          <CodeBlockViewer
+                            code={String(val ?? '')}
+                            language="sql"
+                            maxHeight="max-h-72"
+                          />
+                        ) : (() => {
+                          const cleanedString = col.type !== 'richText' ? cleanTextValue(val) : String(val ?? '');
+                          if (!cleanedString) {
+                            return <span className="text-stone-400 dark:text-[#777777] italic">(비어 있음)</span>;
+                          }
+                          const detected = detectLanguage(cleanedString);
+                          if (detected.isCode) {
+                            return (
+                              <CodeBlockViewer
+                                code={cleanedString}
+                                language={detected.language}
+                                maxHeight="max-h-80"
+                              />
+                            );
+                          }
+                          if (col.type === 'richText' && cleanedString.includes('<')) {
+                            return (
+                              <div
+                                className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words"
+                                dangerouslySetInnerHTML={{ __html: cleanedString }}
+                              />
+                            );
+                          }
+                          return (
+                            <p className="whitespace-pre-wrap break-words leading-relaxed text-xs">
+                              {cleanedString}
+                            </p>
+                          );
+                        })()}
                       </div>
                     )}
                   </div>
@@ -392,45 +490,32 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
             </div>
           </div>
 
-          {/* 2. Rich Content Document Preview */}
-          <div className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333]">
-            <div className="flex items-center justify-between mb-3 border-b border-stone-200/60 dark:border-[#333333] pb-2">
-              <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
-                <FileText className="w-3.5 h-3.5 text-indigo-500" />
-                리치 에디터 문서 본문 (TipTap Content)
-              </h3>
-              <button
-                onClick={() => {
-                  onOpenRichEditor(row);
-                  onClose();
-                }}
-                className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
-              >
-                <Edit3 className="w-3 h-3" />
-                에디터 열기
-              </button>
-            </div>
-
-            {row.richContent && row.richContent.trim() !== '' ? (
-              <div
-                className="prose dark:prose-invert max-w-none text-xs text-stone-800 dark:text-[#cccccc] leading-relaxed tiptap p-3 bg-white dark:bg-[#1a1a1a] rounded-lg border border-stone-200/60 dark:border-[#2d2d2d]"
-                dangerouslySetInnerHTML={{ __html: row.richContent }}
-              />
-            ) : (
-              <div className="py-6 text-center text-stone-400 dark:text-[#777777]">
-                <p className="italic">작성된 리치 텍스트 본문이 없습니다.</p>
+          {/* 2. Optional Extra Rich Document Note (Only shown when content exists) */}
+          {row.richContent && row.richContent.trim() !== '' && (
+            <div className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333]">
+              <div className="flex items-center justify-between mb-3 border-b border-stone-200/60 dark:border-[#333333] pb-2">
+                <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
+                  <FileText className="w-3.5 h-3.5 text-indigo-500" />
+                  추가 상세 서식 문서 / 메모
+                </h3>
                 <button
                   onClick={() => {
                     onOpenRichEditor(row);
                     onClose();
                   }}
-                  className="mt-2 text-xs font-bold text-amber-600 dark:text-amber-400 hover:underline"
+                  className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
                 >
-                  본문 작성 및 스티커 추가하기 →
+                  <Edit3 className="w-3 h-3" />
+                  서식 에디터 열기
                 </button>
               </div>
-            )}
-          </div>
+
+              <div
+                className="prose dark:prose-invert max-w-none text-xs text-stone-800 dark:text-[#cccccc] leading-relaxed tiptap p-3 bg-white dark:bg-[#1a1a1a] rounded-lg border border-stone-200/60 dark:border-[#2d2d2d]"
+                dangerouslySetInnerHTML={{ __html: row.richContent }}
+              />
+            </div>
+          )}
 
           {/* 3. OneNote Sticky Notes Preview */}
           {row.stickers && row.stickers.length > 0 && (
