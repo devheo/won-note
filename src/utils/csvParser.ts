@@ -327,3 +327,61 @@ function inferColumnType(colName: string, values: string[], colIndex: number): C
 
   return 'text';
 }
+
+function escapeHtmlForTable(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+/**
+ * Converts clipboard text (Excel TSV, Markdown Pipe Table, or CSV)
+ * into an HTML <table> string for embedding inside rich-text editors.
+ */
+export function delimitedTextToHtmlTable(rawText: string): string | null {
+  const text = (rawText || '').trim();
+  if (!text) return null;
+
+  // Check if text looks like tabular data (contains tabs, pipes, or csv commas with multiple lines)
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  if (lines.length === 0) return null;
+
+  const hasTabs = text.includes('\t');
+  const hasPipes = text.includes('|');
+  const isMultiLineCsv = lines.length > 1 && text.includes(',');
+
+  if (!hasTabs && !hasPipes && !isMultiLineCsv) {
+    return null;
+  }
+
+  const parsed = parseDelimitedText(text, { hasHeader: true });
+  if (!parsed.columns || parsed.columns.length === 0) {
+    return null;
+  }
+
+  // Need at least 2 columns, or at least 1 column and 2+ rows
+  if (parsed.columns.length < 2 && parsed.rows.length < 2) {
+    return null;
+  }
+
+  let html = '<table class="wonbee-rich-table"><thead><tr>';
+  for (const col of parsed.columns) {
+    html += `<th>${escapeHtmlForTable(col.name)}</th>`;
+  }
+  html += '</tr></thead><tbody>';
+
+  for (const row of parsed.rows) {
+    html += '<tr>';
+    for (const col of parsed.columns) {
+      const val = row.data[col.id] !== undefined && row.data[col.id] !== null ? String(row.data[col.id]) : '';
+      html += `<td>${escapeHtmlForTable(val)}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table><p></p>';
+
+  return html;
+}

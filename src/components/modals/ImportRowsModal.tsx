@@ -23,6 +23,8 @@ interface ImportRowsModalProps {
   onClose: () => void;
   tableName: string;
   existingColumns: TableColumn[];
+  initialText?: string;
+  initialTab?: 'file' | 'text';
   onImportRows: (
     newRows: TableRow[],
     updatedColumns?: TableColumn[],
@@ -35,11 +37,15 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
   onClose,
   tableName,
   existingColumns,
+  initialText = '',
+  initialTab = 'file',
   onImportRows,
 }) => {
-  const [activeTab, setActiveTab] = useState<'file' | 'text'>('file');
-  const [rawText, setRawText] = useState<string>('');
-  const [loadedFileName, setLoadedFileName] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'file' | 'text'>(initialTab);
+  const [rawText, setRawText] = useState<string>(initialText);
+  const [loadedFileName, setLoadedFileName] = useState<string | null>(
+    initialText ? '클립보드 / 엑셀 붙여넣기' : null
+  );
   const [delimiter, setDelimiter] = useState<'auto' | 'tab' | 'comma' | 'pipe' | 'semicolon' | 'space'>('auto');
   const [hasHeader, setHasHeader] = useState(true);
   const [insertPosition, setInsertPosition] = useState<'bottom' | 'top' | 'replace'>('bottom');
@@ -56,12 +62,19 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
 
-  // Reset state when opened
+  // Reset or initialize state when opened
   useEffect(() => {
     if (isOpen) {
       setErrorMsg(null);
+      if (initialText) {
+        setRawText(initialText);
+        setActiveTab(initialTab || 'text');
+        setLoadedFileName('클립보드 / 엑셀 붙여넣기');
+      } else if (!rawText) {
+        setActiveTab(initialTab);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, initialText, initialTab]);
 
   // Parse rawText whenever it changes or delimiter/header settings change
   useEffect(() => {
@@ -278,7 +291,7 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
                 </span>
               </div>
               <h2 className="text-base font-bold text-stone-900 dark:text-[#f5f5f5]">
-                CSV / TXT 파일에서 행 가져오기
+                엑셀 / CSV / TXT 데이터 가져오기 &amp; 붙여넣기
               </h2>
             </div>
           </div>
@@ -304,17 +317,6 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
           <div className="flex items-center justify-between gap-2 border-b border-stone-200 dark:border-[#333333] pb-2">
             <div className="flex items-center gap-2">
               <button
-                onClick={() => setActiveTab('file')}
-                className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-colors ${
-                  activeTab === 'file'
-                    ? 'bg-emerald-500 text-stone-950'
-                    : 'text-stone-600 dark:text-[#aaaaaa] hover:bg-stone-100 dark:hover:bg-[#2e2e2e]'
-                }`}
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5" />
-                <span>CSV / TXT 파일 업로드</span>
-              </button>
-              <button
                 onClick={() => setActiveTab('text')}
                 className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-colors ${
                   activeTab === 'text'
@@ -323,7 +325,18 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
                 }`}
               >
                 <ClipboardPaste className="w-3.5 h-3.5" />
-                <span>텍스트 직접 붙여넣기</span>
+                <span>📋 엑셀 / 텍스트 직접 붙여넣기</span>
+              </button>
+              <button
+                onClick={() => setActiveTab('file')}
+                className={`px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 transition-colors ${
+                  activeTab === 'file'
+                    ? 'bg-emerald-500 text-stone-950'
+                    : 'text-stone-600 dark:text-[#aaaaaa] hover:bg-stone-100 dark:hover:bg-[#2e2e2e]'
+                }`}
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                <span>📁 파일 업로드 (.csv, .txt)</span>
               </button>
             </div>
 
@@ -340,12 +353,47 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
                 onClick={() => handleLoadSample('txt')}
                 className="px-2 py-1 bg-stone-100 dark:bg-[#2e2e2e] hover:bg-blue-50 dark:hover:bg-blue-950/40 text-stone-700 dark:text-[#cccccc] hover:text-blue-600 rounded border border-stone-200 dark:border-[#3a3a3a] transition-colors"
               >
-                TXT 샘플
+                엑셀/탭 샘플
               </button>
             </div>
           </div>
 
-          {/* 1. File Upload Drop Zone */}
+          {/* 1. Direct Text Paste Area */}
+          {activeTab === 'text' && (
+            <div className="space-y-2">
+              <div className="p-3 bg-emerald-50/70 dark:bg-emerald-950/30 rounded-xl border border-emerald-200/80 dark:border-emerald-900/50 text-[11px] text-emerald-900 dark:text-emerald-200 flex items-start gap-2">
+                <Sparkles className="w-4 h-4 flex-shrink-0 text-emerald-600 dark:text-emerald-400 mt-0.5" />
+                <div>
+                  <strong>엑셀 붙여넣기 팁:</strong> 엑셀이나 구글 스프레드시트에서 셀 영역을 선택하고 <strong>Ctrl+C</strong>로 복사한 뒤, 아래 창에서 <strong>Ctrl+V</strong>를 누르거나 <strong>[클립보드에서 붙여넣기]</strong>를 클릭하세요. 자동으로 행과 열이 분리되어 인식됩니다.
+                </div>
+              </div>
+              <div className="flex items-center justify-between">
+                <label className="font-semibold text-stone-700 dark:text-[#cccccc]">
+                  복사한 엑셀 / CSV / 탭(Tab) 구분 데이터
+                </label>
+                <button
+                  type="button"
+                  onClick={handlePasteClipboard}
+                  className="px-2.5 py-1 bg-white dark:bg-[#282828] hover:bg-emerald-50 dark:hover:bg-emerald-950/40 hover:text-emerald-600 text-stone-700 dark:text-[#cccccc] rounded-lg font-medium flex items-center gap-1.5 transition-colors border border-stone-200 dark:border-[#383838] shadow-2xs"
+                >
+                  <ClipboardPaste className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>클립보드에서 바로 붙여넣기</span>
+                </button>
+              </div>
+              <textarea
+                value={rawText}
+                onChange={(e) => {
+                  setRawText(e.target.value);
+                  setLoadedFileName('직접 입력한 텍스트');
+                }}
+                rows={6}
+                placeholder="엑셀(Excel), 구글 시트, 웹 표, 메모장에서 복사한 테이블 데이터를 여기에 붙여넣으세요 (Ctrl+V)..."
+                className="w-full p-3 font-mono text-[11px] bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl outline-none focus:border-emerald-500 custom-scrollbar text-stone-800 dark:text-[#e0e0e0]"
+              />
+            </div>
+          )}
+
+          {/* 2. File Upload Drop Zone */}
           {activeTab === 'file' && (
             <div
               onDragOver={handleDragOver}
@@ -383,35 +431,6 @@ export const ImportRowsModal: React.FC<ImportRowsModalProps> = ({
               <p className="text-[11px] text-stone-500 dark:text-[#888888] mt-1">
                 지원 형식: .csv, .txt, .tsv (엑셀, 구글 시트, 메모장 데이터)
               </p>
-            </div>
-          )}
-
-          {/* 2. Direct Text Paste Area */}
-          {activeTab === 'text' && (
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <label className="font-semibold text-stone-700 dark:text-[#cccccc]">
-                  복사한 CSV / 탭(Tab) 구분 텍스트 붙여넣기
-                </label>
-                <button
-                  type="button"
-                  onClick={handlePasteClipboard}
-                  className="px-2.5 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg font-medium flex items-center gap-1.5 transition-colors border border-stone-200 dark:border-[#383838]"
-                >
-                  <ClipboardPaste className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>클립보드에서 붙여넣기</span>
-                </button>
-              </div>
-              <textarea
-                value={rawText}
-                onChange={(e) => {
-                  setRawText(e.target.value);
-                  setLoadedFileName('직접 입력한 텍스트');
-                }}
-                rows={5}
-                placeholder="엑셀이나 메모장에서 복사한 표/텍스트를 여기에 붙여넣으세요 (Ctrl+V)..."
-                className="w-full p-3 font-mono text-[11px] bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl outline-none focus:border-emerald-500 custom-scrollbar text-stone-800 dark:text-[#e0e0e0]"
-              />
             </div>
           )}
 

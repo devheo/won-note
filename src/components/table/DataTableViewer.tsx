@@ -43,6 +43,7 @@ import {
   X,
   FileSpreadsheet,
   FileText,
+  ClipboardPaste,
   Download,
   Check,
   Upload,
@@ -100,8 +101,41 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [isAddRowModalOpen, setIsAddRowModalOpen] = useState(false);
   const [addRowPosition, setAddRowPosition] = useState<'bottom' | 'top'>('bottom');
 
-  // Import Rows Modal State (CSV / TXT / TSV Import into current table)
+  // Import Rows Modal State (CSV / TXT / TSV / Excel Import into current table)
   const [isImportRowsModalOpen, setIsImportRowsModalOpen] = useState(false);
+  const [importInitialText, setImportInitialText] = useState<string>('');
+  const [importInitialTab, setImportInitialTab] = useState<'file' | 'text'>('file');
+
+  // Global Ctrl+V / Cmd+V paste listener for Excel/TSV/CSV tabular data
+  useEffect(() => {
+    const handleGlobalPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target) return;
+
+      // Ignore when user is actively editing inside an input, textarea or contenteditable element
+      if (
+        target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable ||
+        target.closest('[contenteditable="true"]') ||
+        target.closest('input') ||
+        target.closest('textarea')
+      ) {
+        return;
+      }
+
+      const pastedText = e.clipboardData?.getData('text');
+      if (pastedText && pastedText.trim()) {
+        e.preventDefault();
+        setImportInitialText(pastedText);
+        setImportInitialTab('text');
+        setIsImportRowsModalOpen(true);
+      }
+    };
+
+    window.addEventListener('paste', handleGlobalPaste);
+    return () => window.removeEventListener('paste', handleGlobalPaste);
+  }, []);
 
   // Row Action Dropdown Menu
   const [isRowMenuOpen, setIsRowMenuOpen] = useState(false);
@@ -880,6 +914,31 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
+          {/* Direct Excel / TSV / CSV Paste Button */}
+          <button
+            onClick={async () => {
+              try {
+                const text = await navigator.clipboard.readText();
+                if (text && text.trim()) {
+                  setImportInitialText(text);
+                  setImportInitialTab('text');
+                } else {
+                  setImportInitialText('');
+                  setImportInitialTab('text');
+                }
+              } catch {
+                setImportInitialText('');
+                setImportInitialTab('text');
+              }
+              setIsImportRowsModalOpen(true);
+            }}
+            className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-emerald-200/80 dark:border-emerald-800/80 shadow-2xs"
+            title="엑셀(Excel), 구글 시트, 메모장에서 복사한 테이블 데이터를 붙여넣어 행으로 추가합니다 (단축키: Ctrl+V)"
+          >
+            <ClipboardPaste className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+            <span>엑셀/데이터 붙여넣기</span>
+          </button>
+
           {/* Row Actions Menu Button */}
           <div className="relative" ref={rowMenuRef}>
             <button
@@ -892,7 +951,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             </button>
 
             {isRowMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1.5 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
+              <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1.5 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
                 <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
                   새 행 추가 (팝업 대화상자)
                 </div>
@@ -912,13 +971,15 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                 </button>
                 <button
                   onClick={() => {
+                    setImportInitialText('');
+                    setImportInitialTab('file');
                     setIsImportRowsModalOpen(true);
                     setIsRowMenuOpen(false);
                   }}
                   className="w-full px-2 py-1.5 text-left hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2 font-medium"
                 >
                   <Upload className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>CSV / TXT 파일에서 행 가져오기</span>
+                  <span>엑셀/CSV/TXT 파일에서 가져오기</span>
                 </button>
 
                 {selectedRowIds.size > 0 && (
@@ -1562,13 +1623,43 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   colSpan={visibleColumns.length + 2}
                   className="py-12 text-center text-stone-400 dark:text-[#888888] text-xs bg-white dark:bg-[#181818]"
                 >
-                  <p>데이터 행이 없습니다.</p>
-                  <button
-                    onClick={() => handleOpenAddRowModal('bottom')}
-                    className="mt-2 px-3 py-1.5 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs hover:bg-amber-400"
-                  >
-                    첫 번째 행 추가하기 🐝
-                  </button>
+                  <p className="text-sm font-medium text-stone-600 dark:text-[#cccccc] mb-1">
+                    데이터 행이 없습니다.
+                  </p>
+                  <p className="text-[11px] text-stone-400 dark:text-[#777777] mb-3">
+                    새로운 행을 직접 추가하거나, 엑셀/스프레드시트에서 복사한 데이터를 붙여넣으세요.
+                  </p>
+                  <div className="flex items-center justify-center gap-2">
+                    <button
+                      onClick={() => handleOpenAddRowModal('bottom')}
+                      className="px-3.5 py-1.5 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs hover:bg-amber-400 transition-colors flex items-center gap-1.5"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>첫 번째 행 추가하기 🐝</span>
+                    </button>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const text = await navigator.clipboard.readText();
+                          if (text && text.trim()) {
+                            setImportInitialText(text);
+                            setImportInitialTab('text');
+                          } else {
+                            setImportInitialText('');
+                            setImportInitialTab('text');
+                          }
+                        } catch {
+                          setImportInitialText('');
+                          setImportInitialTab('text');
+                        }
+                        setIsImportRowsModalOpen(true);
+                      }}
+                      className="px-3.5 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-semibold rounded-lg text-xs hover:bg-emerald-100 dark:hover:bg-emerald-900/50 border border-emerald-300 dark:border-emerald-700 transition-colors flex items-center gap-1.5"
+                    >
+                      <ClipboardPaste className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                      <span>엑셀 / 데이터 붙여넣기 (Ctrl+V)</span>
+                    </button>
+                  </div>
                 </td>
               </tr>
             )}
@@ -1583,7 +1674,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           <span>•</span>
           <span><strong className="text-stone-800 dark:text-[#f0f0f0]">{visibleColumns.length}</strong>/{table.columns.length}개 컬럼 표시중</span>
           <span className="text-[11px] text-stone-400 dark:text-[#777777]">
-            (💡 행 좌측의 드래그 핸들이나 화살표로 우선순위 위치를 언제든 교체할 수 있습니다)
+            (💡 엑셀 셀 복사 후 화면에서 바로 Ctrl+V를 누르면 일괄 가져오기가 실행됩니다)
           </span>
         </div>
         <div>
@@ -1599,15 +1690,24 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         tableName={table.title}
         insertPosition={addRowPosition}
         onAddRow={handleCreateRowFromModal}
-        onOpenImportModal={() => setIsImportRowsModalOpen(true)}
+        onOpenImportModal={() => {
+          setImportInitialText('');
+          setImportInitialTab('file');
+          setIsImportRowsModalOpen(true);
+        }}
       />
 
-      {/* Import Rows Modal (CSV / TXT / TSV Import into current table) */}
+      {/* Import Rows Modal (CSV / TXT / TSV / Excel Import into current table) */}
       <ImportRowsModal
         isOpen={isImportRowsModalOpen}
-        onClose={() => setIsImportRowsModalOpen(false)}
+        onClose={() => {
+          setIsImportRowsModalOpen(false);
+          setImportInitialText('');
+        }}
         tableName={table.title}
         existingColumns={table.columns}
+        initialText={importInitialText}
+        initialTab={importInitialTab}
         onImportRows={handleImportRows}
       />
 

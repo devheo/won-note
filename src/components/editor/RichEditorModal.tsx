@@ -11,6 +11,7 @@ import { StickerExtension } from './StickerExtension';
 import { TableRow as TableRowType, TableColumn, AutoSaveStatus } from '../../types';
 import { useAutoSave } from '../../hooks/useAutoSave';
 import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer';
+import { delimitedTextToHtmlTable } from '../../utils/csvParser';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import {
   X,
@@ -47,6 +48,7 @@ import {
   FileText,
   Edit3,
   Database,
+  ClipboardPaste,
 } from 'lucide-react';
 
 interface RichEditorModalProps {
