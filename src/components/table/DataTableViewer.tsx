@@ -6,6 +6,7 @@ import { AddRowModal } from '../modals/AddRowModal';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
+import { ExcelColumnFilterDropdown } from './ExcelColumnFilterDropdown';
 import {
   Plus,
   ArrowUpDown,
@@ -54,8 +55,17 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
 
-  // Tag filter state: { [columnId]: selectedOptionLabelOrId }
-  const [selectedTagFilters, setSelectedTagFilters] = useState<Record<string, string>>({});
+  // Excel-style column filters state: { [columnId]: string[] } (list of allowed distinct values)
+  const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>({});
+  const [openFilterColId, setOpenFilterColId] = useState<string | null>(null);
+  const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
+
+  // Reset filters and selection when table changes
+  useEffect(() => {
+    setColumnFilters({});
+    setOpenFilterColId(null);
+    setSelectedRowIds(new Set());
+  }, [table.id]);
 
   // Image Lightbox state
   const [lightboxImg, setLightboxImg] = useState<string | null>(null);
@@ -538,12 +548,44 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     return table.columns.filter((c) => !hiddenColumnIds.has(c.id));
   }, [table.columns, hiddenColumnIds]);
 
-  // List of status or select columns that can be filtered
-  const filterableTagColumns = useMemo(() => {
-    return table.columns.filter((c) => c.type === 'status' || c.type === 'select');
-  }, [table.columns]);
+  // Excel-style filter handlers
+  const handleApplyColumnFilter = (colId: string, selectedValues: string[] | null) => {
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      if (!selectedValues || selectedValues.length === 0) {
+        delete next[colId];
+      } else {
+        next[colId] = selectedValues;
+      }
+      return next;
+    });
+  };
 
-  // Filtered & Sorted Rows
+  const handleApplySort = (colId: string, direction: 'asc' | 'desc' | null) => {
+    if (direction === null) {
+      if (sortColumnId === colId) {
+        setSortColumnId(null);
+      }
+    } else {
+      setSortColumnId(colId);
+      setSortDirection(direction);
+    }
+  };
+
+  const handleClearColumnFilter = (colId: string) => {
+    setColumnFilters((prev) => {
+      const next = { ...prev };
+      delete next[colId];
+      return next;
+    });
+  };
+
+  const handleClearAllFilters = () => {
+    setColumnFilters({});
+    setSearchQuery('');
+  };
+
+  // Filtered & Sorted Rows (Applied across all columns)
   const processedRows = useMemo(() => {
     let list = [...table.rows];
 
@@ -560,21 +602,32 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       });
     }
 
-    // 2. Tag Column Filters (Request 10)
-    for (const [colId, selectedOpt] of Object.entries(selectedTagFilters)) {
-      if (!selectedOpt) continue;
+    // 2. Excel-style Column Filters (Available for ALL columns across any table)
+    for (const [colId, allowedKeys] of Object.entries(columnFilters)) {
+      if (!allowedKeys || allowedKeys.length === 0) continue;
       const targetCol = table.columns.find((c) => c.id === colId);
       if (!targetCol) continue;
+      const allowedSet = new Set(allowedKeys);
 
       list = list.filter((r) => {
-        const val = r.data[colId];
-        if (val === undefined || val === null || val === '') return false;
-        const cleaned = cleanTextValue(val);
-        const opt = targetCol.options?.find(
-          (o) => o.id === cleaned || o.label === cleaned || o.id === String(val) || o.label === String(val)
-        );
-        const matchLabel = opt ? opt.label : cleaned;
-        return matchLabel === selectedOpt || cleaned === selectedOpt || String(val) === selectedOpt;
+        const rawVal = r.data[colId];
+        let rowKey = '';
+
+        if (rawVal === undefined || rawVal === null || rawVal === '') {
+          rowKey = '__EMPTY__';
+        } else if (targetCol.type === 'checkbox') {
+          rowKey = rawVal ? 'true' : 'false';
+        } else if (targetCol.type === 'status' || targetCol.type === 'select') {
+          const cleaned = cleanTextValue(rawVal);
+          const opt = targetCol.options?.find(
+            (o) => o.id === cleaned || o.label === cleaned || o.id === String(rawVal) || o.label === String(rawVal)
+          );
+          rowKey = opt ? opt.label : cleaned;
+        } else {
+          rowKey = cleanTextValue(rawVal);
+        }
+
+        return allowedSet.has(rowKey);
       });
     }
 
@@ -602,13 +655,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         const strB = getDisplayValue(rawB);
 
         const numA = Number(strA);
-        const numB不易 = Number(strB);
+        const numB = Number(strB);
 
         if (
           targetCol?.type === 'number' ||
-          (!isNaN(numA) && !isNaN(numB不易) && strA !== '' && strB !== '')
+          (!isNaN(numA) && !isNaN(numB) && strA !== '' && strB !== '')
         ) {
-          return sortDirection === 'asc' ? numA - numB不易 : numB不易 - numA;
+          return sortDirection === 'asc' ? numA - numB : numB - numA;
         }
 
         const comp = strA.localeCompare(strB, 'ko', { numeric: true, sensitivity: 'base' });
@@ -617,7 +670,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
 
     return list;
-  }, [table.rows, table.columns, searchQuery, selectedTagFilters, sortColumnId, sortDirection]);
+  }, [table.rows, table.columns, searchQuery, columnFilters, sortColumnId, sortDirection]);
 
   // Column Icon helper
   const getColTypeIcon = (type: ColumnType) => {
@@ -855,74 +908,45 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         </div>
       </div>
 
-      {/* Tag Filter Bar (Request 10: 분류/상태/선택 태그 열 필터 적용) */}
-      {filterableTagColumns.length > 0 && (
-        <div className="px-6 py-2 border-b border-stone-200/60 dark:border-[#2d2d2d] bg-amber-50/20 dark:bg-[#1a1a1a] flex items-center gap-3 overflow-x-auto custom-scrollbar flex-shrink-0">
-          <div className="flex items-center gap-1 text-[11px] font-bold text-stone-500 dark:text-stone-400 flex-shrink-0">
-            <Filter className="w-3 h-3 text-amber-500" />
-            <span>태그 필터:</span>
+      {/* Active Column Filters Bar (Excel-style Applied Filters Status) */}
+      {Object.keys(columnFilters).length > 0 && (
+        <div className="px-6 py-1.5 border-b border-stone-200/60 dark:border-[#2d2d2d] bg-amber-50/40 dark:bg-[#1f1d18] flex items-center gap-2 overflow-x-auto custom-scrollbar flex-shrink-0 text-xs">
+          <div className="flex items-center gap-1 text-[11px] font-bold text-amber-700 dark:text-amber-400 flex-shrink-0">
+            <Filter className="w-3 h-3 text-amber-500 fill-current" />
+            <span>적용된 열 필터 ({Object.keys(columnFilters).length}개):</span>
           </div>
 
-          {filterableTagColumns.map((col) => {
-            const activeFilter = selectedTagFilters[col.id];
-            const options = col.options || [];
-
+          {Object.entries(columnFilters).map(([colId, allowedKeys]) => {
+            const col = table.columns.find((c) => c.id === colId);
+            if (!col) return null;
             return (
-              <div key={col.id} className="flex items-center gap-1.5 flex-shrink-0">
-                <span className="text-[11px] font-semibold text-stone-600 dark:text-stone-300">
-                  {col.name}:
+              <div
+                key={colId}
+                className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white dark:bg-[#282828] border border-amber-400/50 dark:border-amber-700/50 text-stone-800 dark:text-[#dddddd] shadow-2xs flex-shrink-0 text-xs"
+              >
+                <span className="font-semibold text-amber-600 dark:text-amber-400">{col.name}:</span>
+                <span className="truncate max-w-[150px] font-medium text-stone-700 dark:text-[#cccccc]">
+                  {allowedKeys.length === 1
+                    ? allowedKeys[0] === '__EMPTY__' ? '(비어 있음)' : allowedKeys[0]
+                    : `${allowedKeys.length}개 선택됨`}
                 </span>
                 <button
-                  onClick={() => {
-                    setSelectedTagFilters((prev) => {
-                      const next = { ...prev };
-                      delete next[col.id];
-                      return next;
-                    });
-                  }}
-                  className={`px-2 py-0.5 text-[11px] rounded-full font-medium transition-all ${
-                    !activeFilter
-                      ? 'bg-amber-500 text-stone-950 font-bold shadow-xs'
-                      : 'bg-stone-200/70 dark:bg-[#282828] text-stone-600 dark:text-stone-400 hover:bg-stone-300'
-                  }`}
+                  onClick={() => handleClearColumnFilter(colId)}
+                  className="p-0.5 rounded-full hover:bg-rose-100 dark:hover:bg-rose-900/40 text-stone-400 hover:text-rose-500 transition-colors ml-0.5"
+                  title={`${col.name} 필터 해제`}
                 >
-                  전체
+                  <X className="w-2.5 h-2.5" />
                 </button>
-
-                {options.map((opt) => {
-                  const isSelected = activeFilter === opt.label || activeFilter === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      onClick={() => {
-                        setSelectedTagFilters((prev) => ({
-                          ...prev,
-                          [col.id]: isSelected ? '' : opt.label,
-                        }));
-                      }}
-                      style={{
-                        backgroundColor: isSelected ? opt.color : `${opt.color}15`,
-                        color: isSelected ? '#ffffff' : opt.color,
-                        borderColor: opt.color,
-                      }}
-                      className="px-2 py-0.5 text-[11px] rounded-full font-semibold border transition-all"
-                    >
-                      {opt.label}
-                    </button>
-                  );
-                })}
               </div>
             );
           })}
 
-          {Object.values(selectedTagFilters).some(Boolean) && (
-            <button
-              onClick={() => setSelectedTagFilters({})}
-              className="ml-auto text-[11px] text-rose-500 hover:underline flex items-center gap-0.5 flex-shrink-0 font-medium"
-            >
-              <X className="w-3 h-3" /> 필터 초기화
-            </button>
-          )}
+          <button
+            onClick={handleClearAllFilters}
+            className="ml-auto text-[11px] text-rose-500 hover:underline flex items-center gap-0.5 flex-shrink-0 font-semibold"
+          >
+            <X className="w-3 h-3" /> 전체 필터 초기화
+          </button>
         </div>
       )}
 
@@ -961,18 +985,21 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               {visibleColumns.map((col) => {
                 const currentWidth = columnWidths[col.id] || col.width || 160;
                 const isSorted = sortColumnId === col.id;
+                const hasFilter = !!columnFilters[col.id];
 
                 return (
                   <th
                     key={col.id}
                     style={{ width: `${currentWidth}px` }}
-                    className="relative px-3 py-2.5 font-semibold text-stone-800 dark:text-[#f0f0f0] border-r border-stone-200 dark:border-[#333333] select-none group/th hover:bg-stone-200/50 dark:hover:bg-[#2a2a2a] transition-colors"
+                    className="relative px-3 py-2 font-semibold text-stone-800 dark:text-[#f0f0f0] border-r border-stone-200 dark:border-[#333333] select-none group/th hover:bg-stone-200/50 dark:hover:bg-[#2a2a2a] transition-colors"
                   >
-                    <div
-                      className="flex items-center justify-between gap-1.5 cursor-pointer"
-                      onClick={() => handleHeaderSort(col.id)}
-                    >
-                      <div className="flex items-center gap-1.5 min-w-0">
+                    <div className="flex items-center justify-between gap-1.5">
+                      {/* Column Name & Quick Sort Trigger */}
+                      <div
+                        className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer"
+                        onClick={() => handleHeaderSort(col.id)}
+                        title="클릭하여 정렬"
+                      >
                         {getColTypeIcon(col.type)}
                         <span className="truncate font-semibold text-xs text-stone-800 dark:text-[#f5f5f5]" title={col.name}>
                           {col.name}
@@ -982,19 +1009,36 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                             PK
                           </span>
                         )}
-                      </div>
-
-                      <div className="flex items-center gap-1">
-                        {isSorted ? (
+                        {isSorted && (
                           sortDirection === 'asc' ? (
-                            <ArrowUp className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                            <ArrowUp className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
                           ) : (
-                            <ArrowDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                            <ArrowDown className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
                           )
-                        ) : (
-                          <ArrowUpDown className="w-3 h-3 text-stone-400 dark:text-[#666666] opacity-0 group-hover/th:opacity-60" />
                         )}
                       </div>
+
+                      {/* Excel-style Filter Button Trigger */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const rect = e.currentTarget.getBoundingClientRect();
+                          if (openFilterColId === col.id) {
+                            setOpenFilterColId(null);
+                          } else {
+                            setOpenFilterColId(col.id);
+                            setFilterAnchorRect(rect);
+                          }
+                        }}
+                        className={`p-1 rounded-md transition-all flex-shrink-0 ${
+                          hasFilter
+                            ? 'bg-amber-500 text-stone-950 shadow-xs font-bold'
+                            : 'text-stone-400 dark:text-[#777777] hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-[#333333] opacity-0 group-hover/th:opacity-100'
+                        }`}
+                        title={hasFilter ? '이 열에 필터 적용됨 (클릭하여 수정)' : '엑셀 스타일 열 필터 및 정렬'}
+                      >
+                        <Filter className={`w-3 h-3 ${hasFilter ? 'fill-current' : ''}`} />
+                      </button>
                     </div>
 
                     {/* Column Resizing Drag Handle */}
@@ -1369,6 +1413,28 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         onUpdateColumn={handleUpdateColumnFromModal}
         onDeleteColumn={handleDeleteColumnFromModal}
       />
+
+      {/* Excel Column Filter & Sort Dropdown Popover */}
+      {openFilterColId && (
+        (() => {
+          const targetCol = table.columns.find((c) => c.id === openFilterColId);
+          if (!targetCol) return null;
+          return (
+            <ExcelColumnFilterDropdown
+              isOpen={true}
+              onClose={() => setOpenFilterColId(null)}
+              column={targetCol}
+              allRows={table.rows}
+              activeFilterValues={columnFilters[openFilterColId]}
+              isSorted={sortColumnId === openFilterColId}
+              sortDirection={sortColumnId === openFilterColId ? sortDirection : 'asc'}
+              onApplyFilter={handleApplyColumnFilter}
+              onApplySort={handleApplySort}
+              anchorRect={filterAnchorRect}
+            />
+          );
+        })()
+      )}
 
       {/* Image Lightbox Modal */}
       <ImageLightboxModal

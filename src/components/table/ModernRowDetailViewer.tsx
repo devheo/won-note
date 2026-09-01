@@ -527,23 +527,18 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               return <span className="text-stone-400 dark:text-[#777777] italic">(비어 있음)</span>;
                             }
 
+                            // Only treat as rich HTML if explicitly richText or contains complex rich elements like images/tables/stickers
                             const isRichHtml =
-                              col.type === 'richText' ||
-                              strVal.includes('<img') ||
-                              strVal.includes('<table') ||
-                              strVal.includes('<sticker-node') ||
-                              strVal.includes('<h1>') ||
-                              strVal.includes('<h2>') ||
-                              strVal.includes('<h3>') ||
-                              strVal.includes('<strong>') ||
-                              strVal.includes('<em>') ||
-                              strVal.includes('<blockquote>') ||
-                              (strVal.startsWith('<p>') && strVal.includes('</p>'));
+                              (col.type === 'richText' ||
+                               strVal.includes('<img') ||
+                               strVal.includes('<table') ||
+                               strVal.includes('<sticker-node')) &&
+                              (strVal.includes('<') && strVal.includes('>'));
 
                             if (isRichHtml) {
                               return (
                                 <div
-                                  className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer"
+                                  className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed"
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
                                     if (target.tagName === 'IMG') {
@@ -558,7 +553,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
 
                             const cleanedString = cleanTextValue(strVal);
                             const detected = detectLanguage(cleanedString);
-                            if (detected.isCode) {
+                            if (detected.isCode && (cleanedString.includes('\n') || cleanedString.length > 50)) {
                               return (
                                 <CodeBlockViewer
                                   code={cleanedString}
@@ -568,9 +563,9 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               );
                             }
                             return (
-                              <p className="whitespace-pre-wrap break-words leading-relaxed text-xs">
+                              <div className="whitespace-pre-wrap break-words leading-relaxed text-xs text-stone-800 dark:text-[#f0f0f0] font-sans">
                                 {cleanedString}
-                              </p>
+                              </div>
                             );
                           })()}
                         </div>
