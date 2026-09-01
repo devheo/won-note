@@ -1,6 +1,6 @@
 {
   "name": "WonBee",
-  "description": "Minimalist data table and rich-text note workspace with infinite tree navigation, TipTap sticker extensions, auto-save, and portable data merge.",
+  "description": "WonBee Workspace",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
