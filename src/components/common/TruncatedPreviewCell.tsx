@@ -80,15 +80,17 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       onMouseEnter={onMouseEnterWithCoords}
       onMouseLeave={handleMouseLeave}
     >
-      {/* Visible Cell Content (Truncated) */}
+      {/* Visible Cell Content (Truncated to maximum 3 lines with ellipsis) */}
       <div
         ref={textRef}
-        className="w-full truncate text-xs font-normal text-stone-800 dark:text-stone-200 flex items-center gap-1.5 whitespace-pre-wrap"
+        className="w-full text-xs font-normal text-stone-800 dark:text-stone-200 flex items-start gap-1.5 overflow-hidden"
       >
         {renderCustomContent ? (
-          renderCustomContent(value)
+          <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug">
+            {renderCustomContent(value)}
+          </div>
         ) : hasImage ? (
-          <div className="flex items-center gap-1.5 truncate">
+          <div className="flex items-start gap-1.5 min-w-0">
             {firstImageSrc ? (
               <img
                 src={firstImageSrc}
@@ -99,20 +101,20 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
                     onOpenImage(firstImageSrc);
                   }
                 }}
-                className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0 cursor-zoom-in hover:scale-110 transition-transform"
+                className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0 cursor-zoom-in hover:scale-110 transition-transform mt-0.5"
                 title="클릭하여 원본 이미지 뷰어 열기"
               />
             ) : (
-              <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
+              <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
             )}
-            <span className="truncate text-xs text-stone-700 dark:text-stone-300">
+            <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-stone-700 dark:text-stone-300">
               {displayPlainText || '[이미지 첨부]'}
             </span>
           </div>
         ) : (
-          <span className="truncate">
+          <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug w-full">
             {displayPlainText || <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>}
-          </span>
+          </div>
         )}
       </div>
 

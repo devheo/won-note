@@ -12,6 +12,8 @@ import {
   CheckSquare,
   Code,
   FileText,
+  FileSpreadsheet,
+  Upload,
   HelpCircle,
 } from 'lucide-react';
 
@@ -22,6 +24,7 @@ interface AddRowModalProps {
   tableName: string;
   insertPosition?: 'bottom' | 'top';
   onAddRow: (rowData: Record<string, any>, richContent?: string, position?: 'bottom' | 'top') => void;
+  onOpenImportModal?: () => void;
 }
 
 export const AddRowModal: React.FC<AddRowModalProps> = ({
@@ -31,6 +34,7 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
   tableName,
   insertPosition = 'bottom',
   onAddRow,
+  onOpenImportModal,
 }) => {
   const [formData, setFormData] = useState<Record<string, any>>({});
   const [richContent, setRichContent] = useState<string>('');
@@ -158,6 +162,29 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
 
         {/* Form Body */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-4 custom-scrollbar">
+          {/* CSV / TXT Import Banner */}
+          {onOpenImportModal && (
+            <div className="flex items-center justify-between p-3 rounded-xl bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-800/60">
+              <div className="flex items-center gap-2">
+                <FileSpreadsheet className="w-4 h-4 text-emerald-600 dark:text-emerald-400 flex-shrink-0" />
+                <span className="text-xs text-emerald-800 dark:text-emerald-300 font-medium">
+                  엑셀이나 텍스트 파일(CSV/TXT)로 여러 행을 한 번에 가져오시겠습니까?
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenImportModal();
+                }}
+                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-500 text-white text-[11px] font-bold rounded-lg transition-colors flex items-center gap-1 flex-shrink-0"
+              >
+                <Upload className="w-3 h-3" />
+                <span>CSV/TXT 가져오기</span>
+              </button>
+            </div>
+          )}
+
           {/* Insert position selector */}
           <div className="flex items-center justify-between p-3 rounded-xl bg-stone-50 dark:bg-[#252525] border border-stone-200/70 dark:border-[#333333]">
             <span className="text-xs font-semibold text-stone-700 dark:text-[#cccccc]">

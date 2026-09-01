@@ -68,7 +68,17 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 }) => {
   const [currentRowData, setCurrentRowData] = useState<Record<string, any>>({});
   const [richContent, setRichContent] = useState<string>('');
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(() => {
+    return localStorage.getItem('wonbee_rich_editor_fullscreen') === 'true';
+  });
+
+  const toggleFullscreen = () => {
+    setIsFullscreen((prev) => {
+      const next = !prev;
+      localStorage.setItem('wonbee_rich_editor_fullscreen', String(next));
+      return next;
+    });
+  };
   const [isTableMenuOpen, setIsTableMenuOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const tableMenuRef = useRef<HTMLDivElement | null>(null);
@@ -404,7 +414,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
             {/* Fullscreen Toggle */}
             <button
-              onClick={() => setIsFullscreen(!isFullscreen)}
+              onClick={toggleFullscreen}
               className="p-1.5 rounded-lg text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
               title={isFullscreen ? '창 크기 복원' : '전체 화면'}
             >

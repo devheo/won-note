@@ -3,10 +3,17 @@ import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '..
 import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
 import { ColumnManagerModal } from '../modals/ColumnManagerModal';
 import { AddRowModal } from '../modals/AddRowModal';
+import { ImportRowsModal } from '../modals/ImportRowsModal';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
 import { ExcelColumnFilterDropdown } from './ExcelColumnFilterDropdown';
+import {
+  downloadRowsAsCsv,
+  downloadRowsAsTxt,
+  copyRowsAsCsv,
+  copyRowsAsTxt,
+} from '../../utils/exportUtils';
 import {
   Plus,
   ArrowUpDown,
@@ -34,6 +41,11 @@ import {
   GripVertical,
   Filter,
   X,
+  FileSpreadsheet,
+  FileText,
+  Download,
+  Check,
+  Upload,
 } from 'lucide-react';
 
 interface DataTableViewerProps {
@@ -87,6 +99,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   // Add Row Modal State (Opens popup instead of just inserting empty row)
   const [isAddRowModalOpen, setIsAddRowModalOpen] = useState(false);
   const [addRowPosition, setAddRowPosition] = useState<'bottom' | 'top'>('bottom');
+
+  // Import Rows Modal State (CSV / TXT / TSV Import into current table)
+  const [isImportRowsModalOpen, setIsImportRowsModalOpen] = useState(false);
 
   // Row Action Dropdown Menu
   const [isRowMenuOpen, setIsRowMenuOpen] = useState(false);
@@ -268,6 +283,29 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     onUpdateTable({
       ...table,
       rows: newRows,
+      updatedAt: Date.now(),
+    });
+  };
+
+  // Import Rows from CSV / TXT / TSV
+  const handleImportRows = (
+    newRows: TableRow[],
+    updatedColumns?: TableColumn[],
+    position: 'bottom' | 'top' | 'replace' = 'bottom'
+  ) => {
+    let nextRows: TableRow[] = [];
+    if (position === 'replace') {
+      nextRows = newRows;
+    } else if (position === 'top') {
+      nextRows = [...newRows, ...table.rows];
+    } else {
+      nextRows = [...table.rows, ...newRows];
+    }
+
+    onUpdateTable({
+      ...table,
+      columns: updatedColumns || table.columns,
+      rows: nextRows,
       updatedAt: Date.now(),
     });
   };
@@ -476,6 +514,38 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       }
       return next;
     });
+  };
+
+  // Export handlers
+  const [copiedBatchFormat, setCopiedBatchFormat] = useState<string | null>(null);
+
+  const getTargetRowsForExport = () => {
+    if (selectedRowIds.size > 0) {
+      return table.rows.filter((r) => selectedRowIds.has(r.id));
+    }
+    return processedRows.length > 0 ? processedRows : table.rows;
+  };
+
+  const handleExportCsv = (rowsToExport = getTargetRowsForExport()) => {
+    downloadRowsAsCsv(table.title || 'table_data', table.columns, rowsToExport);
+    setIsRowMenuOpen(false);
+  };
+
+  const handleExportTxt = (rowsToExport = getTargetRowsForExport()) => {
+    downloadRowsAsTxt(table.title || 'table_data', table.columns, rowsToExport);
+    setIsRowMenuOpen(false);
+  };
+
+  const handleCopyCsv = async (rowsToExport = getTargetRowsForExport()) => {
+    await copyRowsAsCsv(table.columns, rowsToExport);
+    setCopiedBatchFormat('CSV');
+    setTimeout(() => setCopiedBatchFormat(null), 1800);
+  };
+
+  const handleCopyTxt = async (rowsToExport = getTargetRowsForExport()) => {
+    await copyRowsAsTxt(table.title || 'table_data', table.columns, rowsToExport);
+    setCopiedBatchFormat('TXT');
+    setTimeout(() => setCopiedBatchFormat(null), 1800);
   };
 
   // Column Reorder
@@ -840,6 +910,16 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   <Plus className="w-3.5 h-3.5 text-amber-500" />
                   <span>맨 위에 새 행 추가</span>
                 </button>
+                <button
+                  onClick={() => {
+                    setIsImportRowsModalOpen(true);
+                    setIsRowMenuOpen(false);
+                  }}
+                  className="w-full px-2 py-1.5 text-left hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2 font-medium"
+                >
+                  <Upload className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>CSV / TXT 파일에서 행 가져오기</span>
+                </button>
 
                 {selectedRowIds.size > 0 && (
                   <>
@@ -877,6 +957,47 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                     </button>
 
                     <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
+                    <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
+                      선택된 {selectedRowIds.size}개 행 내보내기 (CSV / TXT)
+                    </div>
+                    <button
+                      onClick={() => handleExportCsv()}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>선택 행 CSV 파일 다운로드</span>
+                    </button>
+                    <button
+                      onClick={() => handleExportTxt()}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-500" />
+                      <span>선택 행 TXT 파일 다운로드</span>
+                    </button>
+                    <button
+                      onClick={() => handleCopyCsv()}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      {copiedBatchFormat === 'CSV' ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 text-stone-500" />
+                      )}
+                      <span>{copiedBatchFormat === 'CSV' ? 'CSV 복사 완료!' : '선택 행 CSV로 클립보드 복사'}</span>
+                    </button>
+                    <button
+                      onClick={() => handleCopyTxt()}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      {copiedBatchFormat === 'TXT' ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 text-stone-500" />
+                      )}
+                      <span>{copiedBatchFormat === 'TXT' ? 'TXT 복사 완료!' : '선택 행 TXT로 클립보드 복사'}</span>
+                    </button>
+
+                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
                     <button
                       onClick={handleDuplicateSelectedRows}
                       className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
@@ -893,9 +1014,64 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                     </button>
                   </>
                 )}
+
+                {selectedRowIds.size === 0 && (
+                  <>
+                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
+                    <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
+                      전체 행 내보내기 ({table.rows.length}개)
+                    </div>
+                    <button
+                      onClick={() => handleExportCsv(processedRows)}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
+                      <span>전체 행 CSV 파일 다운로드</span>
+                    </button>
+                    <button
+                      onClick={() => handleExportTxt(processedRows)}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      <FileText className="w-3.5 h-3.5 text-blue-500" />
+                      <span>전체 행 TXT 파일 다운로드</span>
+                    </button>
+                    <button
+                      onClick={() => handleCopyCsv(processedRows)}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      {copiedBatchFormat === 'CSV' ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 text-stone-500" />
+                      )}
+                      <span>{copiedBatchFormat === 'CSV' ? 'CSV 복사 완료!' : '전체 행 CSV로 클립보드 복사'}</span>
+                    </button>
+                    <button
+                      onClick={() => handleCopyTxt(processedRows)}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
+                    >
+                      {copiedBatchFormat === 'TXT' ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5 text-stone-500" />
+                      )}
+                      <span>{copiedBatchFormat === 'TXT' ? 'TXT 복사 완료!' : '전체 행 TXT로 클립보드 복사'}</span>
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
+
+          {/* Quick Import Rows Button */}
+          <button
+            onClick={() => setIsImportRowsModalOpen(true)}
+            className="px-3 py-1.5 bg-stone-100 hover:bg-emerald-50 dark:bg-[#282828] dark:hover:bg-emerald-950/40 text-stone-700 hover:text-emerald-700 dark:text-[#e0e0e0] dark:hover:text-emerald-400 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838]"
+            title="CSV 또는 TXT 파일을 불러와 행으로 일괄 추가"
+          >
+            <Upload className="w-3.5 h-3.5 text-emerald-500" />
+            <span>CSV/TXT 가져오기</span>
+          </button>
 
           {/* Quick Add Row Button (Opens Add Row Modal) */}
           <button
@@ -1338,6 +1514,30 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         <Maximize2 className="w-3.5 h-3.5" />
                       </button>
 
+                      {/* Export Single Row CSV */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleExportCsv([row]);
+                        }}
+                        title="이 행 CSV 파일 다운로드 (.csv)"
+                        className="p-1 rounded hover:bg-emerald-100 dark:hover:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 transition-colors"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Export Single Row TXT */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleExportTxt([row]);
+                        }}
+                        title="이 행 TXT 파일 다운로드 (.txt)"
+                        className="p-1 rounded hover:bg-blue-100 dark:hover:bg-blue-950/60 text-blue-600 dark:text-blue-400 transition-colors"
+                      >
+                        <FileText className="w-3.5 h-3.5" />
+                      </button>
+
                       {/* Delete Single Row */}
                       <button
                         onClick={(e) => {
@@ -1399,6 +1599,16 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         tableName={table.title}
         insertPosition={addRowPosition}
         onAddRow={handleCreateRowFromModal}
+        onOpenImportModal={() => setIsImportRowsModalOpen(true)}
+      />
+
+      {/* Import Rows Modal (CSV / TXT / TSV Import into current table) */}
+      <ImportRowsModal
+        isOpen={isImportRowsModalOpen}
+        onClose={() => setIsImportRowsModalOpen(false)}
+        tableName={table.title}
+        existingColumns={table.columns}
+        onImportRows={handleImportRows}
       />
 
       {/* Column Manager Modal */}
