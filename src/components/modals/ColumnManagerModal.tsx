@@ -19,6 +19,7 @@ import {
   Check,
   Edit2,
   AlertTriangle,
+  Save,
 } from 'lucide-react';
 
 interface ColumnManagerModalProps {
@@ -49,6 +50,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
   const [editingColId, setEditingColId] = useState<string | null>(null);
   const [editColName, setEditColName] = useState('');
   const [editColType, setEditColType] = useState<ColumnType>('text');
+  const [saveToast, setSaveToast] = useState(false);
 
   // Dedicated Column Delete Confirmation Modal State
   const [columnToDelete, setColumnToDelete] = useState<TableColumn | null>(null);
@@ -64,7 +66,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
       id: newColId,
       name: newColName.trim(),
       type: newColType,
-      width: 160,
+      width: newColType === 'richText' ? 320 : 160,
       options:
         newColType === 'status' || newColType === 'select'
           ? [
@@ -77,6 +79,23 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
 
     onAddColumn(newCol);
     setNewColName('');
+    triggerToast();
+  };
+
+  const triggerToast = () => {
+    setSaveToast(true);
+    setTimeout(() => setSaveToast(false), 2000);
+  };
+
+  const handleCommitEdit = (colId: string) => {
+    if (editColName.trim()) {
+      onUpdateColumn(colId, {
+        name: editColName.trim(),
+        type: editColType,
+      });
+      triggerToast();
+    }
+    setEditingColId(null);
   };
 
   const handleMove = (index: number, direction: 'up' | 'down') => {
@@ -87,12 +106,14 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
     const [moved] = next.splice(index, 1);
     next.splice(targetIndex, 0, moved);
     onReorderColumns(next);
+    triggerToast();
   };
 
   const confirmDeleteColumn = () => {
     if (columnToDelete) {
       onDeleteColumn(columnToDelete.id);
       setColumnToDelete(null);
+      triggerToast();
     }
   };
 
@@ -122,7 +143,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-[#1e1e1e] rounded-2xl shadow-2xl border border-stone-200 dark:border-[#383838] w-full max-w-lg overflow-hidden flex flex-col max-h-[85vh] mat-shadow-3 relative"
+        className="bg-white dark:bg-[#1e1e1e] rounded-2xl shadow-2xl border border-stone-200 dark:border-[#383838] w-full max-w-xl overflow-hidden flex flex-col max-h-[85vh] mat-shadow-3 relative"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
@@ -132,6 +153,11 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
             <h2 className="text-sm font-bold text-stone-900 dark:text-[#f5f5f5]">
               열(Column) 구조 및 표시 관리
             </h2>
+            {saveToast && (
+              <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 font-semibold animate-in fade-in flex items-center gap-1">
+                <Check className="w-3 h-3" /> 저장됨
+              </span>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -148,7 +174,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
         >
           <input
             type="text"
-            placeholder="새 열 이름 입력 (예: 담당자, 마감일)"
+            placeholder="새 열 이름 입력 (예: 담당자, 분류, 마감일)"
             value={newColName}
             onChange={(e) => setNewColName(e.target.value)}
             className="flex-1 px-3 py-1.5 bg-white dark:bg-[#181818] border border-stone-200 dark:border-[#383838] rounded-lg text-xs text-stone-800 dark:text-[#f0f0f0] outline-none focus:border-amber-500"
@@ -161,7 +187,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
             <option value="text">텍스트 (Text)</option>
             <option value="number">숫자 (Number)</option>
             <option value="status">상태 (Status Tag)</option>
-            <option value="select">선택 (Select)</option>
+            <option value="select">선택 (Select Tag)</option>
             <option value="date">날짜 (Date)</option>
             <option value="checkbox">체크박스 (Checkbox)</option>
             <option value="code">코드 블록 (Code)</option>
@@ -170,7 +196,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
           <button
             type="submit"
             disabled={!newColName.trim()}
-            className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-stone-950 rounded-lg text-xs font-bold flex items-center gap-1 transition-all"
+            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-stone-950 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-98"
           >
             <Plus className="w-3.5 h-3.5" />
             열 추가
@@ -178,10 +204,10 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
         </form>
 
         {/* Existing Columns List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar">
+        <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
           <div className="text-[11px] font-semibold text-stone-400 dark:text-[#888888] uppercase tracking-wider mb-2 flex items-center justify-between">
             <span>현재 열 목록 ({columns.length}개)</span>
-            <span>순서 및 표시 여부</span>
+            <span>순서 및 표시 제어</span>
           </div>
 
           {columns.map((col, idx) => {
@@ -191,130 +217,136 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
             return (
               <div
                 key={col.id}
-                className={`flex items-center justify-between p-2.5 rounded-xl border transition-all ${
+                className={`p-3 rounded-xl border transition-all ${
                   isHidden
                     ? 'bg-stone-50 dark:bg-[#181818] border-stone-200/60 dark:border-[#2e2e2e] opacity-60'
                     : 'bg-white dark:bg-[#252525] border-stone-200 dark:border-[#383838] shadow-2xs'
                 }`}
               >
-                {/* Left: Type Icon & Name */}
-                <div className="flex items-center gap-2.5 flex-1 min-w-0 mr-3">
-                  <div className="p-1.5 rounded-lg bg-stone-100 dark:bg-[#1e1e1e] flex-shrink-0">
-                    {getColIcon(col.type)}
+                <div className="flex items-center justify-between">
+                  {/* Left: Type Icon & Name */}
+                  <div className="flex items-center gap-2.5 flex-1 min-w-0 mr-3">
+                    <div className="p-1.5 rounded-lg bg-stone-100 dark:bg-[#1e1e1e] flex-shrink-0">
+                      {getColIcon(col.type)}
+                    </div>
+
+                    {isEditing ? (
+                      <div className="flex items-center gap-2 flex-1 flex-wrap">
+                        <input
+                          type="text"
+                          value={editColName}
+                          autoFocus
+                          onChange={(e) => setEditColName(e.target.value)}
+                          className="px-2.5 py-1 bg-white dark:bg-[#181818] border-2 border-amber-500 rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] flex-1 outline-none"
+                        />
+                        <select
+                          value={editColType}
+                          onChange={(e) => setEditColType(e.target.value as ColumnType)}
+                          className="px-2 py-1 bg-white dark:bg-[#181818] border border-stone-300 dark:border-[#444] rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] outline-none"
+                        >
+                          <option value="text">텍스트</option>
+                          <option value="number">숫자</option>
+                          <option value="status">상태 태그</option>
+                          <option value="select">선택 태그</option>
+                          <option value="date">날짜</option>
+                          <option value="checkbox">체크박스</option>
+                          <option value="code">코드</option>
+                          <option value="richText">서식 문서</option>
+                        </select>
+                        <button
+                          onClick={() => handleCommitEdit(col.id)}
+                          className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-lg text-xs font-bold flex items-center gap-1 shadow-sm transition-all"
+                          title="변경 내용 저장"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          저장
+                        </button>
+                        <button
+                          onClick={() => setEditingColId(null)}
+                          className="px-2 py-1 bg-stone-100 dark:bg-[#333333] hover:bg-stone-200 text-stone-600 dark:text-stone-300 rounded-lg text-xs"
+                        >
+                          취소
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs font-semibold text-stone-900 dark:text-[#f0f0f0] truncate">
+                            {col.name}
+                          </span>
+                          {col.isPrimaryKey && (
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 font-bold">
+                              기본 키 (PK)
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-stone-400 dark:text-[#888888] capitalize">
+                          {col.type} • {col.width || 160}px
+                        </span>
+                      </div>
+                    )}
                   </div>
 
-                  {isEditing ? (
-                    <div className="flex items-center gap-2 flex-1">
-                      <input
-                        type="text"
-                        value={editColName}
-                        onChange={(e) => setEditColName(e.target.value)}
-                        className="px-2 py-1 bg-white dark:bg-[#181818] border border-amber-500 rounded text-xs text-stone-900 dark:text-[#f5f5f5] flex-1 outline-none"
-                      />
-                      <select
-                        value={editColType}
-                        onChange={(e) => setEditColType(e.target.value as ColumnType)}
-                        className="px-2 py-1 bg-white dark:bg-[#181818] border border-stone-300 dark:border-[#444] rounded text-xs text-stone-900 dark:text-[#f5f5f5] outline-none"
+                  {/* Right: Actions (Reorder, Visibility, Edit, Delete) */}
+                  {!isEditing && (
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {/* Up / Down */}
+                      <button
+                        disabled={idx === 0}
+                        onClick={() => handleMove(idx, 'up')}
+                        className="p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] disabled:opacity-20 text-stone-500 dark:text-[#aaaaaa] transition-colors"
+                        title="위로 이동"
                       >
-                        <option value="text">텍스트</option>
-                        <option value="number">숫자</option>
-                        <option value="status">상태 태그</option>
-                        <option value="select">선택</option>
-                        <option value="date">날짜</option>
-                        <option value="checkbox">체크박스</option>
-                        <option value="code">코드</option>
-                        <option value="richText">서식 문서</option>
-                      </select>
+                        <ArrowUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        disabled={idx === columns.length - 1}
+                        onClick={() => handleMove(idx, 'down')}
+                        className="p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] disabled:opacity-20 text-stone-500 dark:text-[#aaaaaa] transition-colors"
+                        title="아래로 이동"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5" />
+                      </button>
+
+                      {/* Toggle Visibility */}
                       <button
                         onClick={() => {
-                          if (editColName.trim()) {
-                            onUpdateColumn(col.id, {
-                              name: editColName.trim(),
-                              type: editColType,
-                            });
-                          }
-                          setEditingColId(null);
+                          onToggleColumnVisibility(col.id);
+                          triggerToast();
                         }}
-                        className="p-1 bg-emerald-500 hover:bg-emerald-400 text-white rounded"
-                        title="적용"
+                        className={`p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] transition-colors ${
+                          isHidden ? 'text-stone-400' : 'text-amber-600 dark:text-amber-400'
+                        }`}
+                        title={isHidden ? '열 표시하기' : '열 숨기기'}
                       >
-                        <Check className="w-3.5 h-3.5" />
+                        {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                       </button>
+
+                      {/* Edit Button */}
+                      <button
+                        onClick={() => {
+                          setEditingColId(col.id);
+                          setEditColName(col.name);
+                          setEditColType(col.type);
+                        }}
+                        className="px-2 py-1 rounded bg-stone-100 dark:bg-[#333333] hover:bg-amber-100 dark:hover:bg-amber-950/40 text-stone-600 dark:text-[#cccccc] hover:text-amber-600 transition-colors flex items-center gap-1 text-[11px]"
+                        title="이름/타입 수정"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        수정
+                      </button>
+
+                      {/* Delete Column (Protected for primary key) */}
+                      {!col.isPrimaryKey && (
+                        <button
+                          onClick={() => setColumnToDelete(col)}
+                          className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/40 text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
+                          title="열 삭제"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
-                  ) : (
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-xs font-semibold text-stone-900 dark:text-[#f0f0f0] truncate">
-                          {col.name}
-                        </span>
-                        {col.isPrimaryKey && (
-                          <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 font-bold">
-                            기본 키
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-stone-400 dark:text-[#888888] capitalize">
-                        {col.type} • {col.width || 160}px
-                      </span>
-                    </div>
-                  )}
-                </div>
-
-                {/* Right: Actions (Reorder, Visibility, Edit, Delete) */}
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  {/* Up / Down */}
-                  <button
-                    disabled={idx === 0}
-                    onClick={() => handleMove(idx, 'up')}
-                    className="p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] disabled:opacity-20 text-stone-500 dark:text-[#aaaaaa] transition-colors"
-                    title="위로 이동"
-                  >
-                    <ArrowUp className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    disabled={idx === columns.length - 1}
-                    onClick={() => handleMove(idx, 'down')}
-                    className="p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] disabled:opacity-20 text-stone-500 dark:text-[#aaaaaa] transition-colors"
-                    title="아래로 이동"
-                  >
-                    <ArrowDown className="w-3.5 h-3.5" />
-                  </button>
-
-                  {/* Toggle Visibility */}
-                  <button
-                    onClick={() => onToggleColumnVisibility(col.id)}
-                    className={`p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] transition-colors ${
-                      isHidden ? 'text-stone-400' : 'text-amber-600 dark:text-amber-400'
-                    }`}
-                    title={isHidden ? '열 표시하기' : '열 숨기기'}
-                  >
-                    {isHidden ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-                  </button>
-
-                  {/* Edit Name / Type */}
-                  {!isEditing && (
-                    <button
-                      onClick={() => {
-                        setEditingColId(col.id);
-                        setEditColName(col.name);
-                        setEditColType(col.type);
-                      }}
-                      className="p-1 rounded hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-500 dark:text-[#aaaaaa] transition-colors"
-                      title="이름/타입 변경"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-
-                  {/* Delete Column (Protected for primary key) */}
-                  {!col.isPrimaryKey && (
-                    <button
-                      onClick={() => setColumnToDelete(col)}
-                      className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/40 text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
-                      title="열 삭제"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
                   )}
                 </div>
               </div>
@@ -322,16 +354,17 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
           })}
         </div>
 
-        {/* Footer */}
+        {/* Footer with Big Save Button */}
         <div className="px-6 py-3 border-t border-stone-200 dark:border-[#333333] bg-stone-50 dark:bg-[#222222] flex items-center justify-between text-xs">
           <span className="text-[11px] text-stone-400 dark:text-[#888888]">
-            열 순서와 너비는 테이블에 즉시 반영됩니다.
+            열 순서 및 데이터 구조가 테이블에 실시간으로 안전하게 저장됩니다.
           </span>
           <button
             onClick={onClose}
-            className="px-4 py-1.5 bg-stone-900 dark:bg-stone-100 hover:bg-amber-500 dark:hover:bg-amber-400 text-white dark:text-stone-900 font-semibold rounded-lg transition-colors"
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl flex items-center gap-1.5 transition-all shadow-sm active:scale-98"
           >
-            닫기
+            <Check className="w-4 h-4" />
+            저장 및 완료
           </button>
         </div>
 
@@ -381,4 +414,3 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
     </div>
   );
 };
-

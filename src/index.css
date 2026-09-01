@@ -109,6 +109,62 @@
   box-shadow: 0 10px 20px rgba(0, 0, 0, 0.35), 0 6px 6px rgba(0, 0, 0, 0.38);
 }
 
+/* ProseMirror base styles & warning fix (white-space: pre-wrap) */
+.ProseMirror {
+  white-space: pre-wrap !important;
+  word-break: break-word;
+  word-wrap: break-word;
+  outline: none;
+  tab-size: 4;
+}
+
+.ProseMirror-selectednode {
+  outline: 2px solid #f59e0b;
+}
+
+.ProseMirror pre {
+  white-space: pre-wrap !important;
+}
+
+/* Rich rendered HTML Excel tables in viewers */
+.wonbee-rendered-table table,
+.prose table {
+  border-collapse: collapse;
+  width: 100%;
+  border: 1px solid #d6d3d1;
+  margin: 0.75rem 0;
+  font-size: 0.85rem;
+}
+.dark .wonbee-rendered-table table,
+.dark .prose table {
+  border-color: #383838;
+}
+.wonbee-rendered-table th,
+.wonbee-rendered-table td,
+.prose th,
+.prose td {
+  border: 1px solid #e7e5e4;
+  padding: 6px 10px;
+  vertical-align: middle;
+}
+.dark .wonbee-rendered-table th,
+.dark .wonbee-rendered-table td,
+.dark .prose th,
+.dark .prose td {
+  border-color: #383838;
+}
+.wonbee-rendered-table th,
+.prose th {
+  background-color: #f5f5f4;
+  font-weight: 600;
+  text-align: left;
+}
+.dark .wonbee-rendered-table th,
+.dark .prose th {
+  background-color: #242424;
+  color: #f5f5f5;
+}
+
 /* Custom Minimalist Scrollbars */
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;

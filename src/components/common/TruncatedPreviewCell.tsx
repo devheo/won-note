@@ -3,12 +3,13 @@ import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
 import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon } from 'lucide-react';
 import { detectLanguage } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
-import { cleanTextValue } from '../../utils/textSanitizer';
+import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 
 interface TruncatedPreviewCellProps {
   value: any;
   columnType: string;
   onOpenEditor?: () => void;
+  onOpenImage?: (src: string) => void;
   className?: string;
   renderCustomContent?: (val: any) => React.ReactNode;
 }
@@ -17,6 +18,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   value,
   columnType,
   onOpenEditor,
+  onOpenImage,
   className = '',
   renderCustomContent,
 }) => {
@@ -26,7 +28,8 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const rawString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
-  const hasImage = rawString.includes('<img');
+  const firstImageSrc = extractFirstImageSrc(rawString);
+  const hasImage = !!firstImageSrc || rawString.includes('<img');
   const hasTable = rawString.includes('<table');
   const isRich =
     columnType === 'richText' ||
@@ -41,13 +44,9 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const displayPlainText = cleanTextValue(rawString);
   const detectedCode = !isRich ? detectLanguage(displayPlainText) : { isCode: false, language: 'plaintext' as const };
 
-  const imageMatch = rawString.match(/<img[^>]+src="([^">]+)"/i);
-  const firstImageSrc = imageMatch ? imageMatch[1] : null;
-
   const onMouseEnterWithCoords = () => {
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
-      // Position calculation to ensure popover stays within viewport bounds
       const popoverWidth = Math.min(Math.max(rect.width * 1.8, 360), 580);
       let left = rect.left;
       if (left + popoverWidth > window.innerWidth - 20) {
@@ -84,7 +83,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       {/* Visible Cell Content (Truncated) */}
       <div
         ref={textRef}
-        className="w-full truncate text-xs font-normal text-stone-800 dark:text-stone-200 flex items-center gap-1.5"
+        className="w-full truncate text-xs font-normal text-stone-800 dark:text-stone-200 flex items-center gap-1.5 whitespace-pre-wrap"
       >
         {renderCustomContent ? (
           renderCustomContent(value)
@@ -94,17 +93,26 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
               <img
                 src={firstImageSrc}
                 alt="thumb"
-                className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0"
+                onClick={(e) => {
+                  if (onOpenImage && firstImageSrc) {
+                    e.stopPropagation();
+                    onOpenImage(firstImageSrc);
+                  }
+                }}
+                className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0 cursor-zoom-in hover:scale-110 transition-transform"
+                title="클릭하여 원본 이미지 뷰어 열기"
               />
             ) : (
               <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
             )}
             <span className="truncate text-xs text-stone-700 dark:text-stone-300">
-              {displayPlainText || '[이미지]'}
+              {displayPlainText || '[이미지 첨부]'}
             </span>
           </div>
         ) : (
-          displayPlainText || <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+          <span className="truncate">
+            {displayPlainText || <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>}
+          </span>
         )}
       </div>
 
@@ -161,7 +169,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
 
           {isRich ? (
             <div
-              className="max-h-72 overflow-y-auto leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar prose dark:prose-invert tiptap"
+              className="max-h-72 overflow-y-auto leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar prose dark:prose-invert wonbee-rendered-table tiptap"
               dangerouslySetInnerHTML={{ __html: rawString }}
             />
           ) : detectedCode.isCode ? (
@@ -196,4 +204,3 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
     </div>
   );
 };
-

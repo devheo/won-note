@@ -262,15 +262,20 @@ export function parseDelimitedText(
 }
 
 function cleanCell(cell: string, delimiter: string): string {
+  if (!cell) return '';
   let val = cell;
-  // In space delimiter or pipe delimiter, trim ends
-  if (delimiter === ' ' || delimiter === '|') {
+
+  // For pipe delimiter (Markdown tables), trim spacing around cells
+  if (delimiter === '|') {
     val = val.trim();
   }
-  // Trim outer quotes if they were wrapping the cell
-  if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
-    val = val.slice(1, -1);
+
+  // Check if cell is wrapped in quotes
+  const trimmed = val.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"') && trimmed.length >= 2) {
+    val = trimmed.slice(1, -1).replace(/""/g, '"');
   }
+
   return val;
 }
 

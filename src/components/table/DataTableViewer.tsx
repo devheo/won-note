@@ -4,7 +4,8 @@ import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
 import { ColumnManagerModal } from '../modals/ColumnManagerModal';
 import { AddRowModal } from '../modals/AddRowModal';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
-import { cleanTextValue } from '../../utils/textSanitizer';
+import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
+import { ImageLightboxModal } from '../common/ImageLightboxModal';
 import {
   Plus,
   ArrowUpDown,
@@ -30,6 +31,8 @@ import {
   AlignJustify,
   Rows,
   GripVertical,
+  Filter,
+  X,
 } from 'lucide-react';
 
 interface DataTableViewerProps {
@@ -50,6 +53,12 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [sortColumnId, setSortColumnId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+
+  // Tag filter state: { [columnId]: selectedOptionLabelOrId }
+  const [selectedTagFilters, setSelectedTagFilters] = useState<Record<string, string>>({});
+
+  // Image Lightbox state
+  const [lightboxImg, setLightboxImg] = useState<string | null>(null);
 
   // Row Density State (Compact: 32px, Normal: 44px, Spacious: 58px) with localStorage persistence
   const [rowDensity, setRowDensity] = useState<RowDensity>(() => {
@@ -87,11 +96,12 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [editingValue, setEditingValue] = useState<any>('');
 
   // Inline Cell Commit
-  const commitCellEdit = (rowId: string, colId: string, val: any) => {
+  const commitCellEdit人力 = (rowId: string, colId: string, val: any) => {
     const targetCol = table.columns.find((c) => c.id === colId);
-    const cleaned = typeof val === 'string' && targetCol?.type !== 'richText'
-      ? cleanTextValue(val)
-      : val;
+    const cleaned =
+      typeof val === 'string' && targetCol?.type !== 'richText'
+        ? cleanTextValue(val)
+        : val;
 
     const updatedRows = table.rows.map((row) => {
       if (row.id === rowId) {
@@ -124,9 +134,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         setIsDensityMenuOpen(false);
       }
       if (editingCell) {
-        const target = e.target as HTMLElement;
-        if (!target.closest('[data-editing-cell="true"]')) {
-          commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
+        const target实施 = e.target as HTMLElement;
+        if (!target实施.closest('[data-editing-cell="true"]')) {
+          commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
         }
       }
     };
@@ -286,7 +296,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setIsRowMenuOpen(false);
   };
 
-  // ===================== Row Position & Priority Moving =====================
   // Reorder Row by Index (Drag & Drop or Manual Swap)
   const handleReorderRow = (sourceRowId: string, targetRowId: string, position: 'above' | 'below') => {
     if (sortColumnId) {
@@ -299,13 +308,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
     const newRows = [...table.rows];
     const [movedRow] = newRows.splice(sourceIdx, 1);
-    
-    let newTargetIdx = newRows.findIndex((r) => r.id === targetRowId);
-    if (position === 'below') {
-      newTargetIdx += 1;
-    }
 
-    newRows.splice(newTargetIdx, 0, movedRow);
+    const insertIdx = position === 'above' ? (targetIdx > sourceIdx ? targetIdx - 1 : targetIdx) : (targetIdx > sourceIdx ? targetIdx : targetIdx + 1);
+    newRows.splice(insertIdx, 0, movedRow);
 
     onUpdateTable({
       ...table,
@@ -314,28 +319,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     });
   };
 
-  // Move Single Row Up / Down / Top / Bottom
-  const handleMoveRow = (rowId: string, direction: 'up' | 'down' | 'top' | 'bottom') => {
+  // Move Single Row Up/Down
+  const handleMoveRow = (rowId: string, direction: 'up' | 'down') => {
     if (sortColumnId) {
       setSortColumnId(null);
     }
-    const idx = table.rows.findIndex((r) => r.id === rowId);
-    if (idx === -1) return;
+
+    const index = table.rows.findIndex((r) => r.id === rowId);
+    if (index === -1) return;
+    if (direction === 'up' && index === 0) return;
+    if (direction === 'down' && index === table.rows.length - 1) return;
 
     const newRows = [...table.rows];
-    const [moved] = newRows.splice(idx, 1);
-
-    if (direction === 'top') {
-      newRows.unshift(moved);
-    } else if (direction === 'bottom') {
-      newRows.push(moved);
-    } else if (direction === 'up') {
-      const targetIdx = Math.max(0, idx - 1);
-      newRows.splice(targetIdx, 0, moved);
-    } else if (direction === 'down') {
-      const targetIdx = Math.min(newRows.length, idx + 1);
-      newRows.splice(targetIdx, 0, moved);
-    }
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    const temp = newRows[index];
+    newRows[index] = newRows[targetIndex];
+    newRows[targetIndex] = temp;
 
     onUpdateTable({
       ...table,
@@ -347,12 +346,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   // Move Selected Rows Up / Down / Top / Bottom
   const handleMoveSelectedRows = (direction: 'up' | 'down' | 'top' | 'bottom') => {
     if (selectedRowIds.size === 0) return;
-    if (sortColumnId) {
-      setSortColumnId(null);
-    }
+    if (sortColumnId) setSortColumnId(null);
 
     const currentRows = [...table.rows];
-
     if (direction === 'top') {
       const selected = currentRows.filter((r) => selectedRowIds.has(r.id));
       const unselected = currentRows.filter((r) => !selectedRowIds.has(r.id));
@@ -366,10 +362,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
     if (direction === 'bottom') {
       const selected = currentRows.filter((r) => selectedRowIds.has(r.id));
-      const unselected = currentRows.filter((r) => !selectedRowIds.has(r.id));
+      const unselected而去 = currentRows.filter((r) => !selectedRowIds.has(r.id));
       onUpdateTable({
         ...table,
-        rows: [...unselected, ...selected],
+        rows: [...unselected而去, ...selected],
         updatedAt: Date.now(),
       });
       return;
@@ -384,11 +380,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         }
       }
     } else if (direction === 'down') {
-      for (let i = currentRows.length - 2; i >= 0; i--) {
-        if (selectedRowIds.has(currentRows[i].id) && !selectedRowIds.has(currentRows[i + 1].id)) {
-          const temp = currentRows[i];
-          currentRows[i] = currentRows[i + 1];
-          currentRows[i + 1] = temp;
+      for (let i地理 = currentRows.length - 2; i地理 >= 0; i地理--) {
+        if (selectedRowIds.has(currentRows[i地理].id) && !selectedRowIds.has(currentRows[i地理 + 1].id)) {
+          const temp = currentRows[i地理];
+          currentRows[i地理] = currentRows[i地理 + 1];
+          currentRows[i地理 + 1] = temp;
         }
       }
     }
@@ -542,22 +538,47 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     return table.columns.filter((c) => !hiddenColumnIds.has(c.id));
   }, [table.columns, hiddenColumnIds]);
 
+  // List of status or select columns that can be filtered
+  const filterableTagColumns = useMemo(() => {
+    return table.columns.filter((c) => c.type === 'status' || c.type === 'select');
+  }, [table.columns]);
+
   // Filtered & Sorted Rows
   const processedRows = useMemo(() => {
     let list = [...table.rows];
 
-    // Filter Query
+    // 1. Search Query Filter
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       list = list.filter((r) => {
         return table.columns.some((col) => {
           const val = r.data[col.id];
-          return val !== undefined && val !== null && String(val).toLowerCase().includes(q);
+          if (val === undefined || val === null) return false;
+          const cleaned = cleanTextValue(val).toLowerCase();
+          return cleaned.includes(q) || String(val).toLowerCase().includes(q);
         });
       });
     }
 
-    // Sort
+    // 2. Tag Column Filters (Request 10)
+    for (const [colId, selectedOpt] of Object.entries(selectedTagFilters)) {
+      if (!selectedOpt) continue;
+      const targetCol = table.columns.find((c) => c.id === colId);
+      if (!targetCol) continue;
+
+      list = list.filter((r) => {
+        const val = r.data[colId];
+        if (val === undefined || val === null || val === '') return false;
+        const cleaned = cleanTextValue(val);
+        const opt = targetCol.options?.find(
+          (o) => o.id === cleaned || o.label === cleaned || o.id === String(val) || o.label === String(val)
+        );
+        const matchLabel = opt ? opt.label : cleaned;
+        return matchLabel === selectedOpt || cleaned === selectedOpt || String(val) === selectedOpt;
+      });
+    }
+
+    // 3. Sorting
     if (sortColumnId) {
       const targetCol = table.columns.find((c) => c.id === sortColumnId);
 
@@ -580,27 +601,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         const strA = getDisplayValue(rawA);
         const strB = getDisplayValue(rawB);
 
-        const isAEmpty = strA === '' && (rawA === undefined || rawA === null || rawA === '');
-        const isBEmpty = strB === '' && (rawB === undefined || rawB === null || rawB === '');
-
-        if (isAEmpty && isBEmpty) return 0;
-        if (isAEmpty) return 1;
-        if (isBEmpty) return -1;
-
-        if (targetCol?.type === 'checkbox') {
-          const boolA = Boolean(rawA);
-          const boolB = Boolean(rawB);
-          if (boolA === boolB) return 0;
-          return sortDirection === 'asc' ? (boolA ? -1 : 1) : (boolA ? 1 : -1);
-        }
-
         const numA = Number(strA);
-        const numB = Number(strB);
+        const numB不易 = Number(strB);
+
         if (
           targetCol?.type === 'number' ||
-          (!isNaN(numA) && !isNaN(numB) && strA !== '' && strB !== '')
+          (!isNaN(numA) && !isNaN(numB不易) && strA !== '' && strB !== '')
         ) {
-          return sortDirection === 'asc' ? numA - numB : numB - numA;
+          return sortDirection === 'asc' ? numA - numB不易 : numB不易 - numA;
         }
 
         const comp = strA.localeCompare(strB, 'ko', { numeric: true, sensitivity: 'base' });
@@ -609,7 +617,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
 
     return list;
-  }, [table.rows, table.columns, searchQuery, sortColumnId, sortDirection]);
+  }, [table.rows, table.columns, searchQuery, selectedTagFilters, sortColumnId, sortDirection]);
 
   // Column Icon helper
   const getColTypeIcon = (type: ColumnType) => {
@@ -749,201 +757,179 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
-          {/* Column Management Button (열 관리) */}
-          <button
-            onClick={() => setIsColumnManagerOpen(true)}
-            className="px-2.5 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838]"
-            title="열(Column) 관리: 추가, 수정, 순서 변경, 삭제, 숨기기"
-          >
-            <Sliders className="w-3.5 h-3.5 text-amber-500" />
-            <span>열 관리 ({visibleColumns.length}/{table.columns.length})</span>
-          </button>
-
-          {/* Row Management Dropdown & Add Row Button */}
-          <div className="relative flex items-center" ref={rowMenuRef}>
-            <button
-              id="btn-add-table-row"
-              onClick={() => handleOpenAddRowModal('bottom')}
-              className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-l-lg text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all active:scale-98"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              행 추가
-            </button>
+          {/* Row Actions Menu Button */}
+          <div className="relative" ref={rowMenuRef}>
             <button
               onClick={() => setIsRowMenuOpen(!isRowMenuOpen)}
-              className="px-1.5 py-1.5 bg-amber-600 hover:bg-amber-500 text-stone-950 rounded-r-lg border-l border-amber-400/40 text-xs font-bold flex items-center transition-colors"
-              title="행 관리 및 우선순위 이동 옵션"
+              className="px-3 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838]"
             >
-              <ChevronDown className="w-3.5 h-3.5" />
+              <Rows className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+              <span>행 작업 ({selectedRowIds.size}개 선택)</span>
+              <ChevronDown className="w-3 h-3 text-stone-400" />
             </button>
 
             {isRowMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-52 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
-                <button
-                  onClick={() => handleOpenAddRowModal('top')}
-                  className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
-                >
-                  <ArrowUp className="w-3.5 h-3.5 text-amber-500" />
-                  맨 위에 새 행 추가 (팝업)
-                </button>
+              <div className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1.5 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
+                <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
+                  새 행 추가 (팝업 대화상자)
+                </div>
                 <button
                   onClick={() => handleOpenAddRowModal('bottom')}
-                  className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
+                  className="w-full px-2 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2"
                 >
-                  <ArrowDown className="w-3.5 h-3.5 text-amber-500" />
-                  맨 아래에 새 행 추가 (팝업)
+                  <Plus className="w-3.5 h-3.5 text-amber-500" />
+                  <span>맨 아래에 새 행 추가</span>
+                </button>
+                <button
+                  onClick={() => handleOpenAddRowModal('top')}
+                  className="w-full px-2 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2"
+                >
+                  <Plus className="w-3.5 h-3.5 text-amber-500" />
+                  <span>맨 위에 새 행 추가</span>
                 </button>
 
                 {selectedRowIds.size > 0 && (
                   <>
                     <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-                    <div className="px-2.5 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
-                      선택 행 우선순위 이동 ({selectedRowIds.size}개)
+                    <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
+                      선택된 {selectedRowIds.size}개 행 우선순위 이동
                     </div>
                     <button
-                      onClick={() => {
-                        handleMoveSelectedRows('top');
-                        setIsRowMenuOpen(false);
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
+                      onClick={() => handleMoveSelectedRows('top')}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
                     >
                       <ChevronsUp className="w-3.5 h-3.5 text-amber-500" />
-                      최상단으로 이동 (최우선순위)
+                      <span>최상단으로 일괄 이동</span>
                     </button>
                     <button
-                      onClick={() => {
-                        handleMoveSelectedRows('up');
-                        setIsRowMenuOpen(false);
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
+                      onClick={() => handleMoveSelectedRows('up')}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
                     >
-                      <ArrowUp className="w-3.5 h-3.5 text-amber-500" />
-                      위로 한 칸 이동
+                      <ArrowUp className="w-3.5 h-3.5 text-stone-500" />
+                      <span>위로 한 칸 이동</span>
                     </button>
                     <button
-                      onClick={() => {
-                        handleMoveSelectedRows('down');
-                        setIsRowMenuOpen(false);
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
+                      onClick={() => handleMoveSelectedRows('down')}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
                     >
-                      <ArrowDown className="w-3.5 h-3.5 text-amber-500" />
-                      아래로 한 칸 이동
+                      <ArrowDown className="w-3.5 h-3.5 text-stone-500" />
+                      <span>아래로 한 칸 이동</span>
                     </button>
                     <button
-                      onClick={() => {
-                        handleMoveSelectedRows('bottom');
-                        setIsRowMenuOpen(false);
-                      }}
-                      className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
+                      onClick={() => handleMoveSelectedRows('bottom')}
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
                     >
                       <ChevronsDown className="w-3.5 h-3.5 text-amber-500" />
-                      최하단으로 이동 (최하위)
+                      <span>최하단으로 일괄 이동</span>
                     </button>
 
                     <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
                     <button
                       onClick={handleDuplicateSelectedRows}
-                      className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc] flex items-center gap-2 transition-colors"
+                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
                     >
                       <Copy className="w-3.5 h-3.5 text-blue-500" />
-                      선택 행({selectedRowIds.size}) 복제
+                      <span>선택 행 복제하기</span>
                     </button>
                     <button
                       onClick={handleDeleteSelectedRows}
-                      className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center gap-2 transition-colors font-medium"
+                      className="w-full px-2 py-1.5 text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-lg flex items-center gap-2 font-semibold"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
-                      선택 행({selectedRowIds.size}) 삭제
+                      <span>선택 행 삭제하기</span>
                     </button>
                   </>
                 )}
               </div>
             )}
           </div>
+
+          {/* Quick Add Row Button (Opens Add Row Modal) */}
+          <button
+            onClick={() => handleOpenAddRowModal('bottom')}
+            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm active:scale-98"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>새 행 추가</span>
+          </button>
         </div>
       </div>
 
-      {/* Bulk Action Bar (when rows are selected) */}
-      {selectedRowIds.size > 0 && (
-        <div className="px-6 py-2 bg-amber-500/10 dark:bg-amber-400/10 border-b border-amber-200/60 dark:border-amber-900/60 flex items-center justify-between flex-wrap gap-2 animate-in fade-in text-xs">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-amber-900 dark:text-amber-200">
-              {selectedRowIds.size}개 행 선택됨
-            </span>
-            <span className="text-stone-400">•</span>
-            <span className="text-stone-500 dark:text-[#a0a0a0]">우선순위 / 위치 변경:</span>
+      {/* Tag Filter Bar (Request 10: 분류/상태/선택 태그 열 필터 적용) */}
+      {filterableTagColumns.length > 0 && (
+        <div className="px-6 py-2 border-b border-stone-200/60 dark:border-[#2d2d2d] bg-amber-50/20 dark:bg-[#1a1a1a] flex items-center gap-3 overflow-x-auto custom-scrollbar flex-shrink-0">
+          <div className="flex items-center gap-1 text-[11px] font-bold text-stone-500 dark:text-stone-400 flex-shrink-0">
+            <Filter className="w-3 h-3 text-amber-500" />
+            <span>태그 필터:</span>
           </div>
 
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <button
-              onClick={() => handleMoveSelectedRows('top')}
-              className="px-2 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-md font-medium flex items-center gap-1 transition-colors border border-stone-200/60 dark:border-[#383838]"
-              title="선택 행을 최상단(최우선순위)으로 이동"
-            >
-              <ChevronsUp className="w-3 h-3 text-amber-500" />
-              맨 위로
-            </button>
-            <button
-              onClick={() => handleMoveSelectedRows('up')}
-              className="px-2 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-md font-medium flex items-center gap-1 transition-colors border border-stone-200/60 dark:border-[#383838]"
-              title="선택 행을 위로 한 칸 이동"
-            >
-              <ArrowUp className="w-3 h-3 text-amber-500" />
-              위로
-            </button>
-            <button
-              onClick={() => handleMoveSelectedRows('down')}
-              className="px-2 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-md font-medium flex items-center gap-1 transition-colors border border-stone-200/60 dark:border-[#383838]"
-              title="선택 행을 아래로 한 칸 이동"
-            >
-              <ArrowDown className="w-3 h-3 text-amber-500" />
-              아래로
-            </button>
-            <button
-              onClick={() => handleMoveSelectedRows('bottom')}
-              className="px-2 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-md font-medium flex items-center gap-1 transition-colors border border-stone-200/60 dark:border-[#383838]"
-              title="선택 행을 최하단으로 이동"
-            >
-              <ChevronsDown className="w-3 h-3 text-amber-500" />
-              맨 아래로
-            </button>
+          {filterableTagColumns.map((col) => {
+            const activeFilter = selectedTagFilters[col.id];
+            const options = col.options || [];
 
-            <span className="text-stone-300 dark:text-[#444444]">|</span>
+            return (
+              <div key={col.id} className="flex items-center gap-1.5 flex-shrink-0">
+                <span className="text-[11px] font-semibold text-stone-600 dark:text-stone-300">
+                  {col.name}:
+                </span>
+                <button
+                  onClick={() => {
+                    setSelectedTagFilters((prev) => {
+                      const next = { ...prev };
+                      delete next[col.id];
+                      return next;
+                    });
+                  }}
+                  className={`px-2 py-0.5 text-[11px] rounded-full font-medium transition-all ${
+                    !activeFilter
+                      ? 'bg-amber-500 text-stone-950 font-bold shadow-xs'
+                      : 'bg-stone-200/70 dark:bg-[#282828] text-stone-600 dark:text-stone-400 hover:bg-stone-300'
+                  }`}
+                >
+                  전체
+                </button>
 
+                {options.map((opt) => {
+                  const isSelected = activeFilter === opt.label || activeFilter === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        setSelectedTagFilters((prev) => ({
+                          ...prev,
+                          [col.id]: isSelected ? '' : opt.label,
+                        }));
+                      }}
+                      style={{
+                        backgroundColor: isSelected ? opt.color : `${opt.color}15`,
+                        color: isSelected ? '#ffffff' : opt.color,
+                        borderColor: opt.color,
+                      }}
+                      className="px-2 py-0.5 text-[11px] rounded-full font-semibold border transition-all"
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })}
+
+          {Object.values(selectedTagFilters).some(Boolean) && (
             <button
-              onClick={handleDuplicateSelectedRows}
-              className="px-2.5 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-md font-medium flex items-center gap-1 transition-colors border border-stone-200/60 dark:border-[#383838]"
+              onClick={() => setSelectedTagFilters({})}
+              className="ml-auto text-[11px] text-rose-500 hover:underline flex items-center gap-0.5 flex-shrink-0 font-medium"
             >
-              <Copy className="w-3 h-3 text-blue-500" />
-              복제
+              <X className="w-3 h-3" /> 필터 초기화
             </button>
-            <button
-              onClick={handleDeleteSelectedRows}
-              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-500 text-white rounded-md font-medium flex items-center gap-1 transition-colors shadow-2xs"
-            >
-              <Trash2 className="w-3 h-3" />
-              삭제
-            </button>
-            <button
-              onClick={() => setSelectedRowIds(new Set())}
-              className="px-2.5 py-1 text-stone-600 dark:text-[#a0a0a0] hover:bg-black/5 dark:hover:bg-white/5 rounded-md font-medium"
-            >
-              선택 해제
-            </button>
-          </div>
+          )}
         </div>
       )}
 
-      {/* Excel-like Data Grid Container with High Dark Contrast */}
-      <div className="flex-1 overflow-auto custom-scrollbar relative bg-white dark:bg-[#181818]">
-        <table
-          style={{
-            minWidth: `${80 + 144 + visibleColumns.reduce((sum, col) => sum + (columnWidths[col.id] || col.width || 160), 0)}px`,
-            width: '100%',
-          }}
-          className="border-collapse text-left text-xs table-fixed"
-        >
+      {/* Main Grid View Container */}
+      <div className="flex-1 overflow-auto custom-scrollbar relative">
+        <table className="w-full border-collapse text-left text-xs font-sans">
+          {/* Table Header Columns Width Mapping */}
           <colgroup>
             <col style={{ width: '80px' }} />
             {visibleColumns.map((col) => (
@@ -1034,10 +1020,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             </tr>
           </thead>
 
-          {/* Table Body Rows with Drag-and-Drop & Enhanced Dark Mode Contrast */}
+          {/* Table Body Rows with Drag-and-Drop */}
           <tbody className="divide-y divide-stone-200/70 dark:divide-[#2d2d2d] bg-white dark:bg-[#181818]">
             {processedRows.map((row, rIdx) => {
-              const isSelected = selectedRowIds.has(row.id);
+              const isSelected深受 = selectedRowIds.has(row.id);
               const heightClass = getRowHeightClass();
               const isDragging = draggedRowId === row.id;
               const isDropTarget = dropTargetRowId === row.id;
@@ -1062,7 +1048,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       return;
                     }
                     if (editingCell) {
-                      commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
+                      commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
                     }
                     onOpenRowDetail(row, rIdx);
                   }}
@@ -1077,7 +1063,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       ? 'border-b-2 border-b-amber-500'
                       : ''
                   } ${
-                    isSelected
+                    isSelected深受
                       ? 'bg-amber-500/15 dark:bg-amber-500/20'
                       : rIdx % 2 === 0
                       ? 'bg-white dark:bg-[#181818] hover:bg-stone-100/70 dark:hover:bg-[#252525]'
@@ -1102,7 +1088,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
                       <input
                         type="checkbox"
-                        checked={isSelected}
+                        checked={isSelected深受}
                         onChange={() => toggleSelectRow(row.id)}
                         className="rounded accent-amber-500 cursor-pointer"
                       />
@@ -1123,7 +1109,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         onDoubleClick={(e) => {
                           e.stopPropagation();
                           if (editingCell) {
-                            commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
+                            commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
                           }
                           setEditingCell({ rowId: row.id, colId: col.id });
                           setEditingValue(rawVal ?? '');
@@ -1140,9 +1126,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 placeholder="선택 안 함"
                                 onChange={(val) => {
                                   setEditingValue(val);
-                                  commitCellEdit(row.id, col.id, val);
+                                  commitCellEdit人力(row.id, col.id, val);
                                 }}
-                                onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
+                                onBlur={() => commitCellEdit人力(row.id, col.id, editingValue)}
                               />
                             ) : col.type === 'checkbox' ? (
                               <input
@@ -1150,9 +1136,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 autoFocus
                                 checked={!!editingValue}
                                 onChange={(e) => {
-                                  commitCellEdit(row.id, col.id, e.target.checked);
+                                  commitCellEdit人力(row.id, col.id, e.target.checked);
                                 }}
-                                onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
+                                onBlur={() => commitCellEdit人力(row.id, col.id, editingValue)}
                                 className="rounded accent-amber-500"
                               />
                             ) : (
@@ -1162,10 +1148,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 value={editingValue}
                                 onChange={(e) => setEditingValue(e.target.value)}
                                 onKeyDown={(e) => {
-                                  if (e.key === 'Enter') commitCellEdit(row.id, col.id, editingValue);
+                                  if (e.key === 'Enter') commitCellEdit人力(row.id, col.id, editingValue);
                                   if (e.key === 'Escape') setEditingCell(null);
                                 }}
-                                onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
+                                onBlur={() => commitCellEdit人力(row.id, col.id, editingValue)}
                                 className="w-full bg-white dark:bg-[#242424] border border-amber-500 rounded px-1.5 py-0.5 outline-none text-xs text-stone-900 dark:text-[#ffffff]"
                               />
                             )}
@@ -1175,6 +1161,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                             value={rawVal}
                             columnType={col.type}
                             onOpenEditor={() => onOpenRowDetail(row, rIdx)}
+                            onOpenImage={(src) => setLightboxImg(src)}
                             renderCustomContent={(val) => {
                               if (col.type === 'checkbox') {
                                 return (
@@ -1182,7 +1169,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                     type="checkbox"
                                     checked={!!val}
                                     onChange={(e) => {
-                                      commitCellEdit(row.id, col.id, e.target.checked);
+                                      commitCellEdit人力(row.id, col.id, e.target.checked);
                                     }}
                                     onClick={(e) => e.stopPropagation()}
                                     className="rounded accent-amber-500 cursor-pointer"
@@ -1195,7 +1182,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                   return <span className="text-stone-400 dark:text-[#777777] italic">미정</span>;
                                 }
 
-                                // Check if option matches by ID or by label
                                 const strVal = cleanTextValue(val);
                                 const option = col.options?.find(
                                   (o) => o.id === strVal || o.label === strVal || o.id === String(val) || o.label === String(val)
@@ -1216,7 +1202,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                   );
                                 }
 
-                                // If value is directly given as a string (e.g. '자기앞', '거액', '완료') but no option exists
                                 const defaultTagColors = ['#F59E0B', '#3B82F6', '#10B981', '#8B5CF6', '#EC4899', '#06B6D4'];
                                 let hash = 0;
                                 for (let i = 0; i < strVal.length; i++) hash = (hash << 5) - hash + strVal.charCodeAt(i);
@@ -1239,14 +1224,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                               if (col.type === 'code') {
                                 return (
                                   <code className="px-1.5 py-0.5 rounded bg-stone-100 dark:bg-[#282828] border border-stone-200 dark:border-[#383838] text-amber-700 dark:text-amber-300 font-mono text-[11px]">
-                                    {String(val || '')}
+                                    {cleanTextValue(val)}
                                   </code>
                                 );
                               }
 
                               return (
                                 <span className="text-stone-800 dark:text-[#f0f0f0] font-normal">
-                                  {String(val ?? '')}
+                                  {cleanTextValue(val)}
                                 </span>
                               );
                             }}
@@ -1258,7 +1243,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
                   {/* Row Actions: Reorder Up/Down, Detail, Rich Editor, Delete */}
                   <td className={`px-2 ${heightClass} text-center border-b border-stone-200/70 dark:border-[#2d2d2d]`}>
-                    <div className="flex items-center justify-center gap-0.5 opacity-0 group-row:opacity-100 group-hover/row:opacity-100 transition-opacity">
+                    <div className="flex items-center justify-center gap-0.5 opacity-0 group-hover/row:opacity-100 transition-opacity">
                       {/* Move Row Up */}
                       <button
                         disabled={rIdx === 0}
@@ -1383,6 +1368,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         onAddColumn={handleAddColumnFromModal}
         onUpdateColumn={handleUpdateColumnFromModal}
         onDeleteColumn={handleDeleteColumnFromModal}
+      />
+
+      {/* Image Lightbox Modal */}
+      <ImageLightboxModal
+        isOpen={!!lightboxImg}
+        imageUrl={lightboxImg}
+        onClose={() => setLightboxImg(null)}
       />
     </div>
   );
