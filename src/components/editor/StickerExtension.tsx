@@ -248,11 +248,13 @@ export const StickerExtension = Node.create({
         tag: 'div[data-type="wonbee-sticker"]',
         getAttrs: (element) => {
           if (typeof element === 'string') return {};
+          const bodyEl = element.querySelector('.wonbee-sticker-content');
+          const titleEl = element.querySelector('.wonbee-sticker-title');
           return {
-            id: element.getAttribute('data-id'),
-            title: element.getAttribute('data-title'),
-            body: element.getAttribute('data-body'),
-            color: element.getAttribute('data-color'),
+            id: element.getAttribute('data-id') || `sticker-${Date.now().toString(36)}`,
+            title: element.getAttribute('data-title') || titleEl?.textContent?.replace(/^[📌📝]\s*/, '') || '스티커 메모',
+            body: element.getAttribute('data-body') || bodyEl?.textContent || '',
+            color: element.getAttribute('data-color') || 'amber',
             completed: element.getAttribute('data-completed') === 'true',
             pinned: element.getAttribute('data-pinned') === 'true',
           };
@@ -262,18 +264,35 @@ export const StickerExtension = Node.create({
   },
 
   renderHTML({ HTMLAttributes }) {
+    const title = HTMLAttributes.title || '스티커 메모';
+    const body = HTMLAttributes.body || '';
+    const color = HTMLAttributes.color || 'amber';
+    const isCompleted = HTMLAttributes.completed === true || HTMLAttributes.completed === 'true';
+    const isPinned = HTMLAttributes.pinned === true || HTMLAttributes.pinned === 'true';
+
     return [
       'div',
       mergeAttributes(HTMLAttributes, {
         'data-type': 'wonbee-sticker',
         'data-id': HTMLAttributes.id,
-        'data-title': HTMLAttributes.title,
-        'data-body': HTMLAttributes.body,
-        'data-color': HTMLAttributes.color,
-        'data-completed': HTMLAttributes.completed,
-        'data-pinned': HTMLAttributes.pinned,
-        class: 'wonbee-sticker-element',
+        'data-title': title,
+        'data-body': body,
+        'data-color': color,
+        'data-completed': isCompleted ? 'true' : 'false',
+        'data-pinned': isPinned ? 'true' : 'false',
+        class: `wonbee-sticker-element wonbee-sticker-${color} my-3 p-3.5 rounded-xl border shadow-sm max-w-md select-none`,
       }),
+      [
+        'div',
+        { class: 'wonbee-sticker-header flex items-center justify-between pb-1.5 mb-2 border-b border-black/10 dark:border-white/10 font-bold text-xs' },
+        ['span', { class: 'wonbee-sticker-title flex items-center gap-1.5' }, `${isPinned ? '📌 ' : '📝 '}${title}`],
+        isCompleted ? ['span', { class: 'wonbee-sticker-done px-1.5 py-0.5 rounded text-[10px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-semibold' }, '✓ 완료'] : ['span', {}]
+      ],
+      [
+        'div',
+        { class: 'wonbee-sticker-content text-xs whitespace-pre-wrap leading-relaxed opacity-95' },
+        body
+      ]
     ];
   },
 

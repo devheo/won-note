@@ -1,6 +1,6 @@
 import React, { useRef, useState } from 'react';
 import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
-import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon } from 'lucide-react';
+import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon, Pin } from 'lucide-react';
 import { detectLanguage } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
@@ -34,11 +34,12 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const firstImageSrc = extractFirstImageSrc(rawString);
   const hasImage = !!firstImageSrc || rawString.includes('<img');
   const hasTable = rawString.includes('<table');
+  const hasSticker = rawString.includes('wonbee-sticker') || rawString.includes('<sticker-node');
   const isRich =
     columnType === 'richText' ||
     hasImage ||
     hasTable ||
-    rawString.includes('<sticker-node') ||
+    hasSticker ||
     rawString.includes('<h1>') ||
     rawString.includes('<h2>') ||
     rawString.includes('<strong>') ||
@@ -118,6 +119,17 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
               )}
             </span>
           </div>
+        ) : hasSticker ? (
+          <div className="flex items-start gap-1.5 min-w-0 w-full">
+            <Pin className="w-3.5 h-3.5 text-amber-500 fill-current flex-shrink-0 mt-0.5" />
+            <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-amber-900 dark:text-amber-300 font-medium">
+              {displayPlainText ? (
+                <HighlightText text={displayPlainText} highlight={highlightQuery} />
+              ) : (
+                '📌 원노트 스티커 메모'
+              )}
+            </span>
+          </div>
         ) : (
           <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug w-full">
             {displayPlainText ? (
@@ -154,7 +166,13 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             maxWidth: `${popoverPos.width}px`,
             zIndex: 9999,
           }}
-          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-stone-900/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto"
+          onDoubleClick={(e) => {
+            e.stopPropagation();
+            handleMouseLeave();
+            if (onOpenEditor) onOpenEditor();
+          }}
+          title={onOpenEditor ? "더블 클릭하여 에디터에서 열기" : undefined}
+          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-stone-900/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto cursor-pointer"
         >
           <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-800 text-[11px] text-stone-400 font-medium">
             <span className="flex items-center gap-1 text-amber-400 font-semibold">

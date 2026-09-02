@@ -28,12 +28,14 @@ import {
   Expand,
   ChevronDown,
   Image as ImageIcon,
+  StickyNote,
 } from 'lucide-react';
 import { detectLanguage } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
+import { getAllStickersFromRow, STICKER_COLOR_MAP } from '../../utils/stickerUtils';
 import {
   downloadRowsAsCsv,
   downloadRowsAsTxt,
@@ -50,7 +52,7 @@ interface ModernRowDetailViewerProps {
   totalRows: number;
   currentIndex: number;
   onNavigate: (newIndex: number) => void;
-  onOpenRichEditor: (row: TableRow) => void;
+  onOpenRichEditor: (row: TableRow, targetColId?: string) => void;
   onUpdateRow: (updatedRow: TableRow) => void;
   onDeleteRow: (rowId: string) => void;
 }
@@ -141,6 +143,8 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
   }, [isOpen, currentIndex, totalRows, handleClose, handleNavigate]);
 
   if (!isOpen || !row) return null;
+
+  const allStickers = getAllStickersFromRow(row, columns);
 
   // Copy single field
   const handleCopyField = (key: string, value: any) => {
@@ -509,6 +513,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                   const rawString = typeof val === 'object' ? JSON.stringify(val) : String(val ?? '');
                   const imgUrl = extractFirstImageSrc(rawString);
 
+                  const isSelectOrStatus = col.type === 'status' || col.type === 'select';
                   const isRichOrLong =
                     col.type === 'richText' ||
                     col.type === 'code' ||
@@ -522,11 +527,16 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                       onDoubleClick={(e) => {
                         // If clicking input or button, ignore
                         const target = e.target as HTMLElement;
-                        if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || isEditing) return;
-                        onOpenRichEditor(row);
-                        onClose();
+                        if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || target.closest('button') || target.closest('input') || isEditing) return;
+                        if (isSelectOrStatus) {
+                          setEditingColId(col.id);
+                          setEditValue(cleanTextValue(val));
+                        } else {
+                          onOpenRichEditor(row, col.id);
+                          onClose();
+                        }
                       }}
-                      title="더블 클릭하면 리치에디터가 열립니다"
+                      title={isSelectOrStatus ? "더블 클릭하여 상태/선택값 텍스트 수정" : "더블 클릭하면 리치에디터에서 전체 내용을 편리하게 수정할 수 있습니다"}
                       className={`p-3 rounded-xl bg-white dark:bg-[#1b1b1b] border border-stone-200 dark:border-[#333333] group/field transition-all cursor-pointer hover:border-amber-400 dark:hover:border-amber-600/70 ${
                         isRichOrLong ? 'col-span-1 md:col-span-2' : ''
                       }`}
@@ -565,14 +575,44 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                           >
                             {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                           </button>
-                          {!isEditing && (
+
+                          {/* Edit button: only status & select use inline text/select editing, all other columns open Rich Editor */}
+                          {isSelectOrStatus ? (
+                            <>
+                              {!isEditing && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingColId(col.id);
+                                    setEditValue(cleanTextValue(val));
+                                  }}
+                                  className="p-1 rounded text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
+                                  title="상태/선택값 텍스트 수정"
+                                >
+                                  <Edit3 className="w-3 h-3" />
+                                </button>
+                              )}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenRichEditor(row, col.id);
+                                  onClose();
+                                }}
+                                className="p-1 rounded text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
+                                title="서식 에디터(리치에디터) 열기"
+                              >
+                                <Maximize2 className="w-3 h-3" />
+                              </button>
+                            </>
+                          ) : (
                             <button
-                              onClick={() => {
-                                setEditingColId(col.id);
-                                setEditValue(cleanTextValue(val));
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenRichEditor(row, col.id);
+                                onClose();
                               }}
                               className="p-1 rounded text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
-                              title="수정"
+                              title="리치 에디터로 전체 수정"
                             >
                               <Edit3 className="w-3 h-3" />
                             </button>
@@ -581,15 +621,15 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                       </div>
 
                       {/* Field Value */}
-                      {isEditing ? (
+                      {isEditing && (isSelectOrStatus || col.type === 'checkbox') ? (
                         <div className="mt-2 space-y-2">
-                          {col.type === 'status' || col.type === 'select' ? (
+                          {isSelectOrStatus ? (
                             <SelectOrCustomInput
                               autoFocus
                               size="md"
                               value={editValue}
                               options={col.options}
-                              placeholder="선택 안 함"
+                              placeholder="선택 안 함 (직접 텍스트 입력 가능)"
                               onChange={(newVal) => setEditValue(newVal)}
                             />
                           ) : col.type === 'checkbox' ? (
@@ -604,28 +644,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                 {editValue ? '선택됨 (True)' : '선택 안 됨 (False)'}
                               </span>
                             </label>
-                          ) : isRichOrLong ? (
-                            <textarea
-                              autoFocus
-                              rows={4}
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              className="w-full bg-white dark:bg-[#1e1e1e] border border-amber-500 rounded-lg p-2 text-xs outline-none text-stone-900 dark:text-[#f5f5f5] leading-relaxed resize-y"
-                              placeholder="내용을 입력하세요..."
-                            />
-                          ) : (
-                            <input
-                              autoFocus
-                              type={col.type === 'number' ? 'number' : col.type === 'date' ? 'date' : 'text'}
-                              value={editValue}
-                              onChange={(e) => setEditValue(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveField(col.id);
-                                if (e.key === 'Escape') setEditingColId(null);
-                              }}
-                              className="w-full bg-white dark:bg-[#1e1e1e] border border-amber-500 rounded-lg px-2.5 py-1.5 text-xs outline-none text-stone-900 dark:text-[#f5f5f5]"
-                            />
-                          )}
+                          ) : null}
 
                           <div className="flex items-center gap-1.5">
                             <button
@@ -712,6 +731,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               (col.type === 'richText' ||
                                strVal.includes('<img') ||
                                strVal.includes('<table') ||
+                               strVal.includes('wonbee-sticker') ||
                                strVal.includes('<sticker-node')) &&
                               (strVal.includes('<') && strVal.includes('>'));
 
@@ -756,14 +776,14 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </div>
             </div>
 
-            {/* 2. Extra Rich Document Note (If present) */}
-            {row.richContent && row.richContent.trim() !== '' && (
+            {/* 2. Extra Rich Document Note (If present and not template welcome message) */}
+            {row.richContent && row.richContent.trim() !== '' && !row.richContent.includes('환영합니다') && !row.richContent.includes('새 테이블이 성공적으로 생성되었습니다') && (
               <div
                 onDoubleClick={() => {
-                  onOpenRichEditor(row);
+                  onOpenRichEditor(row, '__richContent__');
                   onClose();
                 }}
-                title="더블 클릭하면 리치에디터가 열립니다"
+                title="더블 클릭하면 추가 상세 서식 에디터가 열립니다"
                 className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333] cursor-pointer hover:border-amber-400 dark:hover:border-amber-600/70 transition-colors"
               >
                 <div className="flex items-center justify-between mb-3 border-b border-stone-200/60 dark:border-[#333333] pb-2">
@@ -773,7 +793,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                   </h3>
                   <button
                     onClick={() => {
-                      onOpenRichEditor(row);
+                      onOpenRichEditor(row, '__richContent__');
                       onClose();
                     }}
                     className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
@@ -797,31 +817,65 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </div>
             )}
 
-            {/* 3. Sticky Notes */}
-            {row.stickers && row.stickers.length > 0 && (
-              <div className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333]">
-                <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5 mb-3">
-                  <Pin className="w-3.5 h-3.5 text-amber-500" />
-                  부착된 원노트 스티커 메모 ({row.stickers.length}개)
-                </h3>
+            {/* 3. Sticky Notes (OneNote Style) */}
+            {allStickers.length > 0 && (
+              <div className="p-4 rounded-xl bg-amber-500/5 dark:bg-amber-500/10 border border-amber-200/80 dark:border-amber-900/40">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
+                    <Pin className="w-3.5 h-3.5 text-amber-500 fill-current" />
+                    부착된 원노트 스티커 메모 ({allStickers.length}개)
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onOpenRichEditor(row);
+                      onClose();
+                    }}
+                    className="text-[11px] text-amber-700 dark:text-amber-400 hover:underline flex items-center gap-1 font-medium"
+                  >
+                    <Edit3 className="w-3 h-3" />
+                    에디터에서 스티커 관리 &gt;
+                  </button>
+                </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  {row.stickers.map((stk) => (
-                    <div
-                      key={stk.id}
-                      className="p-3 rounded-xl bg-amber-50 dark:bg-[#2a261c] border border-amber-200 dark:border-amber-900/50 shadow-sm space-y-1.5 relative"
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-bold text-stone-800 dark:text-amber-300 text-xs">
-                          {stk.title}
-                        </span>
-                        {stk.isPinned && <Pin className="w-3 h-3 text-amber-600 dark:text-amber-400 fill-current" />}
+                  {allStickers.map((stk) => {
+                    const colorStyle = STICKER_COLOR_MAP[stk.color || 'amber'] || STICKER_COLOR_MAP.amber;
+                    return (
+                      <div
+                        key={stk.id}
+                        onClick={() => {
+                          onOpenRichEditor(row, stk.columnId);
+                          onClose();
+                        }}
+                        title="클릭하여 에디터에서 이 스티커 내용 수정"
+                        className={`p-3.5 rounded-xl border shadow-sm space-y-1.5 relative cursor-pointer transition-transform hover:scale-[1.02] ${colorStyle.bg} ${colorStyle.border} ${colorStyle.text}`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-bold text-xs flex items-center gap-1.5">
+                            {stk.isPinned ? <Pin className="w-3 h-3 fill-current text-amber-600 dark:text-amber-400" /> : <StickyNote className="w-3 h-3 opacity-70" />}
+                            {stk.title}
+                          </span>
+                          {stk.completed && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-semibold">
+                              ✓ 완료
+                            </span>
+                          )}
+                        </div>
+                        {stk.content && (
+                          <p className="text-[11px] whitespace-pre-wrap leading-relaxed opacity-95">
+                            {stk.content}
+                          </p>
+                        )}
+                        {stk.columnName && (
+                          <div className="pt-1.5 border-t border-black/10 dark:border-white/10 text-[10px] opacity-70 flex items-center justify-between">
+                            <span>위치: {stk.columnName}</span>
+                            <span className="text-[9px] hover:underline">에디터 열기 &gt;</span>
+                          </div>
+                        )}
                       </div>
-                      <p className="text-[11px] text-stone-600 dark:text-[#cccccc] whitespace-pre-wrap leading-relaxed">
-                        {stk.content}
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -859,6 +913,17 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
 
             <div className="flex items-center gap-2">
               <button
+                onClick={() => {
+                  onOpenRichEditor(row, editingColId || undefined);
+                  onClose();
+                }}
+                className="px-3 py-1.5 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-800/60 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition-colors"
+                title="에디터에서 원노트 스티커 메모 추가 및 편집"
+              >
+                <Pin className="w-3.5 h-3.5 fill-current text-amber-500" />
+                <span>원노트 스티커 {allStickers.length > 0 ? `(${allStickers.length})` : '추가'}</span>
+              </button>
+              <button
                 onClick={handleClose}
                 className="px-4 py-1.5 bg-stone-200/80 dark:bg-[#333333] hover:bg-stone-300 dark:hover:bg-[#404040] text-stone-700 dark:text-[#eeeeee] font-semibold rounded-lg text-xs transition-colors"
               >
@@ -866,7 +931,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </button>
               <button
                 onClick={() => {
-                  onOpenRichEditor(row);
+                  onOpenRichEditor(row, editingColId || undefined);
                   onClose();
                 }}
                 className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-colors"

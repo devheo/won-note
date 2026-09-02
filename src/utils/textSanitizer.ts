@@ -13,6 +13,15 @@ export function cleanTextValue(val: any): string {
 
   // If HTML tags are present (e.g. <p>...</p>, <pre>...</pre>, <span>...</span>)
   if (str.includes('<') && str.includes('>')) {
+    // Preserve OneNote sticker tags as readable text summary
+    if (str.includes('wonbee-sticker')) {
+      str = str.replace(/<div[^>]*data-type=["']wonbee-sticker["'][^>]*>([\s\S]*?)(?:<\/div>|$)/gi, (fullMatch) => {
+        const title = fullMatch.match(/data-title=["']([^"']*)["']/i)?.[1] || '스티커';
+        const body = fullMatch.match(/data-body=["']([^"']*)["']/i)?.[1] || '';
+        return ` [📌 ${title}${body ? `: ${body}` : ''}] `;
+      });
+    }
+
     str = str
       // Convert block elements & linebreaks to real newlines
       .replace(/<br\s*\/?>/gi, '\n')

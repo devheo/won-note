@@ -90,6 +90,7 @@ export default function App() {
 
   // Modals state
   const [editingRow, setEditingRow] = useState<TableRow | null>(null);
+  const [editingTargetColId, setEditingTargetColId] = useState<string | null>(null);
   const [selectedDetailRow, setSelectedDetailRow] = useState<TableRow | null>(null);
   const [selectedDetailRowIndex, setSelectedDetailRowIndex] = useState<number>(0);
   const [isDataPortabilityOpen, setIsDataPortabilityOpen] = useState(false);
@@ -124,7 +125,30 @@ export default function App() {
     try {
       setIsLoading(true);
       const data = await repository.loadWorkspace();
-      setWorkspace(data);
+
+      // Clean up legacy template welcome richContent if present on any row
+      let needsSave = false;
+      const cleanedTables = { ...data.tables };
+      Object.keys(cleanedTables).forEach((tId) => {
+        const table = cleanedTables[tId];
+        let tableChanged = false;
+        const cleanedRows = table.rows.map((row) => {
+          if (row.richContent && (row.richContent.includes('환영합니다') || row.richContent.includes('새 테이블이 성공적으로 생성되었습니다'))) {
+            tableChanged = true;
+            return { ...row, richContent: '' };
+          }
+          return row;
+        });
+        if (tableChanged) {
+          cleanedTables[tId] = { ...table, rows: cleanedRows };
+          needsSave = true;
+        }
+      });
+      const finalData = needsSave ? { ...data, tables: cleanedTables } : data;
+      setWorkspace(finalData);
+      if (needsSave) {
+        repository.saveWorkspace(finalData);
+      }
 
       const savedTableId = localStorage.getItem('wonbee_active_table_id');
       if (savedTableId && data.tables[savedTableId]) {
@@ -224,9 +248,9 @@ export default function App() {
           data: {
             'col-name': '첫 번째 데이터 레코드',
             'col-status': 'progress',
-            'col-note': '더블 클릭하여 편집하거나 우측 리치 에디터 버튼을 눌러 스티커 메모를 부착하세요.',
+            'col-note': '더블 클릭하여 편집하거나 우측 리치 에디터 버튼을 눌러 서식을 작성하세요.',
           },
-          richContent: '<h2>🐝 환영합니다!</h2><p>새 테이블이 성공적으로 생성되었습니다.</p>',
+          richContent: '',
           stickers: [],
           createdAt: Date.now(),
           updatedAt: Date.now(),
@@ -613,7 +637,10 @@ export default function App() {
               <DataTableViewer
                 table={activeTable}
                 onUpdateTable={handleUpdateTable}
-                onOpenRowEditor={(row) => setEditingRow(row)}
+                onOpenRowEditor={(row, colId) => {
+                  setEditingRow(row);
+                  setEditingTargetColId(colId || null);
+                }}
                 onOpenRowDetail={(row, idx) => {
                   setSelectedDetailRow(row);
                   setSelectedDetailRowIndex(idx);
@@ -649,7 +676,10 @@ export default function App() {
         totalRows={activeTable?.rows.length || 0}
         columns={activeTable?.columns || []}
         tableName={activeTable?.title || '테이블'}
-        onOpenRichEditor={(row) => setEditingRow(row)}
+        onOpenRichEditor={(row, colId) => {
+          setEditingRow(row);
+          setEditingTargetColId(colId || null);
+        }}
         onUpdateRow={(updated) => {
           if (!activeTable) return;
           const updatedRows = activeTable.rows.map((r) => (r.id === updated.id ? updated : r));
@@ -682,10 +712,14 @@ export default function App() {
       {/* 4. TipTap Rich Text Editor Modal (Data Add / Edit Drawer) */}
       <RichEditorModal
         isOpen={!!editingRow}
-        onClose={() => setEditingRow(null)}
+        onClose={() => {
+          setEditingRow(null);
+          setEditingTargetColId(null);
+        }}
         row={editingRow}
         columns={activeTable?.columns || []}
         tableName={activeTable?.title || '테이블'}
+        initialTargetId={editingTargetColId}
         onSaveRow={handleSaveRowFromEditor}
       />
 

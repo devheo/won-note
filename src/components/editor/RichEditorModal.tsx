@@ -91,6 +91,7 @@ interface RichEditorModalProps {
   row: TableRowType | null;
   columns: TableColumn[];
   tableName: string;
+  initialTargetId?: string | null;
   onSaveRow: (updatedRow: TableRowType) => Promise<void> | void;
 }
 
@@ -100,6 +101,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   row,
   columns,
   tableName,
+  initialTargetId,
   onSaveRow,
 }) => {
   const [currentRowData, setCurrentRowData] = useState<Record<string, any>>({});
@@ -126,51 +128,55 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   const highlightMenuRef = useRef<HTMLDivElement | null>(null);
   const cellBgMenuRef = useRef<HTMLDivElement | null>(null);
 
-  // Targets for rich editing: richText columns, long text columns (e.g. 내용, 처리방법), + general note
+  // Targets for rich editing: all columns in the table + general extra rich document note
   const richTargets = React.useMemo(() => {
     const list: { id: string; name: string; isColumn: boolean; type?: string }[] = [];
     
-    // Prioritize richText and text columns suitable for rich document editing
+    // Prioritize richText and text columns first, then others
+    const textCols: TableColumn[] = [];
+    const otherCols: TableColumn[] = [];
+
     columns.forEach((col) => {
       if (col.type === 'richText' || col.type === 'text' || col.name.includes('내용') || col.name.includes('방법') || col.name.includes('메모') || col.name.includes('설명')) {
-        list.push({
-          id: col.id,
-          name: col.name,
-          isColumn: true,
-          type: col.type,
-        });
+        textCols.push(col);
+      } else {
+        otherCols.push(col);
       }
     });
 
-    // If no text/richText columns found, add remaining columns
-    if (list.length === 0) {
-      columns.forEach((col) => {
-        list.push({
-          id: col.id,
-          name: col.name,
-          isColumn: true,
-          type: col.type,
-        });
+    [...textCols, ...otherCols].forEach((col) => {
+      list.push({
+        id: col.id,
+        name: col.name,
+        isColumn: true,
+        type: col.type,
+      });
+    });
+
+    // Only add extra rich document note if the row actually has legacy non-empty richContent (that is not the welcome placeholder)
+    if (row?.richContent && row.richContent.trim() !== '' && !row.richContent.includes('환영합니다') && !row.richContent.includes('새 테이블이 성공적으로 생성되었습니다')) {
+      list.push({
+        id: '__richContent__',
+        name: '추가 상세 서식 문서 / 메모',
+        isColumn: false,
       });
     }
 
-    // Add general note
-    list.push({
-      id: '__richContent__',
-      name: '추가 상세 노트',
-      isColumn: false,
-    });
-
     return list;
-  }, [columns]);
+  }, [columns, row?.richContent]);
 
-  // Default target is the first richText column or first target
-  const [selectedTargetId, setSelectedTargetId] = useState<string>(() => {
+  // Resolve target ID helper prioritizing initialTargetId if provided
+  const resolveTargetId = (targetId?: string | null) => {
+    if (targetId) {
+      if (targetId === '__richContent__' && row?.richContent && !row.richContent.includes('환영합니다')) return '__richContent__';
+      if (columns.some((c) => c.id === targetId)) return targetId;
+    }
     const firstRich = columns.find((c) => c.type === 'richText');
     if (firstRich) return firstRich.id;
-    return columns[0]?.id || '__richContent__';
-  });
+    return richTargets[0]?.id || columns[0]?.id || '';
+  };
 
+  const [selectedTargetId, setSelectedTargetId] = useState<string>(() => resolveTargetId(initialTargetId));
   const selectedTargetIdRef = useRef<string>(selectedTargetId);
   selectedTargetIdRef.current = selectedTargetId;
 
@@ -195,9 +201,9 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     return () => window.removeEventListener('mousedown', handleOutsideClick);
   }, []);
 
-  // Sync state when row changes
+  // Sync state when modal opens or row/initialTargetId changes
   useEffect(() => {
-    if (row) {
+    if (row && isOpen) {
       const sanitized: Record<string, any> = { ...(row.data || {}) };
       columns.forEach((col) => {
         if (sanitized[col.id] !== undefined && sanitized[col.id] !== null) {
@@ -222,12 +228,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       setCurrentRowData(sanitized);
       setRichContent(row.richContent || '');
       
-      const firstRich = columns.find((c) => c.type === 'richText');
-      const initialId = firstRich ? firstRich.id : richTargets[0]?.id || '__richContent__';
-      setSelectedTargetId(initialId);
-      selectedTargetIdRef.current = initialId;
+      const targetId = resolveTargetId(initialTargetId);
+      setSelectedTargetId(targetId);
+      selectedTargetIdRef.current = targetId;
     }
-  }, [row?.id, columns, richTargets]);
+  }, [row?.id, isOpen, initialTargetId, columns]);
 
   // Combined state object for auto-save hook
   const combinedRowState: TableRowType | null = row
@@ -291,7 +296,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }),
       StickerExtension,
     ],
-    content: row ? (columns.find((c) => c.type === 'richText') ? String(row.data[columns.find((c) => c.type === 'richText')!.id] || '') : row.richContent || '') : '',
+    content: '',
     editorProps: {
       attributes: {
         class:
@@ -344,6 +349,17 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     },
   });
 
+  // Sync TipTap editor content when modal opens or target/row changes
+  useEffect(() => {
+    if (editor && row && isOpen) {
+      const targetId = resolveTargetId(initialTargetId);
+      const initialContent = targetId === '__richContent__'
+        ? (row.richContent || '')
+        : String(row.data[targetId] ?? '');
+      editor.commands.setContent(initialContent);
+    }
+  }, [row?.id, isOpen, initialTargetId, editor]);
+
   // Switch target field
   const handleSwitchTarget = (targetId: string) => {
     setSelectedTargetId(targetId);
@@ -356,16 +372,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       editor.commands.setContent(content);
     }
   };
-
-  // Keep TipTap in sync if opened row changes
-  useEffect(() => {
-    if (editor && row) {
-      const initialContent = selectedTargetId === '__richContent__'
-        ? (row.richContent || '')
-        : String(row.data[selectedTargetId] ?? '');
-      editor.commands.setContent(initialContent);
-    }
-  }, [row?.id, editor]);
 
   if (!isOpen || !row) return null;
 

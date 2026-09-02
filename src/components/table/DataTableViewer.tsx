@@ -15,6 +15,8 @@ import {
   copyRowsAsCsv,
   copyRowsAsTxt,
 } from '../../utils/exportUtils';
+import { getAllStickersFromRow } from '../../utils/stickerUtils';
+import { envService } from '../../services/storage/envService';
 import {
   Plus,
   ArrowUpDown,
@@ -42,6 +44,7 @@ import {
   GripVertical,
   Filter,
   X,
+  Pin,
   FileSpreadsheet,
   FileText,
   ClipboardPaste,
@@ -54,8 +57,8 @@ import {
 interface DataTableViewerProps {
   table: TableDocument;
   onUpdateTable: (updatedTable: TableDocument) => void;
-  onOpenRowEditor: (row: TableRow) => void;
-  onOpenRowDetail: (row: TableRow, index: number) => void;
+  onOpenRowEditor: (row: TableRow, targetColId?: string) => void;
+  onOpenRowDetail: (row: TableRow, index: number, targetColId?: string) => void;
   onImportCsvToNewTable?: (fileName: string, columns: TableColumn[], rows: TableRow[]) => void;
 }
 
@@ -76,6 +79,12 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [sortColumnId, setSortColumnId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  const [onlyStickerFilter, setOnlyStickerFilter] = useState(false);
+
+  // Total stickers attached across all rows in table
+  const totalStickersCount = useMemo(() => {
+    return table.rows.reduce((acc, r) => acc + getAllStickersFromRow(r, table.columns).length, 0);
+  }, [table.rows, table.columns]);
 
   // Excel-style column filters state: { [columnId]: string[] } (list of allowed distinct values)
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>({});
@@ -87,6 +96,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setColumnFilters({});
     setOpenFilterColId(null);
     setSelectedRowIds(new Set());
+    setOnlyStickerFilter(false);
   }, [table.id]);
 
   // Image Lightbox state
@@ -164,7 +174,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [editingValue, setEditingValue] = useState<any>('');
 
   // Inline Cell Commit
-  const commitCellEdit人力 = (rowId: string, colId: string, val: any) => {
+  const commitCellEdit = (rowId: string, colId: string, val: any) => {
     const targetCol = table.columns.find((c) => c.id === colId);
     const cleaned =
       typeof val === 'string' && targetCol?.type !== 'richText'
@@ -202,9 +212,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         setIsDensityMenuOpen(false);
       }
       if (editingCell) {
-        const target实施 = e.target as HTMLElement;
-        if (!target实施.closest('[data-editing-cell="true"]')) {
-          commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
+        const target = e.target as HTMLElement;
+        if (!target.closest('[data-editing-cell="true"]')) {
+          commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
         }
       }
     };
@@ -218,39 +228,46 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setEditingValue('');
   }, [table.id]);
 
-  // Column Resizing state
+  // Column Resizing state (Individual column widths saved per table)
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>(() => {
     const map: Record<string, number> = {};
+    const envWidths = envService.getEnv().columnWidths[table.id] || {};
     table.columns.forEach((c) => {
-      map[c.id] = c.width || 180;
+      map[c.id] = envWidths[c.id] || c.width || 180;
     });
     return map;
   });
 
-  // Sync column widths if table columns change
+  // Sync column widths if table columns or active table changes
   useEffect(() => {
+    const envWidths = envService.getEnv().columnWidths[table.id] || {};
     setColumnWidths((prev) => {
       const next = { ...prev };
       table.columns.forEach((c) => {
         if (!next[c.id]) {
-          next[c.id] = c.width || 180;
+          next[c.id] = envWidths[c.id] || c.width || 180;
         }
       });
       return next;
     });
-  }, [table.columns]);
+  }, [table.id, table.columns]);
 
-  // Handle Column Resize mouse events
+  // Handle Column Resize mouse events: Keeps minimum cell width (60px) and ensures independent resizing
   const handleResizeStart = (e: React.MouseEvent, colId: string, currentWidth: number) => {
     e.preventDefault();
     e.stopPropagation();
 
     const startX = e.clientX;
-    const startWidth = currentWidth || 160;
+    const startWidth = currentWidth || 180;
     let latestWidth = startWidth;
+
+    // Prevent accidental text selection and show resize cursor
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
 
     const handleMouseMove = (moveEvent: MouseEvent) => {
       const delta = moveEvent.clientX - startX;
+      // Maintain minimum cell width intact (60px)
       const newWidth = Math.max(60, startWidth + delta);
       latestWidth = newWidth;
 
@@ -261,6 +278,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     };
 
     const handleMouseUp = () => {
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
 
@@ -269,6 +288,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           ...prev,
           [colId]: latestWidth,
         }));
+
+        // Persist to user_env.json
+        envService.setColumnWidth(table.id, colId, latestWidth);
 
         const updatedCols = table.columns.map((c) =>
           c.id === colId ? { ...c, width: latestWidth } : c
@@ -702,6 +724,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const processedRows = useMemo(() => {
     let list = [...table.rows];
 
+    // 0. Only sticker filter
+    if (onlyStickerFilter) {
+      list = list.filter((r) => getAllStickersFromRow(r, table.columns).length > 0);
+    }
+
     // 1. Search Query Filter (Optimized with deferredSearchQuery for instant, lag-free typing)
     const trimmedQuery = deferredSearchQuery.trim();
     if (trimmedQuery) {
@@ -790,12 +817,12 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
 
     return list;
-  }, [table.rows, table.columns, deferredSearchQuery, columnFilters, sortColumnId, sortDirection]);
+  }, [table.rows, table.columns, deferredSearchQuery, columnFilters, sortColumnId, sortDirection, onlyStickerFilter]);
 
   // Reset visibleCount when table or filters change
   useEffect(() => {
     setVisibleCount(100);
-  }, [table.id, deferredSearchQuery, columnFilters, sortColumnId, sortDirection]);
+  }, [table.id, deferredSearchQuery, columnFilters, sortColumnId, sortDirection, onlyStickerFilter]);
 
   // Progressive Chunk Rendering (Smooth infinite scroll, avoids freezing DOM with 1000s of elements)
   const visibleRows = useMemo(() => {
@@ -880,6 +907,27 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               </div>
             )}
           </div>
+
+          {/* Quick Filter: Show Rows with Stickers */}
+          {totalStickersCount > 0 && (
+            <button
+              onClick={() => setOnlyStickerFilter((prev) => !prev)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+                onlyStickerFilter
+                  ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm'
+                  : 'bg-amber-500/10 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-300/70 dark:border-amber-700/60 hover:bg-amber-500/20'
+              }`}
+              title={onlyStickerFilter ? '전체 행 보기로 복귀' : '원노트 스티커 메모가 부착된 행만 모아보기'}
+            >
+              <Pin className="w-3.5 h-3.5 fill-current text-amber-500" />
+              <span>스티커 메모 ({totalStickersCount}개)</span>
+              {onlyStickerFilter && (
+                <span className="text-[10px] ml-0.5 px-1 py-0.2 rounded bg-stone-900 text-amber-300 font-bold">
+                  필터 ON
+                </span>
+              )}
+            </button>
+          )}
 
           {/* Active Sort Notification & Priority Reset Button */}
           {sortColumnId && (
@@ -1203,23 +1251,31 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         onScroll={handleTableScroll}
         className="flex-1 overflow-auto custom-scrollbar relative"
       >
-        <table className="w-full border-collapse text-left text-xs font-sans">
+        <table className="table-fixed min-w-full border-collapse text-left text-xs font-sans">
           {/* Table Header Columns Width Mapping */}
           <colgroup>
-            <col style={{ width: '80px' }} />
-            {visibleColumns.map((col) => (
-              <col
-                key={col.id}
-                style={{ width: `${columnWidths[col.id] || col.width || 160}px` }}
-              />
-            ))}
-            <col style={{ width: '144px' }} />
+            <col style={{ width: '80px', minWidth: '80px', maxWidth: '80px' }} />
+            {visibleColumns.map((col) => {
+              const currentWidth = columnWidths[col.id] || col.width || 180;
+              return (
+                <col
+                  key={col.id}
+                  style={{ width: `${currentWidth}px`, minWidth: `${currentWidth}px` }}
+                />
+              );
+            })}
+            <col style={{ width: '144px', minWidth: '144px', maxWidth: '144px' }} />
+            {/* Trailing spacer column to ensure independent column resizing without affecting other columns */}
+            <col className="w-auto" />
           </colgroup>
           {/* Table Header Row */}
           <thead className="sticky top-0 z-30 bg-stone-100/95 dark:bg-[#222222]/95 backdrop-blur-md border-b border-stone-200 dark:border-[#383838] shadow-2xs">
             <tr>
               {/* Checkbox, Drag Handle & Priority Index Header */}
-              <th className="w-20 px-2 py-2.5 text-center font-semibold text-stone-400 dark:text-[#888888] border-r border-stone-200 dark:border-[#333333] select-none">
+              <th
+                style={{ width: '80px', minWidth: '80px', maxWidth: '80px' }}
+                className="w-20 px-2 py-2.5 text-center font-semibold text-stone-400 dark:text-[#888888] border-r border-stone-200 dark:border-[#333333] select-none"
+              >
                 <div className="flex items-center justify-center gap-1.5">
                   <input
                     type="checkbox"
@@ -1234,20 +1290,24 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
               {/* Dynamic Visible Columns */}
               {visibleColumns.map((col) => {
-                const currentWidth = columnWidths[col.id] || col.width || 160;
+                const currentWidth = columnWidths[col.id] || col.width || 180;
                 const isSorted = sortColumnId === col.id;
                 const hasFilter = !!columnFilters[col.id];
 
                 return (
                   <th
                     key={col.id}
-                    style={{ width: `${currentWidth}px` }}
+                    style={{
+                      width: `${currentWidth}px`,
+                      minWidth: `${currentWidth}px`,
+                      maxWidth: `${currentWidth}px`,
+                    }}
                     className="relative px-3 py-2 font-semibold text-stone-800 dark:text-[#f0f0f0] border-r border-stone-200 dark:border-[#333333] select-none group/th hover:bg-stone-200/50 dark:hover:bg-[#2a2a2a] transition-colors"
                   >
-                    <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center justify-between gap-1.5 overflow-hidden">
                       {/* Column Name & Quick Sort Trigger */}
                       <div
-                        className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer"
+                        className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer overflow-hidden"
                         onClick={() => handleHeaderSort(col.id)}
                         title="클릭하여 정렬"
                       >
@@ -1292,17 +1352,21 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       </button>
                     </div>
 
-                    {/* Column Resizing Drag Handle */}
+                    {/* Column Resizing Drag Handle (Convenient 8px grab area with hover/active state) */}
                     <div
                       onMouseDown={(e) => handleResizeStart(e, col.id, currentWidth)}
-                      className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize hover:bg-amber-500 active:bg-amber-600 z-10"
+                      className="absolute right-0 top-0 bottom-0 w-2 cursor-col-resize hover:bg-amber-500 active:bg-amber-600 z-20 transition-colors"
+                      title="드래그하여 열 너비 조절 (다른 열에 영향 없이 독립 조절)"
                     />
                   </th>
                 );
               })}
 
               {/* Add / Manage Columns Header */}
-              <th className="w-36 px-3 py-2.5 text-center font-medium border-b border-stone-200 dark:border-[#383838]">
+              <th
+                style={{ width: '144px', minWidth: '144px', maxWidth: '144px' }}
+                className="w-36 px-3 py-2.5 text-center font-medium border-b border-stone-200 dark:border-[#383838]"
+              >
                 <button
                   onClick={() => setIsColumnManagerOpen(true)}
                   className="px-2 py-1 bg-stone-200/80 dark:bg-[#2a2a2a] hover:bg-amber-100 dark:hover:bg-amber-950 text-stone-700 dark:text-[#dddddd] hover:text-amber-700 dark:hover:text-amber-300 rounded text-xs font-semibold flex items-center gap-1 mx-auto transition-colors border border-stone-300/60 dark:border-[#404040]"
@@ -1312,16 +1376,20 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   열 관리
                 </button>
               </th>
+
+              {/* Trailing filler header so resizing one column never shifts or shrinks other columns */}
+              <th className="w-auto p-0 min-w-0 border-b border-stone-200 dark:border-[#383838]" />
             </tr>
           </thead>
 
           {/* Table Body Rows with Drag-and-Drop */}
           <tbody className="divide-y divide-stone-200/70 dark:divide-[#2d2d2d] bg-white dark:bg-[#181818]">
             {visibleRows.map((row, rIdx) => {
-              const isSelected深受 = selectedRowIds.has(row.id);
+              const isSelected = selectedRowIds.has(row.id);
               const heightClass = getRowHeightClass();
               const isDragging = draggedRowId === row.id;
               const isDropTarget = dropTargetRowId === row.id;
+              const rowStickers = getAllStickersFromRow(row, table.columns);
 
               return (
                 <tr
@@ -1343,7 +1411,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       return;
                     }
                     if (editingCell) {
-                      commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
+                      commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
                     }
                     onOpenRowDetail(row, rIdx);
                   }}
@@ -1361,7 +1429,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       return;
                     }
                     if (editingCell) {
-                      commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
+                      commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
                       setEditingCell(null);
                     }
                     onOpenRowEditor(row);
@@ -1377,7 +1445,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       ? 'border-b-2 border-b-amber-500'
                       : ''
                   } ${
-                    isSelected深受
+                    isSelected
                       ? 'bg-amber-500/15 dark:bg-amber-500/20'
                       : rIdx % 2 === 0
                       ? 'bg-white dark:bg-[#181818] hover:bg-stone-100/70 dark:hover:bg-[#252525]'
@@ -1387,6 +1455,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   {/* Row Checkbox, Drag Handle & Priority Index */}
                   <td
                     onClick={(e) => e.stopPropagation()}
+                    style={{ width: '80px', minWidth: '80px', maxWidth: '80px' }}
                     className={`px-2 ${heightClass} text-center font-mono text-[11px] text-stone-400 dark:text-[#888888] border-r border-stone-200/70 dark:border-[#2d2d2d] select-none`}
                   >
                     <div className="flex items-center justify-center gap-1.5">
@@ -1402,13 +1471,29 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
                       <input
                         type="checkbox"
-                        checked={isSelected深受}
+                        checked={isSelected}
                         onChange={() => toggleSelectRow(row.id)}
                         className="rounded accent-amber-500 cursor-pointer"
                       />
                       <span className="font-semibold text-stone-600 dark:text-[#aaaaaa] min-w-[14px]">
                         {rIdx + 1}
                       </span>
+
+                      {/* Attached OneNote Stickers Badge */}
+                      {rowStickers.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenRowDetail(row, rIdx);
+                          }}
+                          title={`원노트 스티커 메모 ${rowStickers.length}개 부착됨 (클릭하여 확인)`}
+                          className="inline-flex items-center gap-0.5 px-1 py-0.2 rounded-full bg-amber-500/20 hover:bg-amber-500/30 text-amber-700 dark:text-amber-400 text-[9px] font-bold transition-colors cursor-pointer border border-amber-400/40"
+                        >
+                          <Pin className="w-2.5 h-2.5 fill-current" />
+                          <span>{rowStickers.length}</span>
+                        </button>
+                      )}
                     </div>
                   </td>
 
@@ -1416,14 +1501,24 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   {visibleColumns.map((col) => {
                     const rawVal = row.data[col.id];
                     const isEditing = editingCell?.rowId === row.id && editingCell?.colId === col.id;
+                    const currentWidth = columnWidths[col.id] || col.width || 180;
 
                     return (
                       <td
                         key={col.id}
+                        style={{
+                          width: `${currentWidth}px`,
+                          minWidth: `${currentWidth}px`,
+                          maxWidth: `${currentWidth}px`,
+                        }}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
+                          if (col.type === 'richText') {
+                            onOpenRowEditor(row, col.id);
+                            return;
+                          }
                           if (editingCell) {
-                            commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
+                            commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
                           }
                           setEditingCell({ rowId: row.id, colId: col.id });
                           setEditingValue(rawVal ?? '');
@@ -1440,9 +1535,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 placeholder="선택 안 함"
                                 onChange={(val) => {
                                   setEditingValue(val);
-                                  commitCellEdit人力(row.id, col.id, val);
+                                  commitCellEdit(row.id, col.id, val);
                                 }}
-                                onBlur={() => commitCellEdit人力(row.id, col.id, editingValue)}
+                                onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
                               />
                             ) : col.type === 'checkbox' ? (
                               <input
@@ -1450,9 +1545,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 autoFocus
                                 checked={!!editingValue}
                                 onChange={(e) => {
-                                  commitCellEdit人力(row.id, col.id, e.target.checked);
+                                  commitCellEdit(row.id, col.id, e.target.checked);
                                 }}
-                                onBlur={() => commitCellEdit人力(row.id, col.id, editingValue)}
+                                onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
                                 className="rounded accent-amber-500"
                               />
                             ) : (
@@ -1462,10 +1557,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 value={editingValue}
                                 onChange={(e) => setEditingValue(e.target.value)}
                                 onKeyDown={(e) => {
-                                  if (e.key === 'Enter') commitCellEdit人力(row.id, col.id, editingValue);
+                                  if (e.key === 'Enter') commitCellEdit(row.id, col.id, editingValue);
                                   if (e.key === 'Escape') setEditingCell(null);
                                 }}
-                                onBlur={() => commitCellEdit人力(row.id, col.id, editingValue)}
+                                onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
                                 className="w-full bg-white dark:bg-[#242424] border border-amber-500 rounded px-1.5 py-0.5 outline-none text-xs text-stone-900 dark:text-[#ffffff]"
                               />
                             )}
@@ -1475,7 +1570,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                             value={rawVal}
                             columnType={col.type}
                             highlightQuery={deferredSearchQuery}
-                            onOpenEditor={() => onOpenRowDetail(row, rIdx)}
+                            onOpenEditor={() => onOpenRowEditor(row, col.id)}
                             onOpenImage={(src) => setLightboxImg(src)}
                             renderCustomContent={(val) => {
                               if (col.type === 'checkbox') {
@@ -1484,7 +1579,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                     type="checkbox"
                                     checked={!!val}
                                     onChange={(e) => {
-                                      commitCellEdit人力(row.id, col.id, e.target.checked);
+                                      commitCellEdit(row.id, col.id, e.target.checked);
                                     }}
                                     onClick={(e) => e.stopPropagation()}
                                     className="rounded accent-amber-500 cursor-pointer"
@@ -1557,7 +1652,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   })}
 
                   {/* Row Actions: Reorder Up/Down, Detail, Rich Editor, Delete */}
-                  <td className={`px-2 ${heightClass} text-center border-b border-stone-200/70 dark:border-[#2d2d2d]`}>
+                  <td
+                    style={{ width: '144px', minWidth: '144px', maxWidth: '144px' }}
+                    className={`px-2 ${heightClass} text-center border-b border-stone-200/70 dark:border-[#2d2d2d]`}
+                  >
                     <div className="flex items-center justify-center gap-0.5 opacity-0 group-hover/row:opacity-100 transition-opacity">
                       {/* Move Row Up */}
                       <button
@@ -1609,6 +1707,20 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         <Maximize2 className="w-3.5 h-3.5" />
                       </button>
 
+                      {/* Direct OneNote Sticker Action */}
+                      {rowStickers.length > 0 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenRowDetail(row, rIdx);
+                          }}
+                          title={`원노트 스티커 메모 (${rowStickers.length}개) 바로 보기`}
+                          className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-950/60 text-amber-600 dark:text-amber-400 transition-colors"
+                        >
+                          <Pin className="w-3.5 h-3.5 fill-current" />
+                        </button>
+                      )}
+
                       {/* Export Single Row CSV */}
                       <button
                         onClick={(e) => {
@@ -1647,6 +1759,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       </button>
                     </div>
                   </td>
+
+                  {/* Trailing Filler Cell */}
+                  <td className="w-auto p-0 border-b border-stone-200/70 dark:border-[#2d2d2d]" />
                 </tr>
               );
             })}
@@ -1654,7 +1769,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             {visibleRows.length < processedRows.length && (
               <tr>
                 <td
-                  colSpan={visibleColumns.length + 2}
+                  colSpan={visibleColumns.length + 3}
                   className="py-3 text-center bg-stone-50/50 dark:bg-[#1c1c1c] border-t border-stone-200/80 dark:border-[#333333]"
                 >
                   <button
@@ -1670,7 +1785,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             {processedRows.length === 0 && (
               <tr>
                 <td
-                  colSpan={visibleColumns.length + 2}
+                  colSpan={visibleColumns.length + 3}
                   className="py-12 text-center text-stone-400 dark:text-[#888888] text-xs bg-white dark:bg-[#181818]"
                 >
                   <p className="text-sm font-medium text-stone-600 dark:text-[#cccccc] mb-1">
