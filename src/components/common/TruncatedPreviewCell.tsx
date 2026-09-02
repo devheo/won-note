@@ -4,10 +4,12 @@ import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon } from 'lucide-rea
 import { detectLanguage } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
+import { HighlightText } from './HighlightText';
 
 interface TruncatedPreviewCellProps {
   value: any;
   columnType: string;
+  highlightQuery?: string;
   onOpenEditor?: () => void;
   onOpenImage?: (src: string) => void;
   className?: string;
@@ -17,6 +19,7 @@ interface TruncatedPreviewCellProps {
 export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   value,
   columnType,
+  highlightQuery = '',
   onOpenEditor,
   onOpenImage,
   className = '',
@@ -108,12 +111,20 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
               <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
             )}
             <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-stone-700 dark:text-stone-300">
-              {displayPlainText || '[이미지 첨부]'}
+              {displayPlainText ? (
+                <HighlightText text={displayPlainText} highlight={highlightQuery} />
+              ) : (
+                '[이미지 첨부]'
+              )}
             </span>
           </div>
         ) : (
           <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug w-full">
-            {displayPlainText || <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>}
+            {displayPlainText ? (
+              <HighlightText text={displayPlainText} highlight={highlightQuery} />
+            ) : (
+              <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+            )}
           </div>
         )}
       </div>
@@ -182,7 +193,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             />
           ) : (
             <div className="max-h-52 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar">
-              {displayPlainText}
+              <HighlightText text={displayPlainText} highlight={highlightQuery} />
             </div>
           )}
 

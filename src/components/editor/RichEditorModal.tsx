@@ -7,6 +7,10 @@ import { Table } from '@tiptap/extension-table';
 import { TableRow } from '@tiptap/extension-table-row';
 import { TableCell } from '@tiptap/extension-table-cell';
 import { TableHeader } from '@tiptap/extension-table-header';
+import { TextAlign } from '@tiptap/extension-text-align';
+import { TextStyle } from '@tiptap/extension-text-style';
+import { Color } from '@tiptap/extension-color';
+import { Highlight } from '@tiptap/extension-highlight';
 import { StickerExtension } from './StickerExtension';
 import { TableRow as TableRowType, TableColumn, AutoSaveStatus } from '../../types';
 import { useAutoSave } from '../../hooks/useAutoSave';
@@ -49,7 +53,37 @@ import {
   Edit3,
   Database,
   ClipboardPaste,
+  AlignLeft,
+  AlignCenter,
+  AlignRight,
+  Highlighter,
+  Palette,
+  Combine,
+  Split,
+  PaintBucket,
 } from 'lucide-react';
+
+// Custom TableCell supporting background colors
+const CustomTableCell = TableCell.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      backgroundColor: {
+        default: null,
+        parseHTML: (element) => element.style.backgroundColor || element.getAttribute('data-bg-color') || null,
+        renderHTML: (attributes) => {
+          if (!attributes.backgroundColor) {
+            return {};
+          }
+          return {
+            style: `background-color: ${attributes.backgroundColor};`,
+            'data-bg-color': attributes.backgroundColor,
+          };
+        },
+      },
+    };
+  },
+});
 
 interface RichEditorModalProps {
   isOpen: boolean;
@@ -82,8 +116,15 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     });
   };
   const [isTableMenuOpen, setIsTableMenuOpen] = useState(false);
+  const [isTextColorMenuOpen, setIsTextColorMenuOpen] = useState(false);
+  const [isHighlightMenuOpen, setIsHighlightMenuOpen] = useState(false);
+  const [isCellBgMenuOpen, setIsCellBgMenuOpen] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const tableMenuRef = useRef<HTMLDivElement | null>(null);
+  const textColorMenuRef = useRef<HTMLDivElement | null>(null);
+  const highlightMenuRef = useRef<HTMLDivElement | null>(null);
+  const cellBgMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Targets for rich editing: richText columns, long text columns (e.g. 내용, 처리방법), + general note
   const richTargets = React.useMemo(() => {
@@ -133,18 +174,26 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   const selectedTargetIdRef = useRef<string>(selectedTargetId);
   selectedTargetIdRef.current = selectedTargetId;
 
-  // Close table menu when clicking outside
+  // Close menus when clicking outside
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
-      if (tableMenuRef.current && !tableMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (tableMenuRef.current && !tableMenuRef.current.contains(target)) {
         setIsTableMenuOpen(false);
       }
+      if (textColorMenuRef.current && !textColorMenuRef.current.contains(target)) {
+        setIsTextColorMenuOpen(false);
+      }
+      if (highlightMenuRef.current && !highlightMenuRef.current.contains(target)) {
+        setIsHighlightMenuOpen(false);
+      }
+      if (cellBgMenuRef.current && !cellBgMenuRef.current.contains(target)) {
+        setIsCellBgMenuOpen(false);
+      }
     };
-    if (isTableMenuOpen) {
-      window.addEventListener('mousedown', handleOutsideClick);
-    }
+    window.addEventListener('mousedown', handleOutsideClick);
     return () => window.removeEventListener('mousedown', handleOutsideClick);
-  }, [isTableMenuOpen]);
+  }, []);
 
   // Sync state when row changes
   useEffect(() => {
@@ -221,7 +270,15 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }),
       TableRow,
       TableHeader,
-      TableCell,
+      CustomTableCell,
+      TextAlign.configure({
+        types: ['heading', 'paragraph', 'tableHeader', 'tableCell'],
+      }),
+      TextStyle,
+      Color,
+      Highlight.configure({
+        multicolor: true,
+      }),
       Image.configure({
         inline: true,
         allowBase64: true,
@@ -645,6 +702,152 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
               <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
 
+              {/* Text Alignment */}
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().setTextAlign('left').run()}
+                className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
+                  editor.isActive({ textAlign: 'left' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400' : 'text-stone-600 dark:text-stone-300'
+                }`}
+                title="왼쪽 정렬"
+              >
+                <AlignLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().setTextAlign('center').run()}
+                className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
+                  editor.isActive({ textAlign: 'center' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400' : 'text-stone-600 dark:text-stone-300'
+                }`}
+                title="가운데 정렬"
+              >
+                <AlignCenter className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().setTextAlign('right').run()}
+                className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
+                  editor.isActive({ textAlign: 'right' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400' : 'text-stone-600 dark:text-stone-300'
+                }`}
+                title="오른쪽 정렬"
+              >
+                <AlignRight className="w-3.5 h-3.5" />
+              </button>
+
+              <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
+
+              {/* Text Color Picker Dropdown */}
+              <div className="relative" ref={textColorMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsTextColorMenuOpen(!isTextColorMenuOpen)}
+                  className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors flex items-center gap-0.5"
+                  title="글꼴 색상 변경"
+                >
+                  <Palette className="w-3.5 h-3.5 text-indigo-500" />
+                  <ChevronDown className="w-2.5 h-2.5 opacity-60" />
+                </button>
+                {isTextColorMenuOpen && (
+                  <div className="absolute left-0 top-full mt-1.5 w-44 bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl z-50 p-2 text-xs animate-in fade-in zoom-in-95">
+                    <div className="text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider mb-1.5">
+                      글꼴 색상 선택
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5 mb-2">
+                      {[
+                        { color: '#1c1917', name: '기본(검정)' },
+                        { color: '#ef4444', name: '빨강' },
+                        { color: '#3b82f6', name: '파랑' },
+                        { color: '#10b981', name: '초록' },
+                        { color: '#8b5cf6', name: '보라' },
+                        { color: '#f97316', name: '주황' },
+                        { color: '#d97706', name: '황토' },
+                        { color: '#6b7280', name: '회색' },
+                      ].map((item) => (
+                        <button
+                          key={item.color}
+                          type="button"
+                          onClick={() => {
+                            editor.chain().focus().setColor(item.color).run();
+                            setIsTextColorMenuOpen(false);
+                          }}
+                          className="w-7 h-7 rounded-lg border border-stone-200 dark:border-[#444444] hover:scale-110 transition-transform shadow-2xs flex items-center justify-center"
+                          style={{ backgroundColor: item.color }}
+                          title={item.name}
+                        />
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        editor.chain().focus().unsetColor().run();
+                        setIsTextColorMenuOpen(false);
+                      }}
+                      className="w-full py-1 text-center rounded text-[11px] font-medium text-stone-500 hover:bg-stone-100 dark:hover:bg-[#333333] transition-colors"
+                    >
+                      색상 초기화
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Text Highlight / Background */}
+              <div className="relative" ref={highlightMenuRef}>
+                <button
+                  type="button"
+                  onClick={() => setIsHighlightMenuOpen(!isHighlightMenuOpen)}
+                  className={`p-1.5 rounded transition-colors flex items-center gap-0.5 ${
+                    editor.isActive('highlight')
+                      ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold'
+                      : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
+                  }`}
+                  title="형광펜 / 텍스트 배경색"
+                >
+                  <Highlighter className="w-3.5 h-3.5 text-amber-500" />
+                  <ChevronDown className="w-2.5 h-2.5 opacity-60" />
+                </button>
+                {isHighlightMenuOpen && (
+                  <div className="absolute left-0 top-full mt-1.5 w-44 bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl z-50 p-2 text-xs animate-in fade-in zoom-in-95">
+                    <div className="text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider mb-1.5">
+                      형광펜 색상
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5 mb-2">
+                      {[
+                        { color: '#fef08a', name: '노랑' },
+                        { color: '#bbf7d0', name: '연두' },
+                        { color: '#bae6fd', name: '하늘' },
+                        { color: '#fbcfe8', name: '분홍' },
+                        { color: '#ddd6fe', name: '연보라' },
+                        { color: '#fed7aa', name: '살구' },
+                      ].map((item) => (
+                        <button
+                          key={item.color}
+                          type="button"
+                          onClick={() => {
+                            editor.chain().focus().toggleHighlight({ color: item.color }).run();
+                            setIsHighlightMenuOpen(false);
+                          }}
+                          className="w-7 h-7 rounded-lg border border-stone-200 dark:border-[#444444] hover:scale-110 transition-transform shadow-2xs"
+                          style={{ backgroundColor: item.color }}
+                          title={item.name}
+                        />
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        editor.chain().focus().unsetHighlight().run();
+                        setIsHighlightMenuOpen(false);
+                      }}
+                      className="w-full py-1 text-center rounded text-[11px] font-medium text-stone-500 hover:bg-stone-100 dark:hover:bg-[#333333] transition-colors"
+                    >
+                      형광펜 지우기
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
+
               {/* Image Upload Button */}
               <button
                 type="button"
@@ -669,128 +872,192 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                   onClick={() => setIsTableMenuOpen(!isTableMenuOpen)}
                   className={`px-2 py-1 rounded text-xs flex items-center gap-1 transition-colors ${
                     editor.isActive('table')
-                      ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold'
+                      ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold ring-1 ring-amber-400'
                       : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
                   }`}
-                  title="표 도구 메뉴"
+                  title="표 도구 메뉴 (크기조절, 행/열 추가, 셀 병합/분할, 셀 색상)"
                 >
-                  <TableIcon className="w-3.5 h-3.5" />
-                  <span>표</span>
+                  <TableIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span>표 도구</span>
                   <ChevronDown className="w-3 h-3 opacity-60" />
                 </button>
 
                 {isTableMenuOpen && (
-                  <div className="absolute left-0 top-full mt-1.5 w-48 bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl z-50 p-1.5 text-xs">
-                    <div className="px-2 py-1 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
-                      표 삽입
+                  <div className="absolute left-0 top-full mt-1.5 w-56 bg-white dark:bg-[#242424] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl z-50 p-2 text-xs divide-y divide-stone-100 dark:divide-[#333333]">
+                    <div className="pb-1.5 space-y-1">
+                      <div className="px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
+                        표 삽입
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center gap-2 transition-colors font-medium text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-emerald-500" />
+                        새 표 삽입 (3x3)
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center gap-2 transition-colors"
-                    >
-                      <Plus className="w-3.5 h-3.5 text-emerald-500" />
-                      새 표 삽입 (3x3)
-                    </button>
 
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-
-                    <div className="px-2 py-1 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
-                      행 & 열 관리
+                    {/* Cell Merging & Splitting */}
+                    <div className="py-1.5 space-y-1">
+                      <div className="px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
+                        셀 병합 & 분할
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().mergeCells().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Combine className="w-3.5 h-3.5 text-indigo-500" />
+                        선택된 셀 병합 (Merge)
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().splitCell().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Split className="w-3.5 h-3.5 text-sky-500" />
+                        병합된 셀 분할 (Split)
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().addRowBefore().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors"
-                    >
-                      <Rows className="w-3.5 h-3.5 text-blue-500" />
-                      위에 행 추가
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().addRowAfter().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors"
-                    >
-                      <Rows className="w-3.5 h-3.5 text-blue-500" />
-                      아래에 행 추가
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().deleteRow().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 text-rose-600 dark:text-rose-400 transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      현재 행 삭제
-                    </button>
 
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
+                    {/* Row & Column Management */}
+                    <div className="py-1.5 space-y-1">
+                      <div className="px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
+                        행 & 열 관리
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().addRowBefore().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Rows className="w-3.5 h-3.5 text-blue-500" />
+                        위에 행 추가
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().addRowAfter().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Rows className="w-3.5 h-3.5 text-blue-500" />
+                        아래에 행 추가
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().deleteRow().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-rose-50 dark:hover:bg-rose-950/30 text-rose-600 dark:text-rose-400 disabled:opacity-40 flex items-center gap-2 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        현재 행 삭제
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().addColumnBefore().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Columns className="w-3.5 h-3.5 text-amber-500" />
+                        왼쪽에 열 추가
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().addColumnAfter().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors text-stone-700 dark:text-[#f0f0f0]"
+                      >
+                        <Columns className="w-3.5 h-3.5 text-amber-500" />
+                        오른쪽에 열 추가
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().deleteColumn().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-rose-50 dark:hover:bg-rose-950/30 text-rose-600 dark:text-rose-400 disabled:opacity-40 flex items-center gap-2 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        현재 열 삭제
+                      </button>
+                    </div>
 
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().addColumnBefore().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors"
-                    >
-                      <Columns className="w-3.5 h-3.5 text-amber-500" />
-                      왼쪽에 열 추가
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().addColumnAfter().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 transition-colors"
-                    >
-                      <Columns className="w-3.5 h-3.5 text-amber-500" />
-                      오른쪽에 열 추가
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().deleteColumn().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] disabled:opacity-40 flex items-center gap-2 text-rose-600 dark:text-rose-400 transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      현재 열 삭제
-                    </button>
+                    {/* Cell Background Colors */}
+                    <div className="py-1.5 space-y-1">
+                      <div className="px-2 py-0.5 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
+                        셀 배경색
+                      </div>
+                      <div className="grid grid-cols-6 gap-1 px-2 pt-1">
+                        {[
+                          { color: '', label: '기본' },
+                          { color: '#fef3c7', label: '연노랑' },
+                          { color: '#d1fae5', label: '연초록' },
+                          { color: '#dbeafe', label: '연파랑' },
+                          { color: '#ede9fe', label: '연보라' },
+                          { color: '#ffe4e6', label: '연분홍' },
+                        ].map((c) => (
+                          <button
+                            key={c.color || 'default'}
+                            type="button"
+                            disabled={!editor.isActive('table')}
+                            onClick={() => {
+                              editor.chain().focus().setCellAttribute('backgroundColor', c.color || null).run();
+                              setIsTableMenuOpen(false);
+                            }}
+                            className="w-6 h-6 rounded border border-stone-300 dark:border-[#555555] hover:scale-110 transition-transform flex items-center justify-center text-[9px] disabled:opacity-40"
+                            style={{ backgroundColor: c.color || 'transparent' }}
+                            title={c.label}
+                          >
+                            {!c.color && '✕'}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
 
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => {
-                        editor.chain().focus().deleteTable().run();
-                        setIsTableMenuOpen(false);
-                      }}
-                      className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 disabled:opacity-40 font-medium flex items-center gap-2 transition-colors"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      표 전체 삭제
-                    </button>
+                    {/* Delete Table */}
+                    <div className="pt-1.5">
+                      <button
+                        type="button"
+                        disabled={!editor.isActive('table')}
+                        onClick={() => {
+                          editor.chain().focus().deleteTable().run();
+                          setIsTableMenuOpen(false);
+                        }}
+                        className="w-full px-2 py-1.5 rounded-lg text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 disabled:opacity-40 font-medium flex items-center gap-2 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        표 전체 삭제
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
@@ -817,6 +1084,109 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                     }`}
                     title={`${color} 스티커 추가`}
                   />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Table Quick Action Sub-bar when cursor is inside a table */}
+        {editor && editor.isActive('table') && (
+          <div className="px-6 py-1.5 bg-amber-500/10 dark:bg-amber-500/15 border-b border-amber-500/20 flex items-center justify-between gap-2 text-xs flex-wrap animate-in fade-in duration-150">
+            <div className="flex items-center gap-1.5 font-semibold text-amber-900 dark:text-amber-300">
+              <TableIcon className="w-3.5 h-3.5" />
+              <span>표 편집 모드:</span>
+            </div>
+            <div className="flex items-center gap-1 flex-wrap">
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().addRowBefore().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-[11px] font-medium transition-colors"
+                title="위에 새 행 추가"
+              >
+                + 행(위)
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().addRowAfter().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-[11px] font-medium transition-colors"
+                title="아래에 새 행 추가"
+              >
+                + 행(아래)
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().deleteRow().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 text-[11px] font-medium transition-colors"
+                title="현재 행 삭제"
+              >
+                - 행 삭제
+              </button>
+              <div className="w-[1px] h-3.5 bg-amber-300 dark:bg-amber-800 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().addColumnBefore().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-[11px] font-medium transition-colors"
+                title="왼쪽에 새 열 추가"
+              >
+                + 열(좌)
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().addColumnAfter().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-[11px] font-medium transition-colors"
+                title="오른쪽에 새 열 추가"
+              >
+                + 열(우)
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().deleteColumn().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 text-[11px] font-medium transition-colors"
+                title="현재 열 삭제"
+              >
+                - 열 삭제
+              </button>
+              <div className="w-[1px] h-3.5 bg-amber-300 dark:bg-amber-800 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().mergeCells().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-indigo-300 dark:border-indigo-700 text-indigo-700 dark:text-indigo-400 hover:bg-indigo-50 text-[11px] font-medium transition-colors flex items-center gap-1"
+                title="드래그하여 선택한 셀 병합"
+              >
+                <Combine className="w-3 h-3" />
+                셀 병합
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().splitCell().run()}
+                className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-sky-300 dark:border-sky-700 text-sky-700 dark:text-sky-400 hover:bg-sky-50 text-[11px] font-medium transition-colors flex items-center gap-1"
+                title="병합된 셀 분할"
+              >
+                <Split className="w-3 h-3" />
+                셀 분할
+              </button>
+              <div className="w-[1px] h-3.5 bg-amber-300 dark:bg-amber-800 mx-0.5" />
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-stone-500 font-medium">셀 배경:</span>
+                {[
+                  { color: '', label: '기본' },
+                  { color: '#fef3c7', label: '노랑' },
+                  { color: '#d1fae5', label: '초록' },
+                  { color: '#dbeafe', label: '파랑' },
+                  { color: '#ede9fe', label: '보라' },
+                  { color: '#ffe4e6', label: '분홍' },
+                ].map((c) => (
+                  <button
+                    key={c.color || 'none'}
+                    type="button"
+                    onClick={() => editor.chain().focus().setCellAttribute('backgroundColor', c.color || null).run()}
+                    className="w-4 h-4 rounded border border-black/20 hover:scale-125 transition-transform flex items-center justify-center text-[8px]"
+                    style={{ backgroundColor: c.color || 'transparent' }}
+                    title={`셀 배경: ${c.label}`}
+                  >
+                    {!c.color && '✕'}
+                  </button>
                 ))}
               </div>
             </div>

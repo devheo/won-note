@@ -21,10 +21,11 @@ import { RichEditorModal } from './components/editor/RichEditorModal';
 import { ZoomControls } from './components/common/ZoomControls';
 import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
 import { TextPasteModal } from './components/modals/TextPasteModal';
+import { UniversalImportModal } from './components/modals/UniversalImportModal';
 import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
-import { LocalFileStatusIndicator } from './components/common/LocalFileStatusIndicator';
+import { envService } from './services/storage/envService';
 import {
   Sun,
   Moon,
@@ -93,6 +94,7 @@ export default function App() {
   const [selectedDetailRowIndex, setSelectedDetailRowIndex] = useState<number>(0);
   const [isDataPortabilityOpen, setIsDataPortabilityOpen] = useState(false);
   const [isTextPasteOpen, setIsTextPasteOpen] = useState(false);
+  const [isUniversalImportOpen, setIsUniversalImportOpen] = useState(false);
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false);
 
   // Repository Instance
@@ -410,6 +412,17 @@ export default function App() {
     await syncToLocalFileIfConnected(updatedWs);
   };
 
+  // Append Imported Rows into Current Active Table
+  const handleAppendRowsToCurrentTable = async (newRows: TableRow[]) => {
+    if (!activeTable) return;
+    const updatedTable: TableDocument = {
+      ...activeTable,
+      rows: [...activeTable.rows, ...newRows],
+      updatedAt: Date.now(),
+    };
+    await handleUpdateTable(updatedTable);
+  };
+
   // Save Row from TipTap Rich Modal
   const handleSaveRowFromEditor = async (updatedRow: TableRow) => {
     if (!activeTable) return;
@@ -524,27 +537,28 @@ export default function App() {
 
             <div className="h-4 w-px bg-stone-300 dark:bg-[#383838] mx-1" />
 
-            {/* Consolidated File Menu Dropdown */}
+            {/* Consolidated File Menu Dropdown (Includes Universal Import & Local File Sync) */}
             <FileMenuDropdown
               activeTable={activeTable}
               workspace={workspace}
+              onOpenUniversalImport={() => setIsUniversalImportOpen(true)}
               onOpenDataPortability={() => setIsDataPortabilityOpen(true)}
-              onOpenTextPaste={() => setIsTextPasteOpen(true)}
               onAddNewTable={() => handleAddTable(null)}
               onAddNewFolder={() => handleAddFolder(null)}
               onImportCsvToNewTable={handleImportCsvToNewTable}
               onImportJsonWorkspace={(newWs) => handleMergeWorkspace(newWs, 'replace')}
-            />
-
-            {/* Local File Direct Sync Status Indicator */}
-            <LocalFileStatusIndicator
               connectedFileName={connectedFileName}
-              isSupported={isFsSupported}
-              onConnectFile={handleConnectLocalFile}
-              onLinkNewFile={handleLinkNewLocalFile}
-              onDisconnectFile={handleDisconnectLocalFile}
-              onManualSave={handleManualSaveLocalFile}
-              isSaving={isLocalFileSaving}
+              isFsSupported={isFsSupported}
+              onConnectLocalFile={handleConnectLocalFile}
+              onLinkNewLocalFile={handleLinkNewLocalFile}
+              onDisconnectLocalFile={handleDisconnectLocalFile}
+              onManualSaveLocalFile={handleManualSaveLocalFile}
+              isLocalFileSaving={isLocalFileSaving}
+              onEnvUpdated={() => {
+                const currentEnv = envService.getEnv();
+                if (currentEnv.theme) setIsDarkMode(currentEnv.theme === 'dark');
+                if (currentEnv.zoomLevel) setZoomLevel(currentEnv.zoomLevel);
+              }}
             />
           </div>
 
@@ -559,13 +573,27 @@ export default function App() {
               {useServer ? 'Server API' : 'IndexedDB'}
             </button>
 
-            {/* Dark / Light Theme Toggle (Material Simple Dark Grey) */}
+            {/* Dark / Light Theme Toggle */}
             <button
-              onClick={() => setIsDarkMode(!isDarkMode)}
-              className="p-1.5 rounded-lg bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-600 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] transition-colors"
-              title={isDarkMode ? '라이트 모드로 전환' : 'Material Simple Dark Grey 다크 모드로 전환'}
+              onClick={() => {
+                const nextMode = !isDarkMode;
+                setIsDarkMode(nextMode);
+                envService.updateEnv({ theme: nextMode ? 'dark' : 'light' });
+              }}
+              className="px-2.5 py-1 rounded-lg bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] transition-all flex items-center gap-1.5 text-xs font-semibold"
+              title={isDarkMode ? '밝고 깨끗한 라이트 모드로 전환' : '모던 다크 모드로 전환'}
             >
-              {isDarkMode ? <Sun className="w-4 h-4 text-amber-400" /> : <Moon className="w-4 h-4 text-stone-400" />}
+              {isDarkMode ? (
+                <>
+                  <Sun className="w-3.5 h-3.5 text-amber-400" />
+                  <span>다크 모드</span>
+                </>
+              ) : (
+                <>
+                  <Moon className="w-3.5 h-3.5 text-stone-500" />
+                  <span>라이트 모드</span>
+                </>
+              )}
             </button>
           </div>
         </header>
@@ -696,6 +724,27 @@ export default function App() {
           if (newUrl) setServerUrl(newUrl);
         }}
         onRefreshData={loadWorkspaceData}
+      />
+
+      {/* 9. Universal Import Modal (TXT / CSV / TSV / JSON / Excel Clipboard) */}
+      <UniversalImportModal
+        isOpen={isUniversalImportOpen}
+        onClose={() => setIsUniversalImportOpen(false)}
+        activeTable={activeTable}
+        onImportNewTable={handleImportCsvToNewTable}
+        onAppendRowsToCurrentTable={handleAppendRowsToCurrentTable}
+        onRestoreWorkspace={(newWs) => handleMergeWorkspace(newWs, 'replace')}
+        onRestoreUserEnv={(newEnv) => {
+          if (newEnv.theme) {
+            setIsDarkMode(newEnv.theme === 'dark');
+          }
+          if (newEnv.zoomLevel) {
+            setZoomLevel(newEnv.zoomLevel);
+          }
+          if (newEnv.activeTableId && workspace.tables[newEnv.activeTableId]) {
+            setActiveTableId(newEnv.activeTableId);
+          }
+        }}
       />
     </div>
   );

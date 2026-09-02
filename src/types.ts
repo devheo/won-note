@@ -93,6 +93,21 @@ export interface StorageConfig {
   apiKey?: string;
 }
 
+export interface UserEnvData {
+  version: string;
+  theme: 'light' | 'dark';
+  zoomLevel: number;
+  activeTableId: string | null;
+  rowDensity: RowDensity;
+  // tableId -> { colId -> width }
+  columnWidths: Record<string, Record<string, number>>;
+  // tableId -> hidden colIds[]
+  hiddenColumns: Record<string, string[]>;
+  updatedAt: number;
+}
+
+export type UserData = WorkspaceData;
+
 /**
  * Storage Repository Interface (Repository Pattern)
  * Provides transparent data operations regardless of local IndexedDB or remote API backend.

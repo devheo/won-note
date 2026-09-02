@@ -8,7 +8,7 @@ import { WorkspaceData } from '../../types';
 
 class FileSystemSyncService {
   private fileHandle: any = null;
-  private fileName: string = 'wonbee_data.json';
+  private fileName: string = 'user_data.json';
   private isAutoSyncEnabled: boolean = false;
 
   public isSupported(): boolean {
@@ -87,7 +87,7 @@ class FileSystemSyncService {
     try {
       // @ts-ignore
       const handle = await window.showSaveFilePicker({
-        suggestedName: 'wonbee_data.json',
+        suggestedName: 'user_data.json',
         types: [
           {
             description: 'WonBee 데이터 파일 (JSON)',

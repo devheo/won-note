@@ -1,6 +1,7 @@
-import React, { useState, useRef, useMemo, useEffect } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useDeferredValue } from 'react';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
 import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
+import { HighlightText } from '../common/HighlightText';
 import { ColumnManagerModal } from '../modals/ColumnManagerModal';
 import { AddRowModal } from '../modals/AddRowModal';
 import { ImportRowsModal } from '../modals/ImportRowsModal';
@@ -47,6 +48,7 @@ import {
   Download,
   Check,
   Upload,
+  Loader2,
 } from 'lucide-react';
 
 interface DataTableViewerProps {
@@ -64,6 +66,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   onOpenRowDetail,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  // React 18 useDeferredValue: keeps user typing fluid and lag-free even with thousands of rows
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const isSearching = searchQuery !== deferredSearchQuery;
+
+  // Progressive Chunk Rendering (Infinite Scroll) for massive row rendering performance
+  const [visibleCount, setVisibleCount] = useState(100);
+
   const [sortColumnId, setSortColumnId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
@@ -693,15 +702,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const processedRows = useMemo(() => {
     let list = [...table.rows];
 
-    // 1. Search Query Filter
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    // 1. Search Query Filter (Optimized with deferredSearchQuery for instant, lag-free typing)
+    const trimmedQuery = deferredSearchQuery.trim();
+    if (trimmedQuery) {
+      const q = trimmedQuery.toLowerCase();
       list = list.filter((r) => {
         return table.columns.some((col) => {
           const val = r.data[col.id];
           if (val === undefined || val === null) return false;
-          const cleaned = cleanTextValue(val).toLowerCase();
-          return cleaned.includes(q) || String(val).toLowerCase().includes(q);
+          // Fast string comparison first before complex regex cleaning
+          const rawStr = String(val).toLowerCase();
+          if (rawStr.includes(q)) return true;
+          if (typeof val === 'string' && val.includes('<')) {
+            const cleaned = cleanTextValue(val).toLowerCase();
+            return cleaned.includes(q);
+          }
+          return false;
         });
       });
     }
@@ -774,7 +790,27 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
 
     return list;
-  }, [table.rows, table.columns, searchQuery, columnFilters, sortColumnId, sortDirection]);
+  }, [table.rows, table.columns, deferredSearchQuery, columnFilters, sortColumnId, sortDirection]);
+
+  // Reset visibleCount when table or filters change
+  useEffect(() => {
+    setVisibleCount(100);
+  }, [table.id, deferredSearchQuery, columnFilters, sortColumnId, sortDirection]);
+
+  // Progressive Chunk Rendering (Smooth infinite scroll, avoids freezing DOM with 1000s of elements)
+  const visibleRows = useMemo(() => {
+    return processedRows.slice(0, visibleCount);
+  }, [processedRows, visibleCount]);
+
+  const handleTableScroll = (e: React.UIEvent<HTMLDivElement>) => {
+    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
+    if (scrollHeight - scrollTop - clientHeight < 400) {
+      setVisibleCount((prev) => {
+        if (prev >= processedRows.length) return prev;
+        return Math.min(prev + 80, processedRows.length);
+      });
+    }
+  };
 
   // Column Icon helper
   const getColTypeIcon = (type: ColumnType) => {
@@ -817,21 +853,31 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         {/* Search Input & Active Sort Notification */}
         <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
           <div className="relative w-full max-w-sm">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 dark:text-[#777777]" />
+            {isSearching ? (
+              <Loader2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-amber-500 animate-spin" />
+            ) : (
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-stone-400 dark:text-[#777777]" />
+            )}
             <input
               type="text"
               placeholder="테이블 내 실시간 데이터 필터링..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-9 pr-8 py-1.5 bg-white dark:bg-[#252525] border border-stone-200 dark:border-[#383838] rounded-xl text-xs placeholder:text-stone-400 dark:placeholder:text-[#777777] text-stone-800 dark:text-[#f0f0f0] outline-none focus:border-amber-500 transition-colors shadow-2xs"
+              className="w-full pl-9 pr-16 py-1.5 bg-white dark:bg-[#252525] border border-stone-200 dark:border-[#383838] rounded-xl text-xs placeholder:text-stone-400 dark:placeholder:text-[#777777] text-stone-800 dark:text-[#f0f0f0] outline-none focus:border-amber-500 transition-colors shadow-2xs"
             />
             {searchQuery && (
-              <button
-                onClick={() => setSearchQuery('')}
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-stone-400 hover:text-stone-600 dark:hover:text-[#ffffff] text-xs"
-              >
-                ✕
-              </button>
+              <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1.5">
+                <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/70 text-amber-800 dark:text-amber-300 font-mono font-bold">
+                  {processedRows.length}
+                </span>
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="text-stone-400 hover:text-stone-600 dark:hover:text-[#ffffff] text-xs p-0.5"
+                  title="검색어 지우기"
+                >
+                  ✕
+                </button>
+              </div>
             )}
           </div>
 
@@ -913,31 +959,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               </div>
             )}
           </div>
-
-          {/* Direct Excel / TSV / CSV Paste Button */}
-          <button
-            onClick={async () => {
-              try {
-                const text = await navigator.clipboard.readText();
-                if (text && text.trim()) {
-                  setImportInitialText(text);
-                  setImportInitialTab('text');
-                } else {
-                  setImportInitialText('');
-                  setImportInitialTab('text');
-                }
-              } catch {
-                setImportInitialText('');
-                setImportInitialTab('text');
-              }
-              setIsImportRowsModalOpen(true);
-            }}
-            className="px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-emerald-200/80 dark:border-emerald-800/80 shadow-2xs"
-            title="엑셀(Excel), 구글 시트, 메모장에서 복사한 테이블 데이터를 붙여넣어 행으로 추가합니다 (단축키: Ctrl+V)"
-          >
-            <ClipboardPaste className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
-            <span>엑셀/데이터 붙여넣기</span>
-          </button>
 
           {/* Row Actions Menu Button */}
           <div className="relative" ref={rowMenuRef}>
@@ -1124,16 +1145,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
-          {/* Quick Import Rows Button */}
-          <button
-            onClick={() => setIsImportRowsModalOpen(true)}
-            className="px-3 py-1.5 bg-stone-100 hover:bg-emerald-50 dark:bg-[#282828] dark:hover:bg-emerald-950/40 text-stone-700 hover:text-emerald-700 dark:text-[#e0e0e0] dark:hover:text-emerald-400 font-semibold rounded-lg text-xs flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838]"
-            title="CSV 또는 TXT 파일을 불러와 행으로 일괄 추가"
-          >
-            <Upload className="w-3.5 h-3.5 text-emerald-500" />
-            <span>CSV/TXT 가져오기</span>
-          </button>
-
           {/* Quick Add Row Button (Opens Add Row Modal) */}
           <button
             onClick={() => handleOpenAddRowModal('bottom')}
@@ -1187,8 +1198,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         </div>
       )}
 
-      {/* Main Grid View Container */}
-      <div className="flex-1 overflow-auto custom-scrollbar relative">
+      {/* Main Grid View Container with Progressive Scroll Loader */}
+      <div
+        onScroll={handleTableScroll}
+        className="flex-1 overflow-auto custom-scrollbar relative"
+      >
         <table className="w-full border-collapse text-left text-xs font-sans">
           {/* Table Header Columns Width Mapping */}
           <colgroup>
@@ -1303,7 +1317,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
           {/* Table Body Rows with Drag-and-Drop */}
           <tbody className="divide-y divide-stone-200/70 dark:divide-[#2d2d2d] bg-white dark:bg-[#181818]">
-            {processedRows.map((row, rIdx) => {
+            {visibleRows.map((row, rIdx) => {
               const isSelected深受 = selectedRowIds.has(row.id);
               const heightClass = getRowHeightClass();
               const isDragging = draggedRowId === row.id;
@@ -1332,6 +1346,25 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
                     }
                     onOpenRowDetail(row, rIdx);
+                  }}
+                  onDoubleClick={(e) => {
+                    const target = e.target as HTMLElement;
+                    if (
+                      target.tagName === 'INPUT' ||
+                      target.tagName === 'SELECT' ||
+                      target.tagName === 'BUTTON' ||
+                      target.closest('button') ||
+                      target.closest('input') ||
+                      target.closest('select') ||
+                      target.closest('[data-editing-cell="true"]')
+                    ) {
+                      return;
+                    }
+                    if (editingCell) {
+                      commitCellEdit人力(editingCell.rowId, editingCell.colId, editingValue);
+                      setEditingCell(null);
+                    }
+                    onOpenRowEditor(row);
                   }}
                   className={`group/row transition-all cursor-pointer relative ${
                     isDragging ? 'opacity-30 bg-amber-200 dark:bg-amber-950' : ''
@@ -1441,6 +1474,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                           <TruncatedPreviewCell
                             value={rawVal}
                             columnType={col.type}
+                            highlightQuery={deferredSearchQuery}
                             onOpenEditor={() => onOpenRowDetail(row, rIdx)}
                             onOpenImage={(src) => setLightboxImg(src)}
                             renderCustomContent={(val) => {
@@ -1478,7 +1512,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                       }}
                                       className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border"
                                     >
-                                      {option.label}
+                                      <HighlightText text={option.label} highlight={deferredSearchQuery} />
                                     </span>
                                   );
                                 }
@@ -1497,7 +1531,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                     }}
                                     className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border"
                                   >
-                                    {strVal}
+                                    <HighlightText text={strVal} highlight={deferredSearchQuery} />
                                   </span>
                                 );
                               }
@@ -1505,14 +1539,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                               if (col.type === 'code') {
                                 return (
                                   <code className="px-1.5 py-0.5 rounded bg-stone-100 dark:bg-[#282828] border border-stone-200 dark:border-[#383838] text-amber-700 dark:text-amber-300 font-mono text-[11px]">
-                                    {cleanTextValue(val)}
+                                    <HighlightText text={cleanTextValue(val)} highlight={deferredSearchQuery} />
                                   </code>
                                 );
                               }
 
                               return (
                                 <span className="text-stone-800 dark:text-[#f0f0f0] font-normal">
-                                  {cleanTextValue(val)}
+                                  <HighlightText text={cleanTextValue(val)} highlight={deferredSearchQuery} />
                                 </span>
                               );
                             }}
@@ -1617,6 +1651,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               );
             })}
 
+            {visibleRows.length < processedRows.length && (
+              <tr>
+                <td
+                  colSpan={visibleColumns.length + 2}
+                  className="py-3 text-center bg-stone-50/50 dark:bg-[#1c1c1c] border-t border-stone-200/80 dark:border-[#333333]"
+                >
+                  <button
+                    onClick={() => setVisibleCount((prev) => Math.min(prev + 100, processedRows.length))}
+                    className="px-4 py-1.5 rounded-lg bg-white dark:bg-[#282828] hover:bg-amber-50 dark:hover:bg-amber-950/40 border border-stone-300 dark:border-[#444444] text-xs font-semibold text-stone-700 dark:text-[#e0e0e0] hover:text-amber-600 dark:hover:text-amber-400 transition-colors shadow-2xs inline-flex items-center gap-1.5"
+                  >
+                    <span>▼ 다음 {Math.min(100, processedRows.length - visibleRows.length)}개 행 더 불러오기 (스크롤 시 자동 로드)</span>
+                  </button>
+                </td>
+              </tr>
+            )}
+
             {processedRows.length === 0 && (
               <tr>
                 <td
@@ -1670,7 +1720,17 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       {/* Table Footer Status */}
       <div className="px-6 py-2.5 border-t border-stone-200/80 dark:border-[#333333] bg-stone-50/70 dark:bg-[#1e1e1e]/60 flex items-center justify-between text-xs text-stone-500 dark:text-[#a0a0a0]">
         <div className="flex items-center gap-3">
-          <span>총 <strong className="text-stone-800 dark:text-[#f0f0f0]">{table.rows.length}</strong>개 행</span>
+          <span>
+            총 <strong className="text-stone-800 dark:text-[#f0f0f0]">{table.rows.length}</strong>개 행
+            {processedRows.length !== table.rows.length && (
+              <> (검색 일치: <strong className="text-amber-600 dark:text-amber-400">{processedRows.length}</strong>개)</>
+            )}
+            {visibleRows.length < processedRows.length && (
+              <span className="text-[11px] text-stone-400 dark:text-[#888888] ml-1">
+                [화면 표시: {visibleRows.length}개]
+              </span>
+            )}
+          </span>
           <span>•</span>
           <span><strong className="text-stone-800 dark:text-[#f0f0f0]">{visibleColumns.length}</strong>/{table.columns.length}개 컬럼 표시중</span>
           <span className="text-[11px] text-stone-400 dark:text-[#777777]">

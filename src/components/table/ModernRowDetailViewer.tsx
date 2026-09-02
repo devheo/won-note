@@ -392,10 +392,15 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
             {/* 1. Fields Grid */}
             <div className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333]">
               <div className="flex flex-wrap items-center justify-between gap-2 mb-3 border-b border-stone-200/60 dark:border-[#333333] pb-2">
-                <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
-                  <span>열 필드 데이터 목록</span>
-                  <span className="text-[10px] text-stone-400 font-normal">({columns.length}개)</span>
-                </h3>
+                <div className="flex items-center gap-2">
+                  <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
+                    <span>열 필드 데이터 목록</span>
+                    <span className="text-[10px] text-stone-400 font-normal">({columns.length}개)</span>
+                  </h3>
+                  <span className="text-[11px] px-2 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium">
+                    💡 항목 더블 클릭 시 리치에디터 즉시 편집
+                  </span>
+                </div>
 
                 {/* Compact Export & Copy Dropdown Menu */}
                 <div className="relative" ref={exportMenuRef}>
@@ -514,7 +519,15 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                   return (
                     <div
                       key={col.id}
-                      className={`p-3 rounded-xl bg-white dark:bg-[#1b1b1b] border border-stone-200 dark:border-[#333333] group/field transition-all ${
+                      onDoubleClick={(e) => {
+                        // If clicking input or button, ignore
+                        const target = e.target as HTMLElement;
+                        if (target.tagName === 'INPUT' || target.tagName === 'BUTTON' || isEditing) return;
+                        onOpenRichEditor(row);
+                        onClose();
+                      }}
+                      title="더블 클릭하면 리치에디터가 열립니다"
+                      className={`p-3 rounded-xl bg-white dark:bg-[#1b1b1b] border border-stone-200 dark:border-[#333333] group/field transition-all cursor-pointer hover:border-amber-400 dark:hover:border-amber-600/70 ${
                         isRichOrLong ? 'col-span-1 md:col-span-2' : ''
                       }`}
                     >
@@ -745,7 +758,14 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
 
             {/* 2. Extra Rich Document Note (If present) */}
             {row.richContent && row.richContent.trim() !== '' && (
-              <div className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333]">
+              <div
+                onDoubleClick={() => {
+                  onOpenRichEditor(row);
+                  onClose();
+                }}
+                title="더블 클릭하면 리치에디터가 열립니다"
+                className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333] cursor-pointer hover:border-amber-400 dark:hover:border-amber-600/70 transition-colors"
+              >
                 <div className="flex items-center justify-between mb-3 border-b border-stone-200/60 dark:border-[#333333] pb-2">
                   <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
                     <FileText className="w-3.5 h-3.5 text-indigo-500" />
