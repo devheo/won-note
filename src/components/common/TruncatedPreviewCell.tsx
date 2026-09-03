@@ -155,6 +155,8 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
     }
   };
 
+  const customRender = renderCustomContent ? renderCustomContent(value) : null;
+
   return (
     <div
       ref={containerRef}
@@ -172,9 +174,9 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
         ref={textRef}
         className="w-full text-xs font-normal text-stone-800 dark:text-stone-200 flex items-start gap-1.5 overflow-hidden"
       >
-        {renderCustomContent ? (
+        {customRender !== null && customRender !== undefined ? (
           <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug">
-            {renderCustomContent(value)}
+            {customRender}
           </div>
         ) : hasImage ? (
           <div className="flex items-start gap-1.5 min-w-0">
@@ -195,7 +197,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
               <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
             )}
             <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-stone-700 dark:text-stone-300">
-              {displayPlainText ? (
+              {displayPlainText.length > 0 ? (
                 <HighlightText text={displayPlainText} highlight={highlightQuery} />
               ) : (
                 '[이미지 첨부]'
@@ -206,7 +208,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
           <div className="flex items-start gap-1.5 min-w-0 w-full">
             <Pin className="w-3.5 h-3.5 text-amber-500 fill-current flex-shrink-0 mt-0.5" />
             <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-amber-900 dark:text-amber-300 font-medium">
-              {displayPlainText ? (
+              {displayPlainText.length > 0 ? (
                 <HighlightText text={displayPlainText} highlight={highlightQuery} />
               ) : (
                 '📌 원노트 스티커 메모'
@@ -215,7 +217,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
           </div>
         ) : (
           <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug w-full">
-            {displayPlainText ? (
+            {displayPlainText.length > 0 ? (
               <HighlightText text={displayPlainText} highlight={highlightQuery} />
             ) : (
               <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
