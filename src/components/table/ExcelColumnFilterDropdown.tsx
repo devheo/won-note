@@ -29,6 +29,7 @@ interface ExcelColumnFilterDropdownProps {
   sortDirection: 'asc' | 'desc';
   onApplyFilter: (columnId: string, selectedValues: string[] | null) => void;
   onApplySort: (columnId: string, direction: 'asc' | 'desc' | null) => void;
+  onDisableFilter?: (columnId: string) => void;
   anchorRect: DOMRect | null;
 }
 
@@ -42,6 +43,7 @@ export const ExcelColumnFilterDropdown: React.FC<ExcelColumnFilterDropdownProps>
   sortDirection,
   onApplyFilter,
   onApplySort,
+  onDisableFilter,
   anchorRect,
 }) => {
   const dropdownRef = useRef<HTMLDivElement | null>(null);
@@ -249,12 +251,26 @@ export const ExcelColumnFilterDropdown: React.FC<ExcelColumnFilterDropdownProps>
             {column.name} 필터 및 정렬
           </span>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
-        >
-          <X className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center gap-1">
+          {onDisableFilter && (
+            <button
+              onClick={() => {
+                onDisableFilter(column.id);
+                onClose();
+              }}
+              className="text-[10px] px-1.5 py-0.5 rounded text-stone-500 hover:text-rose-600 dark:hover:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+              title="이 열의 필터 기능을 끕니다"
+            >
+              필터 끄기
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="p-1 rounded text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Sort Section (Excel-like Sort buttons) */}

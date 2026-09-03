@@ -14,6 +14,8 @@ interface TruncatedPreviewCellProps {
   onOpenImage?: (src: string) => void;
   className?: string;
   renderCustomContent?: (val: any) => React.ReactNode;
+  skipImageDetection?: boolean;
+  tooltipOnlyRichText?: boolean;
 }
 
 export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
@@ -24,6 +26,8 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   onOpenImage,
   className = '',
   renderCustomContent,
+  skipImageDetection = false,
+  tooltipOnlyRichText = false,
 }) => {
   const { textRef, isHovered, handleMouseEnter, handleMouseLeave } = useTruncatedTooltip();
   const [popoverPos, setPopoverPos] = useState<{ top: number; left: number; width: number } | null>(null);
@@ -31,8 +35,12 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   const rawString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
-  const firstImageSrc = extractFirstImageSrc(rawString);
-  const hasImage = !!firstImageSrc || rawString.includes('<img');
+  
+  // Performance optimization 1: If skipImageDetection is enabled, skip expensive regex parsing for non-image columns
+  const shouldDetectImage = !skipImageDetection || columnType === 'image';
+  const firstImageSrc = shouldDetectImage ? extractFirstImageSrc(rawString) : null;
+  const hasImage = shouldDetectImage && (!!firstImageSrc || rawString.includes('<img'));
+
   const hasTable = rawString.includes('<table');
   const hasSticker = rawString.includes('wonbee-sticker') || rawString.includes('<sticker-node');
   const isRich =
@@ -48,7 +56,13 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const displayPlainText = cleanTextValue(rawString);
   const detectedCode = !isRich ? detectLanguage(displayPlainText) : { isCode: false, language: 'plaintext' as const };
 
+  // Performance optimization 2: Only show heavy floating popover for rich text when tooltipOnlyRichText is enabled
+  const shouldShowTooltipPopover = !tooltipOnlyRichText || isRich;
+
   const onMouseEnterWithCoords = () => {
+    if (!shouldShowTooltipPopover) {
+      return;
+    }
     if (containerRef.current) {
       const rect = containerRef.current.getBoundingClientRect();
       const popoverWidth = Math.min(Math.max(rect.width * 1.8, 360), 580);
@@ -83,6 +97,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       className={`relative w-full h-full flex items-center select-none group/cell ${className}`}
       onMouseEnter={onMouseEnterWithCoords}
       onMouseLeave={handleMouseLeave}
+      title={!shouldShowTooltipPopover && displayPlainText.length > 25 ? displayPlainText : undefined}
     >
       {/* Visible Cell Content (Truncated to maximum 3 lines with ellipsis) */}
       <div
@@ -157,7 +172,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       )}
 
       {/* Truncation-only Hover Preview Floating Popover */}
-      {isHovered && popoverPos && (
+      {isHovered && popoverPos && shouldShowTooltipPopover && (
         <div
           style={{
             position: 'fixed',

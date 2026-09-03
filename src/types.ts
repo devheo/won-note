@@ -36,6 +36,7 @@ export interface TableColumn {
   options?: ColumnOption[]; // For select & status types
   format?: string;
   isPrimaryKey?: boolean;
+  autoUpdateDate?: boolean; // Automatically manages modification date/time
 }
 
 export interface TableRow {

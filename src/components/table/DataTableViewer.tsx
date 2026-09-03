@@ -18,6 +18,12 @@ import {
 import { getAllStickersFromRow } from '../../utils/stickerUtils';
 import { envService } from '../../services/storage/envService';
 import {
+  PerformanceOptions,
+  loadPerformanceOptions,
+  savePerformanceOptions,
+} from '../../types/performance';
+import { PerformanceSettingsModal } from '../modals/PerformanceSettingsModal';
+import {
   Plus,
   ArrowUpDown,
   ArrowUp,
@@ -43,6 +49,7 @@ import {
   Rows,
   GripVertical,
   Filter,
+  ListFilter,
   X,
   Pin,
   FileSpreadsheet,
@@ -52,7 +59,16 @@ import {
   Check,
   Upload,
   Loader2,
+  Clock,
+  Zap,
 } from 'lucide-react';
+import {
+  isUpdateDateColumn,
+  findUpdateDateColumn,
+  formatDateTime,
+  applyAutoUpdateDateToRow,
+  ensureUpdateDateColumnInTable,
+} from '../../utils/dateColumnUtils';
 
 interface DataTableViewerProps {
   table: TableDocument;
@@ -68,10 +84,36 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   onOpenRowEditor,
   onOpenRowDetail,
 }) => {
+  // Performance Optimization Options State (User-configurable, stored in localStorage)
+  const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
+  const [isPerfModalOpen, setIsPerfModalOpen] = useState(false);
+
+  const handleUpdatePerfOptions = (newOpts: PerformanceOptions) => {
+    setPerfOptions(newOpts);
+    savePerformanceOptions(newOpts);
+  };
+
   const [searchQuery, setSearchQuery] = useState('');
-  // React 18 useDeferredValue: keeps user typing fluid and lag-free even with thousands of rows
-  const deferredSearchQuery = useDeferredValue(searchQuery);
-  const isSearching = searchQuery !== deferredSearchQuery;
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+
+  // Configurable Debounce (150~200ms delay, default 180ms) to ensure butter-smooth typing even with IME composition
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, perfOptions.searchDebounceMs);
+    return () => clearTimeout(timer);
+  }, [searchQuery, perfOptions.searchDebounceMs]);
+
+  const isSearching = searchQuery !== debouncedSearchQuery;
+
+  // Primary column for scoped searching
+  const primarySearchColumn = useMemo(() => {
+    return (
+      table.columns.find((c) => c.id === perfOptions.primarySearchColId) ||
+      table.columns.find((c) => c.type === 'text' || c.type === 'richText') ||
+      table.columns[0]
+    );
+  }, [table.columns, perfOptions.primarySearchColId]);
 
   // Progressive Chunk Rendering (Infinite Scroll) for massive row rendering performance
   const [visibleCount, setVisibleCount] = useState(100);
@@ -82,22 +124,150 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [onlyStickerFilter, setOnlyStickerFilter] = useState(false);
 
   // Total stickers attached across all rows in table
+  // Performance optimization 3: When lazyStickerCount is enabled, we skip heavy real-time counting across all rows
   const totalStickersCount = useMemo(() => {
+    if (perfOptions.lazyStickerCount && !onlyStickerFilter) {
+      return -1;
+    }
     return table.rows.reduce((acc, r) => acc + getAllStickersFromRow(r, table.columns).length, 0);
-  }, [table.rows, table.columns]);
+  }, [table.rows, table.columns, perfOptions.lazyStickerCount, onlyStickerFilter]);
 
   // Excel-style column filters state: { [columnId]: string[] } (list of allowed distinct values)
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>({});
   const [openFilterColId, setOpenFilterColId] = useState<string | null>(null);
   const [filterAnchorRect, setFilterAnchorRect] = useState<DOMRect | null>(null);
 
-  // Reset filters and selection when table changes
+  // Default filterable columns: Only 'status' and 'select' columns are enabled by default (필터링 필수 대상)
+  // All other column types are excluded from auto-filtering, and user can opt-in as needed.
+  const getDefaultFilterableColIds = (cols: TableColumn[]): Set<string> => {
+    return new Set(cols.filter((c) => c.type === 'status' || c.type === 'select').map((c) => c.id));
+  };
+
+  // Enabled filter column IDs state (persisted per table in localStorage)
+  const [enabledFilterColIds, setEnabledFilterColIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`wonbee_filter_cols_${table.id}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return new Set(parsed);
+      }
+    } catch {
+      // ignore
+    }
+    return getDefaultFilterableColIds(table.columns);
+  });
+
+  // Filter Configuration Dropdown Menu State
+  const [isFilterConfigOpen, setIsFilterConfigOpen] = useState(false);
+  const filterConfigRef = useRef<HTMLDivElement | null>(null);
+
+  // Reset filters, selection, and sync filter column configuration when table changes
   useEffect(() => {
     setColumnFilters({});
     setOpenFilterColId(null);
     setSelectedRowIds(new Set());
     setOnlyStickerFilter(false);
+    setIsFilterConfigOpen(false);
+
+    try {
+      const saved = localStorage.getItem(`wonbee_filter_cols_${table.id}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setEnabledFilterColIds(new Set(parsed));
+          return;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setEnabledFilterColIds(getDefaultFilterableColIds(table.columns));
   }, [table.id]);
+
+  // Click outside listener for filter configuration popover
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (filterConfigRef.current && !filterConfigRef.current.contains(e.target as Node)) {
+        setIsFilterConfigOpen(false);
+      }
+    };
+    if (isFilterConfigOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isFilterConfigOpen]);
+
+  // Toggle or force enable a column's filter capability
+  const handleToggleFilterColumn = (colId: string, forceEnable?: boolean) => {
+    setEnabledFilterColIds((prev) => {
+      const next = new Set(prev);
+      const shouldEnable = forceEnable !== undefined ? forceEnable : !next.has(colId);
+      if (shouldEnable) {
+        next.add(colId);
+      } else {
+        next.delete(colId);
+        // Clear active filter condition for this disabled column
+        setColumnFilters((fPrev) => {
+          if (!fPrev[colId]) return fPrev;
+          const fNext = { ...fPrev };
+          delete fNext[colId];
+          return fNext;
+        });
+      }
+      try {
+        localStorage.setItem(`wonbee_filter_cols_${table.id}`, JSON.stringify(Array.from(next)));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  // Quick reset filter columns to default (status and select only)
+  const handleResetFilterColumnsToDefault = () => {
+    const defaultSet = getDefaultFilterableColIds(table.columns);
+    setEnabledFilterColIds(defaultSet);
+    try {
+      localStorage.setItem(`wonbee_filter_cols_${table.id}`, JSON.stringify(Array.from(defaultSet)));
+    } catch {
+      // ignore
+    }
+    setColumnFilters((fPrev) => {
+      let changed = false;
+      const fNext = { ...fPrev };
+      for (const colId of Object.keys(fNext)) {
+        if (!defaultSet.has(colId)) {
+          delete fNext[colId];
+          changed = true;
+        }
+      }
+      return changed ? fNext : fPrev;
+    });
+  };
+
+  // Enable all columns for filtering
+  const handleEnableAllFilterColumns = () => {
+    const allSet = new Set(table.columns.map((c) => c.id));
+    setEnabledFilterColIds(allSet);
+    try {
+      localStorage.setItem(`wonbee_filter_cols_${table.id}`, JSON.stringify(Array.from(allSet)));
+    } catch {
+      // ignore
+    }
+  };
+
+  // Disable all columns from filtering
+  const handleDisableAllFilterColumns = () => {
+    setEnabledFilterColIds(new Set());
+    setColumnFilters({});
+    try {
+      localStorage.setItem(`wonbee_filter_cols_${table.id}`, JSON.stringify([]));
+    } catch {
+      // ignore
+    }
+  };
 
   // Image Lightbox state
   const [lightboxImg, setLightboxImg] = useState<string | null>(null);
@@ -181,25 +351,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         ? cleanTextValue(val)
         : val;
 
-    const updatedRows = table.rows.map((row) => {
-      if (row.id === rowId) {
-        return {
-          ...row,
-          data: {
-            ...row.data,
-            [colId]: cleaned,
-          },
-          updatedAt: Date.now(),
-        };
-      }
-      return row;
-    });
+    const targetRow = table.rows.find((r) => r.id === rowId);
+    if (!targetRow) return;
 
-    onUpdateTable({
-      ...table,
-      rows: updatedRows,
-      updatedAt: Date.now(),
-    });
+    const nextData = {
+      ...targetRow.data,
+      [colId]: cleaned,
+    };
+
+    const { updatedTable } = applyAutoUpdateDateToRow(
+      table,
+      rowId,
+      nextData,
+      colId
+    );
+
+    onUpdateTable(updatedTable);
     setEditingCell(null);
   };
 
@@ -336,9 +503,18 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     pos: 'bottom' | 'top' = 'bottom'
   ) => {
     const newRowId = `row-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`;
+    
+    // Ensure update date column value
+    const updateCol = findUpdateDateColumn(table.columns);
+    const nowFormatted = formatDateTime(new Date());
+    const finalData = { ...rowData };
+    if (updateCol && (!finalData[updateCol.id] || String(finalData[updateCol.id]).trim() === '')) {
+      finalData[updateCol.id] = nowFormatted;
+    }
+
     const newRow: TableRow = {
       id: newRowId,
-      data: rowData,
+      data: finalData,
       richContent: richContent || undefined,
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -379,13 +555,21 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const handleDuplicateSelectedRows = () => {
     if (selectedRowIds.size === 0) return;
     const rowsToDuplicate = table.rows.filter((r) => selectedRowIds.has(r.id));
-    const clonedRows: TableRow[] = rowsToDuplicate.map((r) => ({
-      ...r,
-      id: `row-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`,
-      data: { ...r.data },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    }));
+    const updateCol = findUpdateDateColumn(table.columns);
+    const nowFormatted = formatDateTime(new Date());
+    const clonedRows: TableRow[] = rowsToDuplicate.map((r) => {
+      const clonedData = { ...r.data };
+      if (updateCol) {
+        clonedData[updateCol.id] = nowFormatted;
+      }
+      return {
+        ...r,
+        id: `row-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`,
+        data: clonedData,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
+    });
 
     onUpdateTable({
       ...table,
@@ -475,10 +659,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
     if (direction === 'bottom') {
       const selected = currentRows.filter((r) => selectedRowIds.has(r.id));
-      const unselected而去 = currentRows.filter((r) => !selectedRowIds.has(r.id));
+      const unselected = currentRows.filter((r) => !selectedRowIds.has(r.id));
       onUpdateTable({
         ...table,
-        rows: [...unselected而去, ...selected],
+        rows: [...unselected, ...selected],
         updatedAt: Date.now(),
       });
       return;
@@ -493,11 +677,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         }
       }
     } else if (direction === 'down') {
-      for (let i地理 = currentRows.length - 2; i地理 >= 0; i地理--) {
-        if (selectedRowIds.has(currentRows[i地理].id) && !selectedRowIds.has(currentRows[i地理 + 1].id)) {
-          const temp = currentRows[i地理];
-          currentRows[i地理] = currentRows[i地理 + 1];
-          currentRows[i地理 + 1] = temp;
+      for (let i = currentRows.length - 2; i >= 0; i--) {
+        if (selectedRowIds.has(currentRows[i].id) && !selectedRowIds.has(currentRows[i + 1].id)) {
+          const temp = currentRows[i];
+          currentRows[i] = currentRows[i + 1];
+          currentRows[i + 1] = temp;
         }
       }
     }
@@ -729,12 +913,18 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       list = list.filter((r) => getAllStickersFromRow(r, table.columns).length > 0);
     }
 
-    // 1. Search Query Filter (Optimized with deferredSearchQuery for instant, lag-free typing)
-    const trimmedQuery = deferredSearchQuery.trim();
+    // 1. Search Query Filter (Optimized with debouncedSearchQuery & configurable search target scope)
+    const trimmedQuery = debouncedSearchQuery.trim();
     if (trimmedQuery) {
       const q = trimmedQuery.toLowerCase();
+      // Determine which columns to search: all columns (default) or primary column
+      let searchCols = table.columns;
+      if (perfOptions.searchTargetMode === 'primary' && primarySearchColumn) {
+        searchCols = [primarySearchColumn];
+      }
+
       list = list.filter((r) => {
-        return table.columns.some((col) => {
+        return searchCols.some((col) => {
           const val = r.data[col.id];
           if (val === undefined || val === null) return false;
           // Fast string comparison first before complex regex cleaning
@@ -749,8 +939,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       });
     }
 
-    // 2. Excel-style Column Filters (Available for ALL columns across any table)
+    // 2. Excel-style Column Filters (Applied only for user-enabled filter columns)
     for (const [colId, allowedKeys] of Object.entries(columnFilters)) {
+      if (!enabledFilterColIds.has(colId)) continue;
       if (!allowedKeys || allowedKeys.length === 0) continue;
       const targetCol = table.columns.find((c) => c.id === colId);
       if (!targetCol) continue;
@@ -817,12 +1008,33 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
 
     return list;
-  }, [table.rows, table.columns, deferredSearchQuery, columnFilters, sortColumnId, sortDirection, onlyStickerFilter]);
+  }, [
+    table.rows,
+    table.columns,
+    debouncedSearchQuery,
+    perfOptions.searchTargetMode,
+    primarySearchColumn,
+    columnFilters,
+    enabledFilterColIds,
+    sortColumnId,
+    sortDirection,
+    onlyStickerFilter,
+  ]);
 
   // Reset visibleCount when table or filters change
   useEffect(() => {
     setVisibleCount(100);
-  }, [table.id, deferredSearchQuery, columnFilters, sortColumnId, sortDirection, onlyStickerFilter]);
+  }, [
+    table.id,
+    debouncedSearchQuery,
+    perfOptions.searchTargetMode,
+    primarySearchColumn,
+    columnFilters,
+    enabledFilterColIds,
+    sortColumnId,
+    sortDirection,
+    onlyStickerFilter,
+  ]);
 
   // Progressive Chunk Rendering (Smooth infinite scroll, avoids freezing DOM with 1000s of elements)
   const visibleRows = useMemo(() => {
@@ -908,8 +1120,156 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
+          {/* Quick Search Scope Switcher (All vs Primary Column) */}
+          <button
+            type="button"
+            onClick={() => {
+              handleUpdatePerfOptions({
+                ...perfOptions,
+                searchTargetMode: perfOptions.searchTargetMode === 'all' ? 'primary' : 'all',
+              });
+            }}
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 ${
+              perfOptions.searchTargetMode === 'primary'
+                ? 'bg-amber-500 text-stone-950 border-amber-500 font-bold shadow-2xs'
+                : 'bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border-stone-200/80 dark:border-[#383838]'
+            }`}
+            title={
+              perfOptions.searchTargetMode === 'all'
+                ? '현재: 모든 열 검색 중 (클릭 시 대표 열만 고속 검색으로 전환)'
+                : `현재: 대표 열(${primarySearchColumn?.name || '기본'})만 검색 중 (클릭 시 전체 열 검색으로 전환)`
+            }
+          >
+            <Search className="w-3 h-3 text-amber-500" />
+            <span>
+              {perfOptions.searchTargetMode === 'all'
+                ? '전체 열 검색'
+                : `대표 열만 (${primarySearchColumn?.name || '기본'})`}
+            </span>
+          </button>
+
+          {/* Column Filter Selector Dropdown (Opt-in column filtering: status/select enabled by default, others opt-in) */}
+          <div className="relative" ref={filterConfigRef}>
+            <button
+              onClick={() => setIsFilterConfigOpen(!isFilterConfigOpen)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+                isFilterConfigOpen
+                  ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm font-bold'
+                  : enabledFilterColIds.size > 0
+                  ? 'bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border-stone-200/80 dark:border-[#383838]'
+                  : 'bg-stone-100 dark:bg-[#252525] text-stone-400 dark:text-[#777777] border-stone-200/60 dark:border-[#333333]'
+              }`}
+              title="필터링할 열 선택 (기본: 상태/선택 열만 활성화, 필요시 직접 선택)"
+            >
+              <ListFilter className="w-3.5 h-3.5 text-amber-500" />
+              <span>필터 열</span>
+              <span
+                className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
+                  isFilterConfigOpen
+                    ? 'bg-stone-950 text-amber-300'
+                    : 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300'
+                }`}
+              >
+                {enabledFilterColIds.size}
+              </span>
+              <ChevronDown className="w-3 h-3 text-stone-400" />
+            </button>
+
+            {isFilterConfigOpen && (
+              <div className="absolute left-0 top-full mt-1.5 w-76 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-2xl p-2.5 z-50 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
+                <div className="px-1.5 pb-2 border-b border-stone-200 dark:border-[#333333]">
+                  <div className="font-bold text-stone-800 dark:text-[#f0f0f0] flex items-center justify-between">
+                    <span className="flex items-center gap-1.5">
+                      <Filter className="w-3.5 h-3.5 text-amber-500" />
+                      필터링 대상 열 선택
+                    </span>
+                    <span className="text-[11px] text-amber-600 dark:text-amber-400 font-semibold font-mono">
+                      {enabledFilterColIds.size}/{table.columns.length}개 켜짐
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-stone-500 dark:text-[#888888] mt-1 leading-snug">
+                    필터링 필수 대상(상태/선택) 외 불필요한 자동 필터링을 방지하고 빠른 로딩을 위해 원하는 열만 선택하여 사용하세요.
+                  </p>
+                </div>
+
+                {/* Column List with Checkboxes */}
+                <div className="max-h-60 overflow-y-auto py-1.5 space-y-0.5 custom-scrollbar">
+                  {table.columns.map((col) => {
+                    const isEnabled = enabledFilterColIds.has(col.id);
+                    const isDefault = col.type === 'status' || col.type === 'select';
+                    const hasActiveFilter = !!columnFilters[col.id];
+
+                    return (
+                      <label
+                        key={col.id}
+                        className={`px-2 py-1.5 rounded-lg flex items-center justify-between cursor-pointer transition-colors ${
+                          isEnabled
+                            ? 'bg-amber-50/70 dark:bg-amber-950/20 text-stone-800 dark:text-[#f0f0f0]'
+                            : 'hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-stone-500 dark:text-[#888888]'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isEnabled}
+                            onChange={() => handleToggleFilterColumn(col.id)}
+                            className="rounded accent-amber-500 cursor-pointer flex-shrink-0"
+                          />
+                          <span className="truncate font-medium text-xs text-stone-800 dark:text-[#e0e0e0]" title={col.name}>
+                            {col.name}
+                          </span>
+                          {isDefault && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950/80 text-purple-700 dark:text-purple-300 font-bold flex-shrink-0" title="필터링 필수 기본 대상 열">
+                              필수/기본
+                            </span>
+                          )}
+                          {hasActiveFilter && (
+                            <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500 text-stone-950 font-bold flex-shrink-0">
+                              필터 적용중
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-stone-400 dark:text-[#777777] uppercase font-mono flex-shrink-0 ml-1">
+                          {col.type}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+
+                {/* Quick Presets Footer */}
+                <div className="pt-2 border-t border-stone-200 dark:border-[#333333] flex items-center justify-between gap-1 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={handleResetFilterColumnsToDefault}
+                    className="px-2 py-1 text-purple-600 dark:text-purple-400 hover:bg-purple-50 dark:hover:bg-purple-950/40 rounded font-semibold transition-colors"
+                    title="상태 및 선택 열만 기본 활성화"
+                  >
+                    기본값 (상태/선택만)
+                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={handleEnableAllFilterColumns}
+                      className="px-2 py-1 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#333333] rounded transition-colors"
+                    >
+                      모두 선택
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleDisableAllFilterColumns}
+                      className="px-2 py-1 text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#333333] rounded transition-colors"
+                    >
+                      모두 해제
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Quick Filter: Show Rows with Stickers */}
-          {totalStickersCount > 0 && (
+          {(totalStickersCount > 0 || totalStickersCount === -1 || onlyStickerFilter) && (
             <button
               onClick={() => setOnlyStickerFilter((prev) => !prev)}
               className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
@@ -920,7 +1280,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               title={onlyStickerFilter ? '전체 행 보기로 복귀' : '원노트 스티커 메모가 부착된 행만 모아보기'}
             >
               <Pin className="w-3.5 h-3.5 fill-current text-amber-500" />
-              <span>스티커 메모 ({totalStickersCount}개)</span>
+              <span>
+                스티커 메모 {totalStickersCount >= 0 ? `(${totalStickersCount}개)` : '필터'}
+              </span>
               {onlyStickerFilter && (
                 <span className="text-[10px] ml-0.5 px-1 py-0.2 rounded bg-stone-900 text-amber-300 font-bold">
                   필터 ON
@@ -1193,6 +1555,16 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
+          {/* Performance Optimization Options Button */}
+          <button
+            onClick={() => setIsPerfModalOpen(true)}
+            className="px-2.5 py-1.5 bg-stone-100 hover:bg-stone-200 dark:bg-[#282828] dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-stone-200/70 dark:border-[#383838]"
+            title="테이블 속도 & 성능 최적화 옵션 관리"
+          >
+            <Zap className="w-3.5 h-3.5 fill-current text-amber-500" />
+            <span>속도 설정</span>
+          </button>
+
           {/* Quick Add Row Button (Opens Add Row Modal) */}
           <button
             onClick={() => handleOpenAddRowModal('bottom')}
@@ -1292,7 +1664,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               {visibleColumns.map((col) => {
                 const currentWidth = columnWidths[col.id] || col.width || 180;
                 const isSorted = sortColumnId === col.id;
-                const hasFilter = !!columnFilters[col.id];
+                const isFilterEnabled = enabledFilterColIds.has(col.id);
+                const hasFilter = isFilterEnabled && !!columnFilters[col.id];
 
                 return (
                   <th
@@ -1320,6 +1693,15 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                             PK
                           </span>
                         )}
+                        {isUpdateDateColumn(col) && (
+                          <span
+                            className="text-[9px] px-1 py-0.2 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold tracking-tight flex items-center gap-0.5"
+                            title="데이터 수정 시 년월일 시분으로 자동 갱신되는 열입니다 (직접 입력도 가능)"
+                          >
+                            <Clock className="w-2.5 h-2.5" />
+                            자동
+                          </span>
+                        )}
                         {isSorted && (
                           sortDirection === 'asc' ? (
                             <ArrowUp className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0" />
@@ -1329,27 +1711,45 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         )}
                       </div>
 
-                      {/* Excel-style Filter Button Trigger */}
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const rect = e.currentTarget.getBoundingClientRect();
-                          if (openFilterColId === col.id) {
-                            setOpenFilterColId(null);
-                          } else {
+                      {/* Filter Button Trigger: Either Active Filter or Opt-in Button */}
+                      {isFilterEnabled ? (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            if (openFilterColId === col.id) {
+                              setOpenFilterColId(null);
+                            } else {
+                              setOpenFilterColId(col.id);
+                              setFilterAnchorRect(rect);
+                            }
+                          }}
+                          className={`p-1 rounded-md transition-all flex-shrink-0 ${
+                            hasFilter
+                              ? 'bg-amber-500 text-stone-950 shadow-xs font-bold'
+                              : 'text-stone-400 dark:text-[#777777] hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-[#333333] opacity-0 group-hover/th:opacity-100'
+                          }`}
+                          title={hasFilter ? '이 열에 필터 적용됨 (클릭하여 수정)' : '엑셀 스타일 열 필터 및 정렬'}
+                        >
+                          <Filter className={`w-3 h-3 ${hasFilter ? 'fill-current' : ''}`} />
+                        </button>
+                      ) : (
+                        /* If column filter is not enabled, show subtle hover trigger to opt-in */
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            handleToggleFilterColumn(col.id, true);
                             setOpenFilterColId(col.id);
                             setFilterAnchorRect(rect);
-                          }
-                        }}
-                        className={`p-1 rounded-md transition-all flex-shrink-0 ${
-                          hasFilter
-                            ? 'bg-amber-500 text-stone-950 shadow-xs font-bold'
-                            : 'text-stone-400 dark:text-[#777777] hover:text-stone-700 dark:hover:text-stone-200 hover:bg-stone-200/60 dark:hover:bg-[#333333] opacity-0 group-hover/th:opacity-100'
-                        }`}
-                        title={hasFilter ? '이 열에 필터 적용됨 (클릭하여 수정)' : '엑셀 스타일 열 필터 및 정렬'}
-                      >
-                        <Filter className={`w-3 h-3 ${hasFilter ? 'fill-current' : ''}`} />
-                      </button>
+                          }}
+                          className="px-1.5 py-0.5 rounded text-[10px] text-stone-400 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-100/70 dark:hover:bg-amber-950/50 opacity-0 group-hover/th:opacity-100 transition-all flex-shrink-0 flex items-center gap-0.5 font-medium"
+                          title="이 열에 필터 기능 켜기 (클릭)"
+                        >
+                          <Plus className="w-2.5 h-2.5" />
+                          <span>필터</span>
+                        </button>
+                      )}
                     </div>
 
                     {/* Column Resizing Drag Handle (Convenient 8px grab area with hover/active state) */}
@@ -1389,7 +1789,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               const heightClass = getRowHeightClass();
               const isDragging = draggedRowId === row.id;
               const isDropTarget = dropTargetRowId === row.id;
-              const rowStickers = getAllStickersFromRow(row, table.columns);
+              const rowHasStickers =
+                (row.stickers && row.stickers.length > 0) ||
+                (row.richContent && row.richContent.includes('wonbee-sticker')) ||
+                table.columns.some((c) => {
+                  const v = row.data[c.id];
+                  return typeof v === 'string' && v.includes('wonbee-sticker');
+                });
+              const rowStickers = rowHasStickers ? getAllStickersFromRow(row, table.columns) : [];
 
               return (
                 <tr
@@ -1499,7 +1906,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
                   {/* Render Visible Column Cells */}
                   {visibleColumns.map((col) => {
-                    const rawVal = row.data[col.id];
+                    const rawVal = isUpdateDateColumn(col)
+                      ? (row.data[col.id] || formatDateTime(row.updatedAt || row.createdAt))
+                      : row.data[col.id];
                     const isEditing = editingCell?.rowId === row.id && editingCell?.colId === col.id;
                     const currentWidth = columnWidths[col.id] || col.width || 180;
 
@@ -1550,6 +1959,36 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
                                 className="rounded accent-amber-500"
                               />
+                            ) : isUpdateDateColumn(col) ? (
+                              <div className="flex items-center gap-1 w-full" data-editing-cell="true">
+                                <input
+                                  autoFocus
+                                  type="text"
+                                  value={editingValue}
+                                  placeholder="YYYY-MM-DD HH:mm"
+                                  onChange={(e) => setEditingValue(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') commitCellEdit(row.id, col.id, editingValue);
+                                    if (e.key === 'Escape') setEditingCell(null);
+                                  }}
+                                  onBlur={() => commitCellEdit(row.id, col.id, editingValue)}
+                                  className="w-full bg-white dark:bg-[#242424] border border-amber-500 rounded px-1.5 py-0.5 outline-none text-xs text-stone-900 dark:text-[#ffffff]"
+                                />
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    const now = formatDateTime(new Date());
+                                    setEditingValue(now);
+                                    commitCellEdit(row.id, col.id, now);
+                                  }}
+                                  className="px-1.5 py-0.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded text-[10px] whitespace-nowrap shadow-xs flex-shrink-0 flex items-center gap-0.5"
+                                  title="현재 일시로 즉시 기입"
+                                >
+                                  <Clock className="w-2.5 h-2.5" />
+                                  지금
+                                </button>
+                              </div>
                             ) : (
                               <input
                                 autoFocus
@@ -1569,7 +2008,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                           <TruncatedPreviewCell
                             value={rawVal}
                             columnType={col.type}
-                            highlightQuery={deferredSearchQuery}
+                            highlightQuery={debouncedSearchQuery}
+                            skipImageDetection={perfOptions.skipImageDetectionOnPlainText}
+                            tooltipOnlyRichText={perfOptions.tooltipOnlyRichText}
                             onOpenEditor={() => onOpenRowEditor(row, col.id)}
                             onOpenImage={(src) => setLightboxImg(src)}
                             renderCustomContent={(val) => {
@@ -1607,7 +2048,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                       }}
                                       className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border"
                                     >
-                                      <HighlightText text={option.label} highlight={deferredSearchQuery} />
+                                      <HighlightText text={option.label} highlight={debouncedSearchQuery} />
                                     </span>
                                   );
                                 }
@@ -1626,7 +2067,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                     }}
                                     className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold border"
                                   >
-                                    <HighlightText text={strVal} highlight={deferredSearchQuery} />
+                                    <HighlightText text={strVal} highlight={debouncedSearchQuery} />
                                   </span>
                                 );
                               }
@@ -1634,14 +2075,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                               if (col.type === 'code') {
                                 return (
                                   <code className="px-1.5 py-0.5 rounded bg-stone-100 dark:bg-[#282828] border border-stone-200 dark:border-[#383838] text-amber-700 dark:text-amber-300 font-mono text-[11px]">
-                                    <HighlightText text={cleanTextValue(val)} highlight={deferredSearchQuery} />
+                                    <HighlightText text={cleanTextValue(val)} highlight={debouncedSearchQuery} />
                                   </code>
                                 );
                               }
 
                               return (
                                 <span className="text-stone-800 dark:text-[#f0f0f0] font-normal">
-                                  <HighlightText text={cleanTextValue(val)} highlight={deferredSearchQuery} />
+                                  <HighlightText text={cleanTextValue(val)} highlight={debouncedSearchQuery} />
                                 </span>
                               );
                             }}
@@ -1915,6 +2356,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               sortDirection={sortColumnId === openFilterColId ? sortDirection : 'asc'}
               onApplyFilter={handleApplyColumnFilter}
               onApplySort={handleApplySort}
+              onDisableFilter={(colId) => handleToggleFilterColumn(colId, false)}
               anchorRect={filterAnchorRect}
             />
           );
@@ -1926,6 +2368,15 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         isOpen={!!lightboxImg}
         imageUrl={lightboxImg}
         onClose={() => setLightboxImg(null)}
+      />
+
+      {/* Performance & Speed Optimization Settings Modal */}
+      <PerformanceSettingsModal
+        isOpen={isPerfModalOpen}
+        onClose={() => setIsPerfModalOpen(false)}
+        options={perfOptions}
+        onChangeOptions={handleUpdatePerfOptions}
+        columns={table.columns}
       />
     </div>
   );

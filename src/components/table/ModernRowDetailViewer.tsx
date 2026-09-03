@@ -37,6 +37,11 @@ import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
 import { getAllStickersFromRow, STICKER_COLOR_MAP } from '../../utils/stickerUtils';
 import {
+  isUpdateDateColumn,
+  findUpdateDateColumn,
+  formatDateTime,
+} from '../../utils/dateColumnUtils';
+import {
   downloadRowsAsCsv,
   downloadRowsAsTxt,
   copyRowsAsCsv,
@@ -196,12 +201,25 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
         ? cleanTextValue(editValue)
         : editValue;
 
+    const updateCol = findUpdateDateColumn(columns);
+    const nowFormatted = formatDateTime(new Date());
+
+    const nextData = {
+      ...row.data,
+      [colId]: cleaned,
+    };
+
+    if (isUpdateDateColumn(targetCol)) {
+      // User manually updated the update date column: respect input or fall back to current time if cleared
+      nextData[colId] = cleaned || nowFormatted;
+    } else if (updateCol && updateCol.id !== colId) {
+      // User modified another column: auto update to current datetime (년월일 시분)
+      nextData[updateCol.id] = nowFormatted;
+    }
+
     const updated: TableRow = {
       ...row,
-      data: {
-        ...row.data,
-        [colId]: cleaned,
-      },
+      data: nextData,
       updatedAt: Date.now(),
     };
     onUpdateRow(updated);
@@ -551,6 +569,14 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               기본키 (PK)
                             </span>
                           )}
+                          {isUpdateDateColumn(col) && (
+                            <span
+                              className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-600 dark:text-purple-400 font-bold flex items-center gap-0.5"
+                              title="데이터 수정 시 년월일 시분으로 자동 갱신되는 열입니다 (직접 입력도 가능)"
+                            >
+                              <Clock className="w-2.5 h-2.5" /> 자동 갱신
+                            </span>
+                          )}
                           {imgUrl && (
                             <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-500 font-medium flex items-center gap-0.5">
                               <ImageIcon className="w-2.5 h-2.5" /> 이미지
@@ -576,8 +602,8 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                             {isCopied ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                           </button>
 
-                          {/* Edit button: only status & select use inline text/select editing, all other columns open Rich Editor */}
-                          {isSelectOrStatus ? (
+                          {/* Edit button: status, select, and updateDate use inline editing; other columns open Rich Editor */}
+                          {isSelectOrStatus || isUpdateDateColumn(col) ? (
                             <>
                               {!isEditing && (
                                 <button
@@ -587,7 +613,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                     setEditValue(cleanTextValue(val));
                                   }}
                                   className="p-1 rounded text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-200/50 dark:hover:bg-[#333333]"
-                                  title="상태/선택값 텍스트 수정"
+                                  title={isUpdateDateColumn(col) ? '일시 직접 수정 또는 현재 일시 기입' : '상태/선택값 텍스트 수정'}
                                 >
                                   <Edit3 className="w-3 h-3" />
                                 </button>
@@ -621,7 +647,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                       </div>
 
                       {/* Field Value */}
-                      {isEditing && (isSelectOrStatus || col.type === 'checkbox') ? (
+                      {isEditing && (isSelectOrStatus || col.type === 'checkbox' || isUpdateDateColumn(col)) ? (
                         <div className="mt-2 space-y-2">
                           {isSelectOrStatus ? (
                             <SelectOrCustomInput
@@ -632,6 +658,30 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               placeholder="선택 안 함 (직접 텍스트 입력 가능)"
                               onChange={(newVal) => setEditValue(newVal)}
                             />
+                          ) : isUpdateDateColumn(col) ? (
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                autoFocus
+                                value={editValue}
+                                placeholder="YYYY-MM-DD HH:mm (비워둘 시 현재일시 자동)"
+                                onChange={(e) => setEditValue(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') handleSaveField(col.id);
+                                  if (e.key === 'Escape') setEditingColId(null);
+                                }}
+                                className="flex-1 bg-white dark:bg-[#202020] border border-amber-500 rounded-lg px-2.5 py-1.5 text-xs text-stone-900 dark:text-[#ffffff] outline-none"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => setEditValue(formatDateTime(new Date()))}
+                                className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs whitespace-nowrap shadow-xs flex items-center gap-1"
+                                title="현재 일시로 즉시 기입"
+                              >
+                                <Clock className="w-3 h-3" />
+                                지금 시간
+                              </button>
+                            </div>
                           ) : col.type === 'checkbox' ? (
                             <label className="flex items-center gap-2 cursor-pointer">
                               <input
@@ -776,48 +826,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </div>
             </div>
 
-            {/* 2. Extra Rich Document Note (If present and not template welcome message) */}
-            {row.richContent && row.richContent.trim() !== '' && !row.richContent.includes('환영합니다') && !row.richContent.includes('새 테이블이 성공적으로 생성되었습니다') && (
-              <div
-                onDoubleClick={() => {
-                  onOpenRichEditor(row, '__richContent__');
-                  onClose();
-                }}
-                title="더블 클릭하면 추가 상세 서식 에디터가 열립니다"
-                className="p-4 rounded-xl bg-stone-50/70 dark:bg-[#242424] border border-stone-200/80 dark:border-[#333333] cursor-pointer hover:border-amber-400 dark:hover:border-amber-600/70 transition-colors"
-              >
-                <div className="flex items-center justify-between mb-3 border-b border-stone-200/60 dark:border-[#333333] pb-2">
-                  <h3 className="text-xs font-bold text-stone-800 dark:text-[#eeeeee] uppercase tracking-wider flex items-center gap-1.5">
-                    <FileText className="w-3.5 h-3.5 text-indigo-500" />
-                    추가 상세 서식 문서 / 메모
-                  </h3>
-                  <button
-                    onClick={() => {
-                      onOpenRichEditor(row, '__richContent__');
-                      onClose();
-                    }}
-                    className="text-[11px] font-semibold text-amber-600 dark:text-amber-400 hover:underline flex items-center gap-1"
-                  >
-                    <Edit3 className="w-3 h-3" />
-                    서식 에디터 열기
-                  </button>
-                </div>
-
-                <div
-                  className="prose dark:prose-invert max-w-none text-xs text-stone-800 dark:text-[#cccccc] leading-relaxed tiptap p-3 bg-white dark:bg-[#1a1a1a] rounded-lg border border-stone-200/60 dark:border-[#2d2d2d] wonbee-rendered-table cursor-pointer"
-                  onClick={(e) => {
-                    const target = e.target as HTMLElement;
-                    if (target.tagName === 'IMG') {
-                      const src = target.getAttribute('src');
-                      if (src) setLightboxImg(src);
-                    }
-                  }}
-                  dangerouslySetInnerHTML={{ __html: row.richContent }}
-                />
-              </div>
-            )}
-
-            {/* 3. Sticky Notes (OneNote Style) */}
+            {/* Sticky Notes (OneNote Style) */}
             {allStickers.length > 0 && (
               <div className="p-4 rounded-xl bg-amber-500/5 dark:bg-amber-500/10 border border-amber-200/80 dark:border-amber-900/40">
                 <div className="flex items-center justify-between mb-3">

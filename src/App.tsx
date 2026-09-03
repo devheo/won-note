@@ -11,13 +11,23 @@ import {
   TreeItem,
   TableColumn,
 } from './types';
+import {
+  formatDateTime,
+  ensureUpdateDateColumnInTable,
+  applyAutoUpdateDateToRow,
+} from './utils/dateColumnUtils';
 import { WorkspaceRepositoryFactory } from './services/storage/repository';
 import { localFileService } from './services/storage/localFileService';
 import { INITIAL_WORKSPACE_DATA } from './data/initialData';
 import { InfiniteTreeSidebar } from './components/sidebar/InfiniteTreeSidebar';
 import { DataTableViewer } from './components/table/DataTableViewer';
 import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer';
-import { RichEditorModal } from './components/editor/RichEditorModal';
+// Lazy load RichEditorModal and TipTap dependencies to avoid initializing editor during initial page load
+const RichEditorModal = React.lazy(() =>
+  import('./components/editor/RichEditorModal').then((module) => ({
+    default: module.RichEditorModal,
+  }))
+);
 import { ZoomControls } from './components/common/ZoomControls';
 import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
 import { TextPasteModal } from './components/modals/TextPasteModal';
@@ -130,7 +140,7 @@ export default function App() {
       let needsSave = false;
       const cleanedTables = { ...data.tables };
       Object.keys(cleanedTables).forEach((tId) => {
-        const table = cleanedTables[tId];
+        let table = cleanedTables[tId];
         let tableChanged = false;
         const cleanedRows = table.rows.map((row) => {
           if (row.richContent && (row.richContent.includes('환영합니다') || row.richContent.includes('새 테이블이 성공적으로 생성되었습니다'))) {
@@ -140,9 +150,18 @@ export default function App() {
           return row;
         });
         if (tableChanged) {
-          cleanedTables[tId] = { ...table, rows: cleanedRows };
+          table = { ...table, rows: cleanedRows };
           needsSave = true;
         }
+
+        // Auto-ensure update date column exists and rows are populated
+        const { table: ensuredTable, created } = ensureUpdateDateColumnInTable(table);
+        if (created) {
+          table = ensuredTable;
+          needsSave = true;
+        }
+
+        cleanedTables[tId] = table;
       });
       const finalData = needsSave ? { ...data, tables: cleanedTables } : data;
       setWorkspace(finalData);
@@ -241,6 +260,13 @@ export default function App() {
           ],
         },
         { id: 'col-note', name: '상세 노트 & 호버 툴팁', type: 'richText', width: 320 },
+        {
+          id: 'col-updated-at',
+          name: '수정일',
+          type: 'date',
+          width: 155,
+          autoUpdateDate: true,
+        },
       ],
       rows: [
         {
@@ -249,6 +275,7 @@ export default function App() {
             'col-name': '첫 번째 데이터 레코드',
             'col-status': 'progress',
             'col-note': '더블 클릭하여 편집하거나 우측 리치 에디터 버튼을 눌러 서식을 작성하세요.',
+            'col-updated-at': formatDateTime(Date.now()),
           },
           richContent: '',
           stickers: [],
@@ -450,12 +477,13 @@ export default function App() {
   // Save Row from TipTap Rich Modal
   const handleSaveRowFromEditor = async (updatedRow: TableRow) => {
     if (!activeTable) return;
-    const updatedRows = activeTable.rows.map((r) => (r.id === updatedRow.id ? updatedRow : r));
-    const updatedTable: TableDocument = {
-      ...activeTable,
-      rows: updatedRows,
-      updatedAt: Date.now(),
-    };
+    const { updatedTable } = applyAutoUpdateDateToRow(
+      activeTable,
+      updatedRow.id,
+      updatedRow.data,
+      editingTargetColId || undefined,
+      { richContent: updatedRow.richContent, stickers: updatedRow.stickers }
+    );
     await handleUpdateTable(updatedTable);
   };
 
@@ -682,13 +710,15 @@ export default function App() {
         }}
         onUpdateRow={(updated) => {
           if (!activeTable) return;
-          const updatedRows = activeTable.rows.map((r) => (r.id === updated.id ? updated : r));
-          handleUpdateTable({
-            ...activeTable,
-            rows: updatedRows,
-            updatedAt: Date.now(),
-          });
-          setSelectedDetailRow(updated);
+          const { updatedTable, updatedRow } = applyAutoUpdateDateToRow(
+            activeTable,
+            updated.id,
+            updated.data,
+            undefined,
+            { richContent: updated.richContent, stickers: updated.stickers }
+          );
+          handleUpdateTable(updatedTable);
+          setSelectedDetailRow(updatedRow);
         }}
         onNavigate={(newIdx) => {
           if (!activeTable) return;
@@ -709,19 +739,23 @@ export default function App() {
         }}
       />
 
-      {/* 4. TipTap Rich Text Editor Modal (Data Add / Edit Drawer) */}
-      <RichEditorModal
-        isOpen={!!editingRow}
-        onClose={() => {
-          setEditingRow(null);
-          setEditingTargetColId(null);
-        }}
-        row={editingRow}
-        columns={activeTable?.columns || []}
-        tableName={activeTable?.title || '테이블'}
-        initialTargetId={editingTargetColId}
-        onSaveRow={handleSaveRowFromEditor}
-      />
+      {/* 4. TipTap Rich Text Editor Modal (Dynamically loaded on-demand) */}
+      {editingRow && (
+        <React.Suspense fallback={null}>
+          <RichEditorModal
+            isOpen={!!editingRow}
+            onClose={() => {
+              setEditingRow(null);
+              setEditingTargetColId(null);
+            }}
+            row={editingRow}
+            columns={activeTable?.columns || []}
+            tableName={activeTable?.title || '테이블'}
+            initialTargetId={editingTargetColId}
+            onSaveRow={handleSaveRowFromEditor}
+          />
+        </React.Suspense>
+      )}
 
       {/* 5. Bottom Right Floating Action Button (FAB) for Zoom */}
       <ZoomControls zoom={zoomLevel} onChangeZoom={handleZoomChange} />

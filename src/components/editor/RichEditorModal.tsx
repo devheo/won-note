@@ -568,7 +568,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 }`}
               >
                 <span>{field.name}</span>
-                {field.isColumn && <span className="text-[10px] opacity-75 font-normal">(열 데이터)</span>}
               </button>
             ))}
           </div>

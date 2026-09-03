@@ -20,7 +20,9 @@ import {
   Edit2,
   AlertTriangle,
   Save,
+  Clock,
 } from 'lucide-react';
+import { isUpdateDateColumn } from '../../utils/dateColumnUtils';
 
 interface ColumnManagerModalProps {
   isOpen: boolean;
@@ -203,6 +205,32 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
           </button>
         </form>
 
+        {/* Quick Add Update Date Column if missing */}
+        {!columns.some(isUpdateDateColumn) && (
+          <div className="px-4 py-2 bg-purple-50 dark:bg-purple-950/20 border-b border-purple-200/50 dark:border-purple-900/40 flex items-center justify-between">
+            <span className="text-xs text-purple-700 dark:text-purple-300">
+              💡 데이터 수정 시 년월일 시분으로 자동 관리되는 수정일 열이 없습니다.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                onAddColumn({
+                  id: 'col-updated-at',
+                  name: '수정일',
+                  type: 'date',
+                  width: 155,
+                  autoUpdateDate: true,
+                });
+                triggerToast();
+              }}
+              className="text-xs px-2.5 py-1 bg-purple-600 hover:bg-purple-500 text-white font-medium rounded-lg flex items-center gap-1 transition-colors cursor-pointer"
+            >
+              <Clock className="w-3.5 h-3.5" />
+              수정일 열 추가
+            </button>
+          </div>
+        )}
+
         {/* Existing Columns List */}
         <div className="flex-1 overflow-y-auto p-4 space-y-2.5 custom-scrollbar">
           <div className="text-[11px] font-semibold text-stone-400 dark:text-[#888888] uppercase tracking-wider mb-2 flex items-center justify-between">
@@ -277,6 +305,14 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
                           {col.isPrimaryKey && (
                             <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 font-bold">
                               기본 키 (PK)
+                            </span>
+                          )}
+                          {isUpdateDateColumn(col) && (
+                            <span
+                              className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-0.5"
+                              title="수정 시 년월일 시분으로 자동 갱신되는 열"
+                            >
+                              <Clock className="w-2.5 h-2.5" /> 자동 갱신
                             </span>
                           )}
                         </div>

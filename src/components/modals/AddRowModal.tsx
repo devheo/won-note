@@ -15,7 +15,9 @@ import {
   FileSpreadsheet,
   Upload,
   HelpCircle,
+  Clock,
 } from 'lucide-react';
+import { isUpdateDateColumn, formatDateTime } from '../../utils/dateColumnUtils';
 
 interface AddRowModalProps {
   isOpen: boolean;
@@ -48,11 +50,14 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
     if (isOpen) {
       // Initialize form data with default values
       const initial: Record<string, any> = {};
+      const nowFormatted = formatDateTime(new Date());
       columns.forEach((col) => {
         if (col.type === 'checkbox') {
           initial[col.id] = false;
         } else if (col.type === 'number') {
           initial[col.id] = '';
+        } else if (isUpdateDateColumn(col)) {
+          initial[col.id] = nowFormatted;
         } else {
           initial[col.id] = '';
         }
@@ -240,6 +245,14 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
                           대표 항목
                         </span>
                       )}
+                      {isUpdateDateColumn(col) && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-0.5"
+                          title="데이터 추가 및 수정 시 년월일 시분으로 자동 관리됩니다"
+                        >
+                          <Clock className="w-2.5 h-2.5" /> 자동 갱신
+                        </span>
+                      )}
                     </label>
                     <span className="text-[10px] text-stone-400 dark:text-[#777777] uppercase font-mono">
                       {col.type}
@@ -364,6 +377,25 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
                         {val ? '활성화됨 (체크)' : '비활성 (미체크)'}
                       </span>
                     </label>
+                  ) : isUpdateDateColumn(col) ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="YYYY-MM-DD HH:mm (비워둘 시 저장 시점 현재일시 자동)"
+                        value={val}
+                        onChange={(e) => handleChange(col.id, e.target.value)}
+                        className="flex-1 px-3 py-2 bg-stone-50 dark:bg-[#181818] border border-stone-200 dark:border-[#383838] rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] outline-none focus:border-amber-500 font-mono"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleChange(col.id, formatDateTime(new Date()))}
+                        className="px-3 py-2 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs hover:bg-amber-400 whitespace-nowrap flex items-center gap-1 shadow-xs"
+                        title="현재 일시로 즉시 기입"
+                      >
+                        <Clock className="w-3.5 h-3.5" />
+                        지금 시간
+                      </button>
+                    </div>
                   ) : col.type === 'date' ? (
                     <input
                       type="date"
