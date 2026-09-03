@@ -25,14 +25,14 @@ export interface PerformanceOptions {
 
 export const DEFAULT_PERFORMANCE_OPTIONS: PerformanceOptions = {
   skipImageDetectionOnPlainText: true, // 기본 활성화 (속도 대폭 향상)
-  tooltipOnlyRichText: true,           // 기본 활성화 (DOM 낭비 방지)
+  tooltipOnlyRichText: false,          // 기본 비활성화 (모든 잘린 셀 및 서식 셀에서 호버 팝오버 미리보기 제공)
   lazyStickerCount: true,              // 기본 활성화 (매 렌더링 전수 조사 방지)
   searchDebounceMs: 180,               // 180ms 디바운스로 부드러운 타이핑
   searchTargetMode: 'all',             // 기본값은 전체 열 검색
   primarySearchColId: null,
 };
 
-const STORAGE_KEY = 'wonbee_performance_options';
+const STORAGE_KEY = 'wonbee_performance_options_v2';
 
 export const loadPerformanceOptions = (): PerformanceOptions => {
   try {

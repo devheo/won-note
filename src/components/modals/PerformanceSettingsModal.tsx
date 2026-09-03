@@ -144,17 +144,21 @@ export const PerformanceSettingsModal: React.FC<PerformanceSettingsModalProps> =
               <div>
                 <div className="flex items-center gap-2">
                   <span className="font-bold text-sm text-stone-900 dark:text-[#ffffff]">
-                    호버 미리보기 팝오버: 리치 텍스트 열에만 한정
+                    호버 팝오버를 리치 텍스트 열에만 제한 (경량 모드)
                   </span>
-                  {options.tooltipOnlyRichText && (
+                  {!options.tooltipOnlyRichText ? (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold">
+                      모든 잘린 셀 팝오버 ON
+                    </span>
+                  ) : (
                     <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500 text-stone-950 font-bold">
-                      추천 (경량)
+                      경량 제한 모드
                     </span>
                   )}
                 </div>
                 <p className="text-stone-500 dark:text-[#999999] mt-1 leading-relaxed">
-                  모든 일반 텍스트 셀에 복잡한 플로팅 툴팁 레이어를 생성하지 않고 가벼운 브라우저 기본 툴팁을 사용하며,
-                  서식이 있는 리치 텍스트 열에서만 상세 팝오버를 띄워 메모리를 절약합니다.
+                  비활성화 시(기본) 내용이 잘리거나 여러 줄인 모든 셀에서 마우스 호버 시 상세 미리보기 팝오버를 띄웁니다.
+                  체크 시 서식이 있는 리치 텍스트 열에서만 팝오버를 띄우고 일반 텍스트 셀은 기본 툴팁으로 전환됩니다.
                 </p>
               </div>
             </div>

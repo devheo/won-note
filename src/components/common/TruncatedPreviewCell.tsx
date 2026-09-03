@@ -30,12 +30,19 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   tooltipOnlyRichText = false,
 }) => {
   const { textRef, isHovered, handleMouseEnter, handleMouseLeave } = useTruncatedTooltip();
-  const [popoverPos, setPopoverPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    maxHeight: number;
+    isAbove: boolean;
+  } | null>(null);
   const [copied, setCopied] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const leaveTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   const rawString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
-  
+
   // Performance optimization 1: If skipImageDetection is enabled, skip expensive regex parsing for non-image columns
   const shouldDetectImage = !skipImageDetection || columnType === 'image';
   const firstImageSrc = shouldDetectImage ? extractFirstImageSrc(rawString) : null;
@@ -43,6 +50,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
 
   const hasTable = rawString.includes('<table');
   const hasSticker = rawString.includes('wonbee-sticker') || rawString.includes('<sticker-node');
+  const hasNewlines = rawString.includes('\n') || rawString.includes('<br') || rawString.includes('<p>');
   const isRich =
     columnType === 'richText' ||
     hasImage ||
@@ -56,28 +64,84 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   const displayPlainText = cleanTextValue(rawString);
   const detectedCode = !isRich ? detectLanguage(displayPlainText) : { isCode: false, language: 'plaintext' as const };
 
-  // Performance optimization 2: Only show heavy floating popover for rich text when tooltipOnlyRichText is enabled
+  // Only suppress floating popover for plain text if tooltipOnlyRichText is explicitly enabled by user
   const shouldShowTooltipPopover = !tooltipOnlyRichText || isRich;
 
+  const cancelLeaveTimer = () => {
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current);
+      leaveTimerRef.current = null;
+    }
+  };
+
+  const calculatePosition = () => {
+    if (!containerRef.current) return;
+    const rect = containerRef.current.getBoundingClientRect();
+    const popoverWidth = Math.min(Math.max(rect.width * 1.8, 360), 600);
+
+    // Calculate left position with window edge clamping
+    let left = rect.left;
+    if (left + popoverWidth > window.innerWidth - 20) {
+      left = window.innerWidth - popoverWidth - 20;
+    }
+    left = Math.max(16, left);
+
+    const viewportHeight = window.innerHeight;
+    const spaceBelow = viewportHeight - rect.bottom;
+    const spaceAbove = rect.top;
+
+    // Approximate content height based on length / rich features
+    const estimatedHeight = Math.min(320, isRich || displayPlainText.length > 80 ? 280 : 160);
+
+    let top: number;
+    let isAbove = false;
+    let maxHeight = 380;
+
+    if (spaceBelow < estimatedHeight && spaceAbove > spaceBelow) {
+      // Position above the cell
+      isAbove = true;
+      maxHeight = Math.max(140, spaceAbove - 24);
+      top = Math.max(12, rect.top - Math.min(estimatedHeight, maxHeight) - 8);
+    } else {
+      // Position below the cell
+      isAbove = false;
+      maxHeight = Math.max(140, spaceBelow - 24);
+      top = Math.min(rect.bottom + 6, viewportHeight - 120);
+    }
+
+    setPopoverPos({
+      top,
+      left,
+      width: popoverWidth,
+      maxHeight,
+      isAbove,
+    });
+  };
+
   const onMouseEnterWithCoords = () => {
+    cancelLeaveTimer();
+
+    // If tooltipOnlyRichText is on and not rich, fall back to native title
     if (!shouldShowTooltipPopover) {
       return;
     }
-    if (containerRef.current) {
-      const rect = containerRef.current.getBoundingClientRect();
-      const popoverWidth = Math.min(Math.max(rect.width * 1.8, 360), 580);
-      let left = rect.left;
-      if (left + popoverWidth > window.innerWidth - 20) {
-        left = window.innerWidth - popoverWidth - 20;
-      }
 
-      setPopoverPos({
-        top: rect.bottom + 6,
-        left: Math.max(16, left),
-        width: popoverWidth,
-      });
-    }
-    handleMouseEnter();
+    calculatePosition();
+    handleMouseEnter({
+      isRich,
+      hasImage,
+      hasSticker,
+      hasCode: detectedCode.isCode,
+      textLength: displayPlainText.length,
+      hasNewlines,
+    });
+  };
+
+  const onMouseLeaveWithDelay = () => {
+    cancelLeaveTimer();
+    leaveTimerRef.current = setTimeout(() => {
+      handleMouseLeave();
+    }, 150);
   };
 
   const handleCopyText = async (e: React.MouseEvent) => {
@@ -96,8 +160,12 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
       ref={containerRef}
       className={`relative w-full h-full flex items-center select-none group/cell ${className}`}
       onMouseEnter={onMouseEnterWithCoords}
-      onMouseLeave={handleMouseLeave}
-      title={!shouldShowTooltipPopover && displayPlainText.length > 25 ? displayPlainText : undefined}
+      onMouseLeave={onMouseLeaveWithDelay}
+      title={
+        !shouldShowTooltipPopover && displayPlainText.trim().length > 0
+          ? displayPlainText
+          : undefined
+      }
     >
       {/* Visible Cell Content (Truncated to maximum 3 lines with ellipsis) */}
       <div
@@ -179,17 +247,20 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             top: `${popoverPos.top}px`,
             left: `${popoverPos.left}px`,
             maxWidth: `${popoverPos.width}px`,
+            maxHeight: `${popoverPos.maxHeight}px`,
             zIndex: 9999,
           }}
+          onMouseEnter={cancelLeaveTimer}
+          onMouseLeave={onMouseLeaveWithDelay}
           onDoubleClick={(e) => {
             e.stopPropagation();
             handleMouseLeave();
             if (onOpenEditor) onOpenEditor();
           }}
           title={onOpenEditor ? "더블 클릭하여 에디터에서 열기" : undefined}
-          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-stone-900/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto cursor-pointer"
+          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-stone-900/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-100 rounded-xl shadow-2xl border border-stone-700/60 text-xs pointer-events-auto cursor-pointer flex flex-col"
         >
-          <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-800 text-[11px] text-stone-400 font-medium">
+          <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-800 text-[11px] text-stone-400 font-medium shrink-0">
             <span className="flex items-center gap-1 text-amber-400 font-semibold">
               <Sparkles className="w-3 h-3" />
               {hasImage
@@ -213,25 +284,27 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
             </div>
           </div>
 
-          {isRich ? (
-            <div
-              className="max-h-72 overflow-y-auto leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar prose dark:prose-invert wonbee-rendered-table tiptap"
-              dangerouslySetInnerHTML={{ __html: rawString }}
-            />
-          ) : detectedCode.isCode ? (
-            <CodeBlockViewer
-              code={displayPlainText}
-              language={detectedCode.language}
-              maxHeight="max-h-60"
-            />
-          ) : (
-            <div className="max-h-52 overflow-y-auto whitespace-pre-wrap break-words leading-relaxed text-stone-200 font-sans text-xs custom-scrollbar">
-              <HighlightText text={displayPlainText} highlight={highlightQuery} />
-            </div>
-          )}
+          <div className="overflow-y-auto custom-scrollbar flex-1 min-h-0">
+            {isRich ? (
+              <div
+                className="max-h-64 leading-relaxed text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table tiptap"
+                dangerouslySetInnerHTML={{ __html: rawString }}
+              />
+            ) : detectedCode.isCode ? (
+              <CodeBlockViewer
+                code={displayPlainText}
+                language={detectedCode.language}
+                maxHeight="max-h-56"
+              />
+            ) : (
+              <div className="max-h-52 whitespace-pre-wrap break-words leading-relaxed text-stone-200 font-sans text-xs">
+                <HighlightText text={displayPlainText} highlight={highlightQuery} />
+              </div>
+            )}
+          </div>
 
           {onOpenEditor && (
-            <div className="mt-2 pt-2 border-t border-stone-800 flex justify-end">
+            <div className="mt-2 pt-2 border-t border-stone-800 flex justify-end shrink-0">
               <button
                 onClick={(e) => {
                   e.stopPropagation();

@@ -2080,11 +2080,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                                 );
                               }
 
-                              return (
-                                <span className="text-stone-800 dark:text-[#f0f0f0] font-normal">
-                                  <HighlightText text={cleanTextValue(val)} highlight={debouncedSearchQuery} />
-                                </span>
-                              );
+                              // Return null for standard text/number/date/rich/image cells so TruncatedPreviewCell can render them natively
+                              return null;
                             }}
                           />
                         )}
