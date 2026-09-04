@@ -22,12 +22,7 @@ import { INITIAL_WORKSPACE_DATA } from './data/initialData';
 import { InfiniteTreeSidebar } from './components/sidebar/InfiniteTreeSidebar';
 import { DataTableViewer } from './components/table/DataTableViewer';
 import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer';
-// Lazy load RichEditorModal and TipTap dependencies to avoid initializing editor during initial page load
-const RichEditorModal = React.lazy(() =>
-  import('./components/editor/RichEditorModal').then((module) => ({
-    default: module.RichEditorModal,
-  }))
-);
+import { RichEditorModal } from './components/editor/RichEditorModal';
 import { ZoomControls } from './components/common/ZoomControls';
 import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
 import { TextPasteModal } from './components/modals/TextPasteModal';
@@ -739,22 +734,20 @@ export default function App() {
         }}
       />
 
-      {/* 4. TipTap Rich Text Editor Modal (Dynamically loaded on-demand) */}
+      {/* 4. TipTap Rich Text Editor Modal */}
       {editingRow && (
-        <React.Suspense fallback={null}>
-          <RichEditorModal
-            isOpen={!!editingRow}
-            onClose={() => {
-              setEditingRow(null);
-              setEditingTargetColId(null);
-            }}
-            row={editingRow}
-            columns={activeTable?.columns || []}
-            tableName={activeTable?.title || '테이블'}
-            initialTargetId={editingTargetColId}
-            onSaveRow={handleSaveRowFromEditor}
-          />
-        </React.Suspense>
+        <RichEditorModal
+          isOpen={!!editingRow}
+          onClose={() => {
+            setEditingRow(null);
+            setEditingTargetColId(null);
+          }}
+          row={editingRow}
+          columns={activeTable?.columns || []}
+          tableName={activeTable?.title || '테이블'}
+          initialTargetId={editingTargetColId}
+          onSaveRow={handleSaveRowFromEditor}
+        />
       )}
 
       {/* 5. Bottom Right Floating Action Button (FAB) for Zoom */}

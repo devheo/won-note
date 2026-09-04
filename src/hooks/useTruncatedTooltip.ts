@@ -23,13 +23,13 @@ export function useTruncatedTooltip() {
 
     const el = textRef.current;
     if (!el) {
-      const likelyTruncated = !!(hint?.hasNewlines || (hint?.textLength && hint.textLength > 36));
+      const likelyTruncated = !!(hint?.hasNewlines || (hint?.textLength && hint.textLength > 15));
       setIsTruncated(likelyTruncated);
       return likelyTruncated;
     }
 
     // 2. Direct DOM scroll overflow on container
-    if (el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1) {
+    if (el.scrollWidth > el.clientWidth + 0.5 || el.scrollHeight > el.clientHeight + 0.5) {
       setIsTruncated(true);
       return true;
     }
@@ -40,8 +40,8 @@ export function useTruncatedTooltip() {
     for (let i = 0; i < allDescendants.length; i++) {
       const child = allDescendants[i] as HTMLElement;
       if (
-        child.scrollHeight > child.clientHeight + 1 ||
-        child.scrollWidth > child.clientWidth + 1
+        child.scrollHeight > child.clientHeight + 0.5 ||
+        child.scrollWidth > child.clientWidth + 0.5
       ) {
         setIsTruncated(true);
         return true;
@@ -49,8 +49,8 @@ export function useTruncatedTooltip() {
     }
 
     // 4. Reliable content-based heuristic fallback:
-    // If text has newlines, or has significant length (exceeds typical single/multi-line capacity)
-    if (hint?.hasNewlines || (hint?.textLength && hint.textLength > 36)) {
+    // If text has newlines, or exceeds typical column capacity (15+ chars)
+    if (hint?.hasNewlines || (hint?.textLength && hint.textLength > 15)) {
       setIsTruncated(true);
       return true;
     }

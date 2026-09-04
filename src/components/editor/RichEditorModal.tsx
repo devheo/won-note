@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Image from '@tiptap/extension-image';
@@ -104,8 +104,34 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   initialTargetId,
   onSaveRow,
 }) => {
-  const [currentRowData, setCurrentRowData] = useState<Record<string, any>>({});
-  const [richContent, setRichContent] = useState<string>('');
+  const sanitizeRowData = useCallback((data: Record<string, any> = {}) => {
+    const sanitized: Record<string, any> = { ...data };
+    columns.forEach((col) => {
+      if (sanitized[col.id] !== undefined && sanitized[col.id] !== null) {
+        const val = sanitized[col.id];
+        if (typeof val === 'string' && val.includes('<') && val.includes('>')) {
+          const isComplex =
+            val.includes('<table') ||
+            val.includes('<img') ||
+            val.includes('sticker') ||
+            val.includes('<h1') ||
+            val.includes('<h2') ||
+            val.includes('<h3') ||
+            val.includes('<ul') ||
+            val.includes('<ol');
+          if (!isComplex) {
+            sanitized[col.id] = cleanTextValue(val);
+          }
+        }
+      }
+    });
+    return sanitized;
+  }, [columns]);
+
+  const [currentRowData, setCurrentRowData] = useState<Record<string, any>>(() => {
+    return row?.data ? sanitizeRowData(row.data) : {};
+  });
+  const [richContent, setRichContent] = useState<string>(() => row?.richContent || '');
   const [isFullscreen, setIsFullscreen] = useState<boolean>(() => {
     return localStorage.getItem('wonbee_rich_editor_fullscreen') === 'true';
   });
@@ -166,7 +192,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   }, [columns, row?.richContent]);
 
   // Resolve target ID helper prioritizing initialTargetId if provided
-  const resolveTargetId = (targetId?: string | null) => {
+  const resolveTargetId = useCallback((targetId?: string | null) => {
     if (targetId) {
       if (targetId === '__richContent__' && row?.richContent && !row.richContent.includes('환영합니다')) return '__richContent__';
       if (columns.some((c) => c.id === targetId)) return targetId;
@@ -174,11 +200,21 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     const firstRich = columns.find((c) => c.type === 'richText');
     if (firstRich) return firstRich.id;
     return richTargets[0]?.id || columns[0]?.id || '';
-  };
+  }, [columns, row?.richContent, richTargets]);
 
   const [selectedTargetId, setSelectedTargetId] = useState<string>(() => resolveTargetId(initialTargetId));
   const selectedTargetIdRef = useRef<string>(selectedTargetId);
   selectedTargetIdRef.current = selectedTargetId;
+
+  // Calculate initial content immediately for editor creation
+  const initialContent = useMemo(() => {
+    if (!row) return '';
+    const targetId = resolveTargetId(initialTargetId);
+    if (targetId === '__richContent__') {
+      return row.richContent || '';
+    }
+    return String(row.data?.[targetId] ?? '');
+  }, [row, initialTargetId, resolveTargetId]);
 
   // Close menus when clicking outside
   useEffect(() => {
@@ -204,27 +240,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   // Sync state when modal opens or row/initialTargetId changes
   useEffect(() => {
     if (row && isOpen) {
-      const sanitized: Record<string, any> = { ...(row.data || {}) };
-      columns.forEach((col) => {
-        if (sanitized[col.id] !== undefined && sanitized[col.id] !== null) {
-          const val = sanitized[col.id];
-          if (typeof val === 'string' && val.includes('<') && val.includes('>')) {
-            const isComplex =
-              val.includes('<table') ||
-              val.includes('<img') ||
-              val.includes('sticker') ||
-              val.includes('<h1') ||
-              val.includes('<h2') ||
-              val.includes('<h3') ||
-              val.includes('<ul') ||
-              val.includes('<ol');
-            if (!isComplex) {
-              sanitized[col.id] = cleanTextValue(val);
-            }
-          }
-        }
-      });
-
+      const sanitized = sanitizeRowData(row.data);
       setCurrentRowData(sanitized);
       setRichContent(row.richContent || '');
       
@@ -232,7 +248,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       setSelectedTargetId(targetId);
       selectedTargetIdRef.current = targetId;
     }
-  }, [row?.id, isOpen, initialTargetId, columns]);
+  }, [row?.id, isOpen, initialTargetId, columns, sanitizeRowData, resolveTargetId]);
 
   // Combined state object for auto-save hook
   const combinedRowState: TableRowType | null = row
@@ -296,7 +312,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }),
       StickerExtension,
     ],
-    content: '',
+    content: initialContent,
     editorProps: {
       attributes: {
         class:
@@ -353,12 +369,15 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   useEffect(() => {
     if (editor && row && isOpen) {
       const targetId = resolveTargetId(initialTargetId);
-      const initialContent = targetId === '__richContent__'
+      const contentToSet = targetId === '__richContent__'
         ? (row.richContent || '')
-        : String(row.data[targetId] ?? '');
-      editor.commands.setContent(initialContent);
+        : String(row.data?.[targetId] ?? '');
+      // Only set if different to prevent cursor jumps
+      if (editor.getHTML() !== contentToSet) {
+        editor.commands.setContent(contentToSet, { emitUpdate: false });
+      }
     }
-  }, [row?.id, isOpen, initialTargetId, editor]);
+  }, [row?.id, isOpen, initialTargetId, editor, resolveTargetId]);
 
   // Switch target field
   const handleSwitchTarget = (targetId: string) => {
@@ -369,7 +388,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       const content = targetId === '__richContent__'
         ? (richContent || '')
         : String(currentRowData[targetId] ?? '');
-      editor.commands.setContent(content);
+      editor.commands.setContent(content, { emitUpdate: false });
     }
   };
 

@@ -61,6 +61,7 @@ import {
   Loader2,
   Clock,
   Zap,
+  WrapText,
 } from 'lucide-react';
 import {
   isUpdateDateColumn,
@@ -325,6 +326,27 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     window.addEventListener('paste', handleGlobalPaste);
     return () => window.removeEventListener('paste', handleGlobalPaste);
   }, []);
+
+  // Wrap cells state (모든 셀 내용 전체보기 / 줄바꿈 모드, persisted in localStorage)
+  const [isWrapCells, setIsWrapCells] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('wonbee_wrap_cells') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleWrapCells = () => {
+    setIsWrapCells((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('wonbee_wrap_cells', String(next));
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
 
   // Row Action Dropdown Menu
   const [isRowMenuOpen, setIsRowMenuOpen] = useState(false);
@@ -1072,8 +1094,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
   };
 
-  // Row height CSS classes based on row density
+  // Row height CSS classes based on row density & wrap mode
   const getRowHeightClass = () => {
+    if (isWrapCells) {
+      return 'min-h-[44px] py-2.5 h-auto';
+    }
     switch (rowDensity) {
       case 'compact':
         return 'h-8 py-0.5';
@@ -1308,6 +1333,20 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
         {/* Right Toolbar Controls */}
         <div className="flex items-center gap-2">
+          {/* Wrap Cells Toggle Button (모든 데이터 한눈에 전체보기 / 줄바꿈 모드) */}
+          <button
+            onClick={toggleWrapCells}
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+              isWrapCells
+                ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-xs'
+                : 'bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border-stone-200/60 dark:border-[#383838]'
+            }`}
+            title={isWrapCells ? '셀 요약 축약 보기로 전환 (호버 시 팝오버 확인)' : '모든 셀의 내용 전체 펼쳐보기 (줄바꿈 모드)'}
+          >
+            <WrapText className={`w-3.5 h-3.5 ${isWrapCells ? 'text-stone-950' : 'text-amber-500'}`} />
+            <span>{isWrapCells ? '줄바꿈 전체보기 ON' : '줄바꿈 전체보기'}</span>
+          </button>
+
           {/* Row Height Density Dropdown */}
           <div className="relative" ref={densityMenuRef}>
             <button
@@ -1932,7 +1971,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                           setEditingCell({ rowId: row.id, colId: col.id });
                           setEditingValue(rawVal ?? '');
                         }}
-                        className={`px-3 ${heightClass} border-r border-stone-200/70 dark:border-[#2d2d2d] font-sans text-xs relative overflow-hidden text-stone-900 dark:text-[#f0f0f0]`}
+                        className={`px-3 ${heightClass} border-r border-stone-200/70 dark:border-[#2d2d2d] font-sans text-xs relative ${isWrapCells ? 'overflow-visible' : 'overflow-hidden'} text-stone-900 dark:text-[#f0f0f0]`}
                       >
                         {isEditing ? (
                           <div data-editing-cell="true" className="w-full" onClick={(e) => e.stopPropagation()}>
@@ -2011,6 +2050,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                             highlightQuery={debouncedSearchQuery}
                             skipImageDetection={perfOptions.skipImageDetectionOnPlainText}
                             tooltipOnlyRichText={perfOptions.tooltipOnlyRichText}
+                            isWrapCells={isWrapCells}
                             onOpenEditor={() => onOpenRowEditor(row, col.id)}
                             onOpenImage={(src) => setLightboxImg(src)}
                             renderCustomContent={(val) => {

@@ -16,6 +16,7 @@ interface TruncatedPreviewCellProps {
   renderCustomContent?: (val: any) => React.ReactNode;
   skipImageDetection?: boolean;
   tooltipOnlyRichText?: boolean;
+  isWrapCells?: boolean;
 }
 
 export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
@@ -28,6 +29,7 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
   renderCustomContent,
   skipImageDetection = false,
   tooltipOnlyRichText = false,
+  isWrapCells = false,
 }) => {
   const { textRef, isHovered, handleMouseEnter, handleMouseLeave } = useTruncatedTooltip();
   const [popoverPos, setPopoverPos] = useState<{
@@ -169,62 +171,70 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
           : undefined
       }
     >
-      {/* Visible Cell Content (Truncated to maximum 3 lines with ellipsis) */}
-      <div
-        ref={textRef}
-        className="w-full text-xs font-normal text-stone-800 dark:text-stone-200 flex items-start gap-1.5 overflow-hidden"
-      >
-        {customRender !== null && customRender !== undefined ? (
-          <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug">
-            {customRender}
-          </div>
-        ) : hasImage ? (
-          <div className="flex items-start gap-1.5 min-w-0">
-            {firstImageSrc ? (
-              <img
-                src={firstImageSrc}
-                alt="thumb"
-                onClick={(e) => {
-                  if (onOpenImage && firstImageSrc) {
-                    e.stopPropagation();
-                    onOpenImage(firstImageSrc);
-                  }
-                }}
-                className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0 cursor-zoom-in hover:scale-110 transition-transform mt-0.5"
-                title="클릭하여 원본 이미지 뷰어 열기"
-              />
+      {/* Visible Cell Content (Truncated to maximum 3 lines with ellipsis, or fully wrapped if isWrapCells is true) */}
+      {(() => {
+        const clampClass = isWrapCells
+          ? 'break-words whitespace-pre-wrap leading-snug'
+          : 'line-clamp-3 break-words whitespace-pre-wrap leading-snug';
+
+        return (
+          <div
+            ref={textRef}
+            className="w-full text-xs font-normal text-stone-800 dark:text-stone-200 flex items-start gap-1.5 overflow-hidden"
+          >
+            {customRender !== null && customRender !== undefined ? (
+              <div className={clampClass}>
+                {customRender}
+              </div>
+            ) : hasImage ? (
+              <div className="flex items-start gap-1.5 min-w-0">
+                {firstImageSrc ? (
+                  <img
+                    src={firstImageSrc}
+                    alt="thumb"
+                    onClick={(e) => {
+                      if (onOpenImage && firstImageSrc) {
+                        e.stopPropagation();
+                        onOpenImage(firstImageSrc);
+                      }
+                    }}
+                    className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0 cursor-zoom-in hover:scale-110 transition-transform mt-0.5"
+                    title="클릭하여 원본 이미지 뷰어 열기"
+                  />
+                ) : (
+                  <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
+                )}
+                <span className={`${clampClass} text-xs text-stone-700 dark:text-stone-300`}>
+                  {displayPlainText.length > 0 ? (
+                    <HighlightText text={displayPlainText} highlight={highlightQuery} />
+                  ) : (
+                    '[이미지 첨부]'
+                  )}
+                </span>
+              </div>
+            ) : hasSticker ? (
+              <div className="flex items-start gap-1.5 min-w-0 w-full">
+                <Pin className="w-3.5 h-3.5 text-amber-500 fill-current flex-shrink-0 mt-0.5" />
+                <span className={`${clampClass} text-xs text-amber-900 dark:text-amber-300 font-medium`}>
+                  {displayPlainText.length > 0 ? (
+                    <HighlightText text={displayPlainText} highlight={highlightQuery} />
+                  ) : (
+                    '📌 원노트 스티커 메모'
+                  )}
+                </span>
+              </div>
             ) : (
-              <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
-            )}
-            <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-stone-700 dark:text-stone-300">
-              {displayPlainText.length > 0 ? (
-                <HighlightText text={displayPlainText} highlight={highlightQuery} />
-              ) : (
-                '[이미지 첨부]'
-              )}
-            </span>
-          </div>
-        ) : hasSticker ? (
-          <div className="flex items-start gap-1.5 min-w-0 w-full">
-            <Pin className="w-3.5 h-3.5 text-amber-500 fill-current flex-shrink-0 mt-0.5" />
-            <span className="line-clamp-3 break-words whitespace-pre-wrap leading-snug text-xs text-amber-900 dark:text-amber-300 font-medium">
-              {displayPlainText.length > 0 ? (
-                <HighlightText text={displayPlainText} highlight={highlightQuery} />
-              ) : (
-                '📌 원노트 스티커 메모'
-              )}
-            </span>
-          </div>
-        ) : (
-          <div className="line-clamp-3 break-words whitespace-pre-wrap leading-snug w-full">
-            {displayPlainText.length > 0 ? (
-              <HighlightText text={displayPlainText} highlight={highlightQuery} />
-            ) : (
-              <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+              <div className={`${clampClass} w-full`}>
+                {displayPlainText.length > 0 ? (
+                  <HighlightText text={displayPlainText} highlight={highlightQuery} />
+                ) : (
+                  <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+                )}
+              </div>
             )}
           </div>
-        )}
-      </div>
+        );
+      })()}
 
       {/* Quick edit button on cell hover */}
       {onOpenEditor && (
@@ -255,7 +265,9 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
           onMouseEnter={cancelLeaveTimer}
           onMouseLeave={onMouseLeaveWithDelay}
           onDoubleClick={(e) => {
+            e.preventDefault();
             e.stopPropagation();
+            cancelLeaveTimer();
             handleMouseLeave();
             if (onOpenEditor) onOpenEditor();
           }}
