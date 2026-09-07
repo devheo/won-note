@@ -34,6 +34,7 @@ import { detectLanguage } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
+import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
 import { getAllStickersFromRow, STICKER_COLOR_MAP } from '../../utils/stickerUtils';
 import {
@@ -53,6 +54,7 @@ interface ModernRowDetailViewerProps {
   onClose: () => void;
   row: TableRow | null;
   columns: TableColumn[];
+  allRows?: TableRow[];
   tableName: string;
   totalRows: number;
   currentIndex: number;
@@ -69,6 +71,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
   onClose,
   row,
   columns,
+  allRows = [],
   tableName,
   totalRows,
   currentIndex,
@@ -654,8 +657,8 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               autoFocus
                               size="md"
                               value={editValue}
-                              options={col.options}
-                              placeholder="선택 안 함 (직접 텍스트 입력 가능)"
+                              options={getEffectiveColumnOptions(col, allRows)}
+                              placeholder="분류/상태 선택 (직접 텍스트 입력 가능)"
                               onChange={(newVal) => setEditValue(newVal)}
                             />
                           ) : isUpdateDateColumn(col) ? (

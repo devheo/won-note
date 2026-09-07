@@ -736,6 +736,7 @@ export default function App() {
         currentIndex={selectedDetailRowIndex}
         totalRows={activeTable?.rows.length || 0}
         columns={activeTable?.columns || []}
+        allRows={activeTable?.rows || []}
         tableName={activeTable?.title || '테이블'}
         onOpenRichEditor={(row, colId) => {
           setEditingRow(row);
@@ -782,6 +783,7 @@ export default function App() {
           }}
           row={editingRow}
           columns={activeTable?.columns || []}
+          allRows={activeTable?.rows || []}
           tableName={activeTable?.title || '테이블'}
           initialTargetId={editingTargetColId}
           onSaveRow={handleSaveRowFromEditor}

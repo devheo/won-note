@@ -18,11 +18,13 @@ import {
   Clock,
 } from 'lucide-react';
 import { isUpdateDateColumn, formatDateTime } from '../../utils/dateColumnUtils';
+import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 
 interface AddRowModalProps {
   isOpen: boolean;
   onClose: () => void;
   columns: TableColumn[];
+  rows?: TableRow[];
   tableName: string;
   insertPosition?: 'bottom' | 'top';
   onAddRow: (rowData: Record<string, any>, richContent?: string, position?: 'bottom' | 'top') => void;
@@ -33,6 +35,7 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
   isOpen,
   onClose,
   columns,
+  rows = [],
   tableName,
   insertPosition = 'bottom',
   onAddRow,
@@ -261,110 +264,113 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
 
                   {/* Input by Column Type */}
                   {col.type === 'status' || col.type === 'select' ? (
-                    <div className="space-y-2">
-                      <div className="flex items-center gap-2">
-                        {/* Select or direct toggle */}
-                        {!isCustomMode[col.id] ? (
-                          <div className="flex-1 flex items-center gap-2">
-                            <select
-                              value={val}
-                              onChange={(e) => {
-                                if (e.target.value === '__custom_input__') {
-                                  setIsCustomMode((prev) => ({ ...prev, [col.id]: true }));
-                                } else {
-                                  handleChange(col.id, e.target.value);
-                                }
-                              }}
-                              className="flex-1 px-3 py-2 bg-stone-50 dark:bg-[#181818] border border-stone-200 dark:border-[#383838] rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] outline-none focus:border-amber-500"
-                            >
-                              <option value="">(선택 안 함 / 미정)</option>
-                              {col.options && col.options.length > 0 ? (
-                                col.options.map((opt, optIdx) => (
-                                  <option key={`opt-${opt.id || opt.label}-${optIdx}`} value={opt.label || opt.id}>
-                                    {opt.label}
-                                  </option>
-                                ))
-                              ) : null}
-                              {val && !col.options?.some((o) => o.id === val || o.label === val) && (
-                                <option value={val}>{val} (기존 값)</option>
-                              )}
-                              <option value="__custom_input__">✏️ 직접 새 항목/태그 입력하기...</option>
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => setIsCustomMode((prev) => ({ ...prev, [col.id]: true }))}
-                              className="px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 rounded-lg border border-amber-200 dark:border-amber-900/50 whitespace-nowrap font-medium"
-                              title="직접 텍스트로 분류 입력"
-                            >
-                              직접 입력
-                            </button>
+                    (() => {
+                      const effectiveOptions = getEffectiveColumnOptions(col, rows);
+                      return (
+                        <div className="space-y-2">
+                          <div className="flex items-center gap-2">
+                            {/* Select or direct toggle */}
+                            {!isCustomMode[col.id] ? (
+                              <div className="flex-1 flex items-center gap-2">
+                                <select
+                                  value={val}
+                                  onChange={(e) => {
+                                    if (e.target.value === '__custom_input__') {
+                                      setIsCustomMode((prev) => ({ ...prev, [col.id]: true }));
+                                    } else {
+                                      handleChange(col.id, e.target.value);
+                                    }
+                                  }}
+                                  className="flex-1 px-3 py-2 bg-stone-50 dark:bg-[#181818] border border-stone-200 dark:border-[#383838] rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] outline-none focus:border-amber-500"
+                                >
+                                  <option value="">(선택 안 함 / 미정)</option>
+                                  {effectiveOptions.map((opt, optIdx) => (
+                                    <option key={`opt-${opt.id || opt.label}-${optIdx}`} value={opt.label || opt.id}>
+                                      {opt.label}{opt.count !== undefined ? ` (${opt.count}개 행)` : ''}
+                                    </option>
+                                  ))}
+                                  {val && !effectiveOptions.some((o) => o.id === val || o.label === val) && (
+                                    <option value={val}>{val} (입력된 값)</option>
+                                  )}
+                                  <option value="__custom_input__">✏️ 직접 새 항목/태그 입력하기...</option>
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => setIsCustomMode((prev) => ({ ...prev, [col.id]: true }))}
+                                  className="px-2.5 py-2 text-xs text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40 rounded-lg border border-amber-200 dark:border-amber-900/50 whitespace-nowrap font-medium"
+                                  title="직접 텍스트로 분류 입력"
+                                >
+                                  직접 입력
+                                </button>
+                              </div>
+                            ) : (
+                              <div className="flex-1 flex items-center gap-2">
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  placeholder="새 분류/상태명 직접 입력 후 엔터 (예: 보류, 1차검토)"
+                                  value={customOptionInput[col.id] !== undefined ? customOptionInput[col.id] : val}
+                                  onChange={(e) => {
+                                    const newV = e.target.value;
+                                    setCustomOptionInput((prev) => ({ ...prev, [col.id]: newV }));
+                                    handleChange(col.id, newV);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault();
+                                      handleCustomOptionSubmit(col.id);
+                                    }
+                                  }}
+                                  className="flex-1 px-3 py-2 bg-stone-50 dark:bg-[#181818] border border-amber-500 rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] outline-none"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    handleCustomOptionSubmit(col.id);
+                                    setIsCustomMode((prev) => ({ ...prev, [col.id]: false }));
+                                  }}
+                                  className="px-3 py-2 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs hover:bg-amber-400"
+                                >
+                                  확인
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setIsCustomMode((prev) => ({ ...prev, [col.id]: false }))}
+                                  className="px-2 py-2 text-xs text-stone-500 dark:text-[#aaaaaa] hover:bg-stone-100 dark:hover:bg-[#333333] rounded-lg"
+                                >
+                                  목록 선택
+                                </button>
+                              </div>
+                            )}
                           </div>
-                        ) : (
-                          <div className="flex-1 flex items-center gap-2">
-                            <input
-                              type="text"
-                              autoFocus
-                              placeholder="새 분류/상태명 직접 입력 (예: 사채원리금, 보류)"
-                              value={customOptionInput[col.id] !== undefined ? customOptionInput[col.id] : val}
-                              onChange={(e) => {
-                                const newV = e.target.value;
-                                setCustomOptionInput((prev) => ({ ...prev, [col.id]: newV }));
-                                handleChange(col.id, newV);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault();
-                                  handleCustomOptionSubmit(col.id);
-                                }
-                              }}
-                              className="flex-1 px-3 py-2 bg-stone-50 dark:bg-[#181818] border border-amber-500 rounded-lg text-xs text-stone-900 dark:text-[#f5f5f5] outline-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => {
-                                handleCustomOptionSubmit(col.id);
-                                setIsCustomMode((prev) => ({ ...prev, [col.id]: false }));
-                              }}
-                              className="px-3 py-2 bg-amber-500 text-stone-950 font-bold rounded-lg text-xs hover:bg-amber-400"
-                            >
-                              확인
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setIsCustomMode((prev) => ({ ...prev, [col.id]: false }))}
-                              className="px-2 py-2 text-xs text-stone-500 dark:text-[#aaaaaa] hover:bg-stone-100 dark:hover:bg-[#333333] rounded-lg"
-                            >
-                              목록 선택
-                            </button>
-                          </div>
-                        )}
-                      </div>
 
-                      {/* Quick preset badges if available */}
-                      {col.options && col.options.length > 0 && (
-                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                          <span className="text-[11px] text-stone-400">추천:</span>
-                          {col.options.map((opt, optIdx) => (
-                            <button
-                              type="button"
-                              key={`badge-${opt.id || opt.label}-${optIdx}`}
-                              onClick={() => {
-                                handleChange(col.id, opt.label || opt.id);
-                                setIsCustomMode((prev) => ({ ...prev, [col.id]: false }));
-                              }}
-                              style={{
-                                backgroundColor: val === opt.label || val === opt.id ? opt.color : `${opt.color}15`,
-                                color: val === opt.label || val === opt.id ? '#ffffff' : opt.color,
-                                borderColor: `${opt.color}40`,
-                              }}
-                              className="px-2 py-0.5 rounded-full text-[11px] font-semibold border transition-all hover:opacity-90"
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
+                          {/* Quick preset badges from actual cell values */}
+                          {effectiveOptions.length > 0 && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                              <span className="text-[11px] text-stone-400">현재 셀 데이터 추천:</span>
+                              {effectiveOptions.map((opt, optIdx) => (
+                                <button
+                                  type="button"
+                                  key={`badge-${opt.id || opt.label}-${optIdx}`}
+                                  onClick={() => {
+                                    handleChange(col.id, opt.label || opt.id);
+                                    setIsCustomMode((prev) => ({ ...prev, [col.id]: false }));
+                                  }}
+                                  style={{
+                                    backgroundColor: val === opt.label || val === opt.id ? opt.color : `${opt.color}15`,
+                                    color: val === opt.label || val === opt.id ? '#ffffff' : opt.color,
+                                    borderColor: `${opt.color}40`,
+                                  }}
+                                  className="px-2 py-0.5 rounded-full text-[11px] font-semibold border transition-all hover:opacity-90"
+                                >
+                                  {opt.label}{opt.count !== undefined ? ` (${opt.count})` : ''}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
+                      );
+                    })()
                   ) : col.type === 'checkbox' ? (
                     <label className="flex items-center gap-2.5 cursor-pointer py-1">
                       <input

@@ -7,6 +7,7 @@ import { ColumnManagerModal } from '../modals/ColumnManagerModal';
 import { AddRowModal } from '../modals/AddRowModal';
 import { ImportRowsModal } from '../modals/ImportRowsModal';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
+import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
 import { ExcelColumnFilterDropdown } from './ExcelColumnFilterDropdown';
@@ -160,6 +161,17 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     }
     return table.rows.reduce((acc, r) => acc + getAllStickersFromRow(r, table.columns).length, 0);
   }, [table.rows, table.columns, perfOptions.lazyStickerCount, onlyStickerFilter]);
+
+  // Memoized dynamic effective options per column (extracts all unique values present in actual cells)
+  const columnEffectiveOptionsMap = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof getEffectiveColumnOptions>>();
+    table.columns.forEach((col) => {
+      if (col.type === 'status' || col.type === 'select' || col.options) {
+        map.set(col.id, getEffectiveColumnOptions(col, table.rows));
+      }
+    });
+    return map;
+  }, [table.columns, table.rows]);
 
   // Excel-style column filters state: { [columnId]: string[] } (list of allowed distinct values)
   const [columnFilters, setColumnFilters] = useState<Record<string, string[]>>({});
@@ -2060,8 +2072,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                               <SelectOrCustomInput
                                 autoFocus
                                 value={editingValue}
-                                options={col.options}
-                                placeholder="선택 안 함"
+                                options={columnEffectiveOptionsMap.get(col.id) || getEffectiveColumnOptions(col, table.rows)}
+                                placeholder="분류/상태 선택 (직접 입력 가능)"
                                 onChange={(val) => {
                                   setEditingValue(val);
                                   commitCellEdit(row.id, col.id, val);
@@ -2417,6 +2429,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         isOpen={isAddRowModalOpen}
         onClose={() => setIsAddRowModalOpen(false)}
         columns={table.columns}
+        rows={table.rows}
         tableName={table.title}
         insertPosition={addRowPosition}
         onAddRow={handleCreateRowFromModal}
@@ -2446,6 +2459,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         isOpen={isColumnManagerOpen}
         onClose={() => setIsColumnManagerOpen(false)}
         columns={table.columns}
+        rows={table.rows}
         hiddenColumnIds={hiddenColumnIds}
         onToggleColumnVisibility={toggleColumnVisibility}
         onReorderColumns={handleReorderColumns}

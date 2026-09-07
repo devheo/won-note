@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { TableColumn, ColumnType } from '../../types';
+import { TableColumn, ColumnType, TableRow } from '../../types';
 import {
   X,
   Plus,
@@ -23,11 +23,13 @@ import {
   Clock,
 } from 'lucide-react';
 import { isUpdateDateColumn } from '../../utils/dateColumnUtils';
+import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 
 interface ColumnManagerModalProps {
   isOpen: boolean;
   onClose: () => void;
   columns: TableColumn[];
+  rows?: TableRow[];
   hiddenColumnIds: Set<string>;
   onToggleColumnVisibility: (colId: string) => void;
   onReorderColumns: (newCols: TableColumn[]) => void;
@@ -40,6 +42,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
   isOpen,
   onClose,
   columns,
+  rows = [],
   hiddenColumnIds,
   onToggleColumnVisibility,
   onReorderColumns,
@@ -69,14 +72,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
       name: newColName.trim(),
       type: newColType,
       width: newColType === 'richText' ? 320 : 160,
-      options:
-        newColType === 'status' || newColType === 'select'
-          ? [
-              { id: 'opt-1', label: '대기', color: '#9CA3AF' },
-              { id: 'opt-2', label: '진행중', color: '#F59E0B' },
-              { id: 'opt-3', label: '완료', color: '#10B981' },
-            ]
-          : undefined,
+      options: newColType === 'status' || newColType === 'select' ? [] : undefined,
     };
 
     onAddColumn(newCol);
@@ -319,6 +315,27 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
                         <span className="text-[10px] text-stone-400 dark:text-[#888888] capitalize">
                           {col.type} • {col.width || 160}px
                         </span>
+                        {(col.type === 'status' || col.type === 'select') && (
+                          <div className="flex flex-wrap items-center gap-1 mt-1">
+                            <span className="text-[10px] text-stone-400 dark:text-[#777777]">현재 셀 데이터:</span>
+                            {getEffectiveColumnOptions(col, rows).map((opt, optIdx) => (
+                              <span
+                                key={`opt-tag-${optIdx}`}
+                                style={{
+                                  backgroundColor: `${opt.color}18`,
+                                  color: opt.color,
+                                  borderColor: `${opt.color}35`,
+                                }}
+                                className="px-1.5 py-0.2 rounded-full text-[10px] font-medium border"
+                              >
+                                {opt.label}{opt.count !== undefined ? ` (${opt.count})` : ''}
+                              </span>
+                            ))}
+                            {getEffectiveColumnOptions(col, rows).length === 0 && (
+                              <span className="text-[10px] text-stone-400 italic">셀에 입력된 값 없음</span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

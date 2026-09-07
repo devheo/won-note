@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ColumnOption } from '../../types';
+import { EffectiveColumnOption } from '../../utils/columnOptionsUtils';
 import { Plus, Check, Edit2, Tag } from 'lucide-react';
 import { cleanTextValue } from '../../utils/textSanitizer';
 
 interface SelectOrCustomInputProps {
   value: any;
-  options?: ColumnOption[];
+  options?: (ColumnOption | EffectiveColumnOption)[];
   onChange: (val: string) => void;
   onBlur?: () => void;
   placeholder?: string;
@@ -19,7 +20,7 @@ export const SelectOrCustomInput: React.FC<SelectOrCustomInputProps> = ({
   options = [],
   onChange,
   onBlur,
-  placeholder = '분류 선택 또는 입력...',
+  placeholder = '분류/상태 선택 또는 직접 입력...',
   className = '',
   autoFocus = false,
   size = 'sm',
@@ -68,7 +69,7 @@ export const SelectOrCustomInput: React.FC<SelectOrCustomInputProps> = ({
           ref={inputRef}
           type="text"
           value={customText}
-          placeholder="분류/상태 직접 입력..."
+          placeholder="새 상태/태그 직접 입력 후 엔터..."
           onChange={(e) => setCustomText(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
@@ -113,18 +114,26 @@ export const SelectOrCustomInput: React.FC<SelectOrCustomInputProps> = ({
         }`}
       >
         <option value="">{placeholder}</option>
-        {options.map((opt, optIdx) => (
-          <option key={`opt-${opt.id || opt.label}-${optIdx}`} value={opt.label || opt.id} className="dark:bg-[#1f1f1f]">
-            {opt.label}
-          </option>
-        ))}
+        {options.map((opt, optIdx) => {
+          const count = (opt as EffectiveColumnOption).count;
+          const countBadge = count !== undefined ? ` (${count}개 행)` : '';
+          return (
+            <option
+              key={`opt-${opt.id || opt.label}-${optIdx}`}
+              value={opt.label || opt.id}
+              className="dark:bg-[#1f1f1f]"
+            >
+              {opt.label}{countBadge}
+            </option>
+          );
+        })}
         {cleanVal && !matchingOption && (
           <option value={cleanVal} className="dark:bg-[#1f1f1f]">
-            {cleanVal} (직접 입력됨)
+            {cleanVal} (현재 셀 값)
           </option>
         )}
         <option value="__CUSTOM_INPUT_MODE__" className="font-semibold text-amber-600 dark:text-amber-400">
-          ✏️ [직접 입력...]
+          ✏️ [직접 입력 / 새 태그 추가...]
         </option>
       </select>
       <button
@@ -134,10 +143,11 @@ export const SelectOrCustomInput: React.FC<SelectOrCustomInputProps> = ({
           setIsCustomMode(true);
         }}
         className="p-1 text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-100 dark:hover:bg-[#333333] rounded transition-colors"
-        title="직접 텍스트로 입력하기"
+        title="새 상태/태그 직접 텍스트로 입력하기"
       >
         <Edit2 className="w-3 h-3" />
       </button>
     </div>
   );
 };
+

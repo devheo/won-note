@@ -18,6 +18,7 @@ import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer'
 import { delimitedTextToHtmlTable } from '../../utils/csvParser';
 import { compressAndResizeImage } from '../../utils/imageOptimizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
+import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import {
   X,
   Bold,
@@ -91,6 +92,7 @@ interface RichEditorModalProps {
   onClose: () => void;
   row: TableRowType | null;
   columns: TableColumn[];
+  allRows?: TableRowType[];
   tableName: string;
   initialTargetId?: string | null;
   onSaveRow: (updatedRow: TableRowType) => Promise<void> | void;
@@ -101,6 +103,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   onClose,
   row,
   columns,
+  allRows = [],
   tableName,
   initialTargetId,
   onSaveRow,
@@ -561,7 +564,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                   <div className="min-w-[130px]">
                     <SelectOrCustomInput
                       value={cleanTextValue(currentRowData[col.id])}
-                      options={col.options}
+                      options={getEffectiveColumnOptions(col, allRows)}
                       placeholder="미정/선택 없음"
                       onChange={(val) => handleCellChange(col.id, val)}
                     />

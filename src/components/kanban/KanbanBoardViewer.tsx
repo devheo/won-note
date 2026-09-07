@@ -23,6 +23,7 @@ import { TableDocument, TableColumn, TableRow, ColumnOption } from '../../types'
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { getAllStickersFromRow } from '../../utils/stickerUtils';
 import { applyAutoUpdateDateToRow } from '../../utils/dateColumnUtils';
+import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 
 interface KanbanBoardViewerProps {
   table: TableDocument;
@@ -298,35 +299,36 @@ export const KanbanBoardViewer: React.FC<KanbanBoardViewerProps> = ({
     const laneLookup = new Map<string, Lane>();
     const usedLaneIds = new Set<string>();
 
-    // 1. If the column has configured options (e.g. status or select)
-    if (groupColumn.options && groupColumn.options.length > 0) {
-      groupColumn.options.forEach((opt, idx) => {
-        const colorClass = opt.color || DEFAULT_LANE_COLORS[idx % DEFAULT_LANE_COLORS.length];
-        const rawKey = opt.id || opt.label || `opt-${idx}`;
-        const uniqueId = `lane-opt-${rawKey}-${idx}`;
-        usedLaneIds.add(uniqueId);
+    // 1. Get effective options (combining actual cell values present in rows and configured options,
+    // avoiding empty generic default placeholders like '대기' if none exist in the data)
+    const effectiveOptions = getEffectiveColumnOptions(groupColumn, rows);
 
-        const lane: Lane = {
-          id: uniqueId,
-          title: opt.label || opt.id,
-          color: colorClass,
-          rows: [],
-          optionValue: opt.id || opt.label,
-        };
-        laneList.push(lane);
+    effectiveOptions.forEach((opt, idx) => {
+      const colorClass = opt.color || DEFAULT_LANE_COLORS[idx % DEFAULT_LANE_COLORS.length];
+      const rawKey = opt.id || opt.label || `opt-${idx}`;
+      const uniqueId = `lane-opt-${rawKey}-${idx}`;
+      usedLaneIds.add(uniqueId);
 
-        // Register in lookup map by id, label, and clean variations
-        if (opt.id) {
-          laneLookup.set(opt.id, lane);
-          laneLookup.set(opt.id.toLowerCase(), lane);
-        }
-        if (opt.label) {
-          laneLookup.set(opt.label, lane);
-          laneLookup.set(opt.label.toLowerCase(), lane);
-          laneLookup.set(cleanTextValue(opt.label), lane);
-        }
-      });
-    }
+      const lane: Lane = {
+        id: uniqueId,
+        title: opt.label || opt.id,
+        color: colorClass,
+        rows: [],
+        optionValue: opt.label || opt.id,
+      };
+      laneList.push(lane);
+
+      // Register in lookup map by id, label, and clean variations
+      if (opt.id) {
+        laneLookup.set(opt.id, lane);
+        laneLookup.set(opt.id.toLowerCase(), lane);
+      }
+      if (opt.label) {
+        laneLookup.set(opt.label, lane);
+        laneLookup.set(opt.label.toLowerCase(), lane);
+        laneLookup.set(cleanTextValue(opt.label), lane);
+      }
+    });
 
     // 2. Always have an "Unassigned" lane for cards without a value
     const unassignedLane: Lane = {
