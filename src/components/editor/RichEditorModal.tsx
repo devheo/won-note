@@ -16,6 +16,7 @@ import { TableRow as TableRowType, TableColumn, AutoSaveStatus } from '../../typ
 import { useAutoSave } from '../../hooks/useAutoSave';
 import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer';
 import { delimitedTextToHtmlTable } from '../../utils/csvParser';
+import { compressAndResizeImage } from '../../utils/imageOptimizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import {
   X,
@@ -318,6 +319,26 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         class:
           'prose dark:prose-invert max-w-none focus:outline-none min-h-[300px] text-sm text-stone-800 dark:text-[#f0f0f0] leading-relaxed font-sans',
       },
+      handlePaste: (_view, event) => {
+        const items = event.clipboardData?.items;
+        if (!items) return false;
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          if (item.type.startsWith('image/')) {
+            const file = item.getAsFile();
+            if (file) {
+              event.preventDefault();
+              compressAndResizeImage(file).then(({ dataUrl }) => {
+                if (editor) {
+                  editor.chain().focus().setImage({ src: dataUrl, alt: 'Pasted Image' }).run();
+                }
+              });
+              return true;
+            }
+          }
+        }
+        return false;
+      },
     },
     onUpdate: ({ editor }) => {
       const html = editor.getHTML();
@@ -423,15 +444,20 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     }
   };
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && editor) {
-      const reader = new FileReader();
-      reader.onload = (uploadEvent) => {
-        const src = uploadEvent.target?.result as string;
-        editor.chain().focus().setImage({ src, alt: file.name }).run();
-      };
-      reader.readAsDataURL(file);
+      try {
+        const { dataUrl } = await compressAndResizeImage(file);
+        editor.chain().focus().setImage({ src: dataUrl, alt: file.name }).run();
+      } catch {
+        const reader = new FileReader();
+        reader.onload = (uploadEvent) => {
+          const src = uploadEvent.target?.result as string;
+          editor.chain().focus().setImage({ src, alt: file.name }).run();
+        };
+        reader.readAsDataURL(file);
+      }
     }
     if (fileInputRef.current) fileInputRef.current.value = '';
   };

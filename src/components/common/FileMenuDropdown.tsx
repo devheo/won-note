@@ -399,6 +399,20 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
             <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
             현재 테이블 CSV 다운로드
           </button>
+
+          <button
+            onClick={() => {
+              onOpenDataPortability();
+              setIsOpen(false);
+            }}
+            className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between text-stone-800 dark:text-[#f0f0f0] transition-colors"
+          >
+            <span className="flex items-center gap-2">
+              <Layers className="w-3.5 h-3.5 text-amber-500" />
+              <span>데이터 병합 및 상세 백업</span>
+            </span>
+            <span className="text-[10px] text-stone-400">JSON</span>
+          </button>
         </div>
       )}
 

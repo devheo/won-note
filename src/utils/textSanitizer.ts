@@ -4,12 +4,37 @@
  * while strictly preserving original spaces, indents, and newlines.
  */
 
+// High-performance LRU-like Map caches for text cleaning and image extraction
+const CLEAN_TEXT_CACHE = new Map<string, string>();
+const IMAGE_SRC_CACHE = new Map<string, string | null>();
+const MAX_CACHE_ENTRIES = 5000;
+
+function trimCache<K, V>(cache: Map<K, V>) {
+  if (cache.size > MAX_CACHE_ENTRIES) {
+    const iter = cache.keys();
+    // Evict oldest 500 entries
+    for (let i = 0; i < 500; i++) {
+      const nextKey = iter.next().value;
+      if (nextKey !== undefined) {
+        cache.delete(nextKey);
+      }
+    }
+  }
+}
+
 export function cleanTextValue(val: any): string {
   if (val === null || val === undefined) return '';
   if (typeof val !== 'string') return String(val);
 
   let str = val;
   if (!str) return '';
+
+  // Return cached result if available
+  if (str.length < 5000 && CLEAN_TEXT_CACHE.has(str)) {
+    return CLEAN_TEXT_CACHE.get(str)!;
+  }
+
+  const originalStr = str;
 
   // If HTML tags are present (e.g. <p>...</p>, <pre>...</pre>, <span>...</span>)
   if (str.includes('<') && str.includes('>')) {
@@ -43,7 +68,14 @@ export function cleanTextValue(val: any): string {
       .replace(/&#39;/gi, "'");
   }
 
-  return str.trim();
+  const result = str.trim();
+
+  if (originalStr.length < 5000) {
+    CLEAN_TEXT_CACHE.set(originalStr, result);
+    trimCache(CLEAN_TEXT_CACHE);
+  }
+
+  return result;
 }
 
 export function cleanHtmlToPlainText(html: string): string {
@@ -53,6 +85,19 @@ export function cleanHtmlToPlainText(html: string): string {
 
 export function extractFirstImageSrc(htmlOrText: string): string | null {
   if (!htmlOrText || typeof htmlOrText !== 'string') return null;
+
+  if (htmlOrText.length < 5000 && IMAGE_SRC_CACHE.has(htmlOrText)) {
+    return IMAGE_SRC_CACHE.get(htmlOrText)!;
+  }
+
   const match = htmlOrText.match(/<img[^>]+src=["']([^"']+)["']/i);
-  return match ? match[1] : null;
+  const src = match ? match[1] : null;
+
+  if (htmlOrText.length < 5000) {
+    IMAGE_SRC_CACHE.set(htmlOrText, src);
+    trimCache(IMAGE_SRC_CACHE);
+  }
+
+  return src;
 }
+

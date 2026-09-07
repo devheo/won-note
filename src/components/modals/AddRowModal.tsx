@@ -279,8 +279,8 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
                             >
                               <option value="">(선택 안 함 / 미정)</option>
                               {col.options && col.options.length > 0 ? (
-                                col.options.map((opt) => (
-                                  <option key={opt.id} value={opt.label || opt.id}>
+                                col.options.map((opt, optIdx) => (
+                                  <option key={`opt-${opt.id || opt.label}-${optIdx}`} value={opt.label || opt.id}>
                                     {opt.label}
                                   </option>
                                 ))
@@ -344,10 +344,10 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
                       {col.options && col.options.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1.5 pt-1">
                           <span className="text-[11px] text-stone-400">추천:</span>
-                          {col.options.map((opt) => (
+                          {col.options.map((opt, optIdx) => (
                             <button
                               type="button"
-                              key={opt.id}
+                              key={`badge-${opt.id || opt.label}-${optIdx}`}
                               onClick={() => {
                                 handleChange(col.id, opt.label || opt.id);
                                 setIsCustomMode((prev) => ({ ...prev, [col.id]: false }));

@@ -1,4 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect, useDeferredValue } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
 import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
 import { HighlightText } from '../common/HighlightText';
@@ -62,7 +63,10 @@ import {
   Clock,
   Zap,
   WrapText,
+  Layers,
+  Table as TableIcon,
 } from 'lucide-react';
+import { KanbanBoardViewer } from '../kanban/KanbanBoardViewer';
 import {
   isUpdateDateColumn,
   findUpdateDateColumn,
@@ -77,6 +81,11 @@ interface DataTableViewerProps {
   onOpenRowEditor: (row: TableRow, targetColId?: string) => void;
   onOpenRowDetail: (row: TableRow, index: number, targetColId?: string) => void;
   onImportCsvToNewTable?: (fileName: string, columns: TableColumn[], rows: TableRow[]) => void;
+  viewMode?: 'table' | 'kanban';
+  onViewModeChange?: (mode: 'table' | 'kanban') => void;
+  perfOptions?: PerformanceOptions;
+  onUpdatePerfOptions?: (newOpts: PerformanceOptions) => void;
+  onOpenPerfModal?: () => void;
 }
 
 export const DataTableViewer: React.FC<DataTableViewerProps> = ({
@@ -84,14 +93,33 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   onUpdateTable,
   onOpenRowEditor,
   onOpenRowDetail,
+  viewMode,
+  onViewModeChange,
+  perfOptions: propsPerfOptions,
+  onUpdatePerfOptions,
+  onOpenPerfModal,
 }) => {
+  // View Mode: Table (Grid) vs Kanban (Board)
+  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban'>('table');
+  const activeViewMode = viewMode ?? internalViewMode;
+  const setViewMode = (mode: 'table' | 'kanban') => {
+    setInternalViewMode(mode);
+    onViewModeChange?.(mode);
+  };
+
   // Performance Optimization Options State (User-configurable, stored in localStorage)
-  const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
+  const [internalPerfOptions, setInternalPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
   const [isPerfModalOpen, setIsPerfModalOpen] = useState(false);
 
+  const perfOptions = propsPerfOptions || internalPerfOptions;
+
   const handleUpdatePerfOptions = (newOpts: PerformanceOptions) => {
-    setPerfOptions(newOpts);
-    savePerformanceOptions(newOpts);
+    if (onUpdatePerfOptions) {
+      onUpdatePerfOptions(newOpts);
+    } else {
+      setInternalPerfOptions(newOpts);
+      savePerformanceOptions(newOpts);
+    }
   };
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -116,8 +144,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     );
   }, [table.columns, perfOptions.primarySearchColId]);
 
-  // Progressive Chunk Rendering (Infinite Scroll) for massive row rendering performance
-  const [visibleCount, setVisibleCount] = useState(100);
+  // Scrollable Table Container Ref for TanStack Virtual
+  const tableContainerRef = useRef<HTMLDivElement | null>(null);
 
   const [sortColumnId, setSortColumnId] = useState<string | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
@@ -615,6 +643,21 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setIsRowMenuOpen(false);
   };
 
+  // Delete Single Row (e.g. from Kanban card)
+  const handleDeleteSingleRow = (rowId: string) => {
+    const remainingRows = table.rows.filter((r) => r.id !== rowId);
+    onUpdateTable({
+      ...table,
+      rows: remainingRows,
+      updatedAt: Date.now(),
+    });
+    if (selectedRowIds.has(rowId)) {
+      const nextSet = new Set(selectedRowIds);
+      nextSet.delete(rowId);
+      setSelectedRowIds(nextSet);
+    }
+  };
+
   // Reorder Row by Index (Drag & Drop or Manual Swap)
   const handleReorderRow = (sourceRowId: string, targetRowId: string, position: 'above' | 'below') => {
     if (sortColumnId) {
@@ -926,6 +969,30 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setSearchQuery('');
   };
 
+  // Pre-computed search index map for instant O(1) row search filtering
+  const rowSearchIndex = useMemo(() => {
+    const isPrimaryOnly = perfOptions.searchTargetMode === 'primary' && primarySearchColumn;
+    const targetCols = isPrimaryOnly && primarySearchColumn ? [primarySearchColumn] : table.columns;
+
+    const indexMap = new Map<string, string>();
+    for (let i = 0; i < table.rows.length; i++) {
+      const r = table.rows[i];
+      let rowText = '';
+      for (let j = 0; j < targetCols.length; j++) {
+        const val = r.data[targetCols[j].id];
+        if (val !== undefined && val !== null && val !== '') {
+          if (typeof val === 'string' && val.includes('<')) {
+            rowText += ' ' + cleanTextValue(val);
+          } else {
+            rowText += ' ' + String(val);
+          }
+        }
+      }
+      indexMap.set(r.id, rowText.toLowerCase());
+    }
+    return indexMap;
+  }, [table.rows, table.columns, perfOptions.searchTargetMode, primarySearchColumn]);
+
   // Filtered & Sorted Rows (Applied across all columns)
   const processedRows = useMemo(() => {
     let list = [...table.rows];
@@ -935,29 +1002,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       list = list.filter((r) => getAllStickersFromRow(r, table.columns).length > 0);
     }
 
-    // 1. Search Query Filter (Optimized with debouncedSearchQuery & configurable search target scope)
+    // 1. Search Query Filter (Pre-indexed instant search)
     const trimmedQuery = debouncedSearchQuery.trim();
     if (trimmedQuery) {
       const q = trimmedQuery.toLowerCase();
-      // Determine which columns to search: all columns (default) or primary column
-      let searchCols = table.columns;
-      if (perfOptions.searchTargetMode === 'primary' && primarySearchColumn) {
-        searchCols = [primarySearchColumn];
-      }
-
       list = list.filter((r) => {
-        return searchCols.some((col) => {
-          const val = r.data[col.id];
-          if (val === undefined || val === null) return false;
-          // Fast string comparison first before complex regex cleaning
-          const rawStr = String(val).toLowerCase();
-          if (rawStr.includes(q)) return true;
-          if (typeof val === 'string' && val.includes('<')) {
-            const cleaned = cleanTextValue(val).toLowerCase();
-            return cleaned.includes(q);
-          }
-          return false;
-        });
+        const indexedText = rowSearchIndex.get(r.id);
+        return indexedText !== undefined ? indexedText.includes(q) : false;
       });
     }
 
@@ -1034,8 +1085,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     table.rows,
     table.columns,
     debouncedSearchQuery,
-    perfOptions.searchTargetMode,
-    primarySearchColumn,
+    rowSearchIndex,
     columnFilters,
     enabledFilterColIds,
     sortColumnId,
@@ -1043,35 +1093,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     onlyStickerFilter,
   ]);
 
-  // Reset visibleCount when table or filters change
-  useEffect(() => {
-    setVisibleCount(100);
-  }, [
-    table.id,
-    debouncedSearchQuery,
-    perfOptions.searchTargetMode,
-    primarySearchColumn,
-    columnFilters,
-    enabledFilterColIds,
-    sortColumnId,
-    sortDirection,
-    onlyStickerFilter,
-  ]);
+  // High-performance Virtual Scrolling (TanStack Virtual) for 10,000+ rows
+  const rowVirtualizer = useVirtualizer({
+    count: processedRows.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => (isWrapCells ? 56 : rowDensity === 'compact' ? 32 : rowDensity === 'spacious' ? 52 : 40),
+    overscan: 12,
+  });
 
-  // Progressive Chunk Rendering (Smooth infinite scroll, avoids freezing DOM with 1000s of elements)
-  const visibleRows = useMemo(() => {
-    return processedRows.slice(0, visibleCount);
-  }, [processedRows, visibleCount]);
-
-  const handleTableScroll = (e: React.UIEvent<HTMLDivElement>) => {
-    const { scrollTop, scrollHeight, clientHeight } = e.currentTarget;
-    if (scrollHeight - scrollTop - clientHeight < 400) {
-      setVisibleCount((prev) => {
-        if (prev >= processedRows.length) return prev;
-        return Math.min(prev + 80, processedRows.length);
-      });
-    }
-  };
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const totalVirtualSize = rowVirtualizer.getTotalSize();
+  const paddingTop = virtualItems.length > 0 ? virtualItems[0].start : 0;
+  const paddingBottom =
+    virtualItems.length > 0 ? totalVirtualSize - (virtualItems[virtualItems.length - 1]?.end ?? totalVirtualSize) : 0;
 
   // Column Icon helper
   const getColTypeIcon = (type: ColumnType) => {
@@ -1114,8 +1148,38 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     <div className="flex-1 h-screen flex flex-col overflow-hidden bg-white dark:bg-[#181818] select-none transition-colors">
       {/* Table Action Bar */}
       <div className="px-6 py-3 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/70 dark:bg-[#1e1e1e]/60 flex items-center justify-between gap-4 flex-wrap">
-        {/* Search Input & Active Sort Notification */}
+        {/* Search Input, View Mode Switcher & Active Sort Notification */}
         <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
+          {/* View Mode Switcher Pill (Table vs Kanban) */}
+          <div className="flex items-center bg-stone-200/70 dark:bg-[#252525] p-0.5 rounded-xl border border-stone-200/80 dark:border-[#383838] shadow-2xs flex-shrink-0">
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                activeViewMode === 'table'
+                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
+                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
+              }`}
+              title="스프레드시트 표(그리드) 보기"
+            >
+              <TableIcon className={`w-3.5 h-3.5 ${activeViewMode === 'table' ? 'text-amber-500' : ''}`} />
+              <span>표 (Table)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('kanban')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                activeViewMode === 'kanban'
+                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
+                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
+              }`}
+              title="상태/분류별 칸반 보드 보기"
+            >
+              <Layers className={`w-3.5 h-3.5 ${activeViewMode === 'kanban' ? 'text-amber-500' : ''}`} />
+              <span>칸반 보드</span>
+            </button>
+          </div>
+
           <div className="relative w-full max-w-sm">
             {isSearching ? (
               <Loader2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-amber-500 animate-spin" />
@@ -1594,16 +1658,6 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
-          {/* Performance Optimization Options Button */}
-          <button
-            onClick={() => setIsPerfModalOpen(true)}
-            className="px-2.5 py-1.5 bg-stone-100 hover:bg-stone-200 dark:bg-[#282828] dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-stone-200/70 dark:border-[#383838]"
-            title="테이블 속도 & 성능 최적화 옵션 관리"
-          >
-            <Zap className="w-3.5 h-3.5 fill-current text-amber-500" />
-            <span>속도 설정</span>
-          </button>
-
           {/* Quick Add Row Button (Opens Add Row Modal) */}
           <button
             onClick={() => handleOpenAddRowModal('bottom')}
@@ -1657,11 +1711,23 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         </div>
       )}
 
-      {/* Main Grid View Container with Progressive Scroll Loader */}
-      <div
-        onScroll={handleTableScroll}
-        className="flex-1 overflow-auto custom-scrollbar relative"
-      >
+      {/* View Content: Kanban Board vs Virtualized Table Grid */}
+      {activeViewMode === 'kanban' ? (
+        <KanbanBoardViewer
+          table={table}
+          rows={processedRows}
+          onUpdateTable={onUpdateTable}
+          onOpenRowDetail={onOpenRowDetail}
+          onOpenRowEditor={onOpenRowEditor}
+          onDeleteRow={handleDeleteSingleRow}
+        />
+      ) : (
+        <>
+          {/* Main Grid View Container with TanStack Virtual Scrolling */}
+          <div
+            ref={tableContainerRef}
+            className="flex-1 overflow-auto custom-scrollbar relative"
+          >
         <table className="table-fixed min-w-full border-collapse text-left text-xs font-sans">
           {/* Table Header Columns Width Mapping */}
           <colgroup>
@@ -1821,9 +1887,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             </tr>
           </thead>
 
-          {/* Table Body Rows with Drag-and-Drop */}
+          {/* Table Body Rows with TanStack Virtual Scrolling */}
           <tbody className="divide-y divide-stone-200/70 dark:divide-[#2d2d2d] bg-white dark:bg-[#181818]">
-            {visibleRows.map((row, rIdx) => {
+            {paddingTop > 0 && (
+              <tr>
+                <td
+                  colSpan={visibleColumns.length + 3}
+                  style={{ height: `${paddingTop}px` }}
+                  className="p-0 border-0 pointer-events-none"
+                />
+              </tr>
+            )}
+
+            {virtualItems.map((virtualRow) => {
+              const rIdx = virtualRow.index;
+              const row = processedRows[rIdx];
+              if (!row) return null;
               const isSelected = selectedRowIds.has(row.id);
               const heightClass = getRowHeightClass();
               const isDragging = draggedRowId === row.id;
@@ -1840,6 +1919,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               return (
                 <tr
                   key={row.id}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={virtualRow.index}
                   onDragOver={(e) => handleRowDragOver(e, row.id)}
                   onDrop={(e) => handleRowDrop(e, row.id)}
                   onDragEnd={handleRowDragEnd}
@@ -2244,19 +2325,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               );
             })}
 
-            {visibleRows.length < processedRows.length && (
+            {paddingBottom > 0 && (
               <tr>
                 <td
                   colSpan={visibleColumns.length + 3}
-                  className="py-3 text-center bg-stone-50/50 dark:bg-[#1c1c1c] border-t border-stone-200/80 dark:border-[#333333]"
-                >
-                  <button
-                    onClick={() => setVisibleCount((prev) => Math.min(prev + 100, processedRows.length))}
-                    className="px-4 py-1.5 rounded-lg bg-white dark:bg-[#282828] hover:bg-amber-50 dark:hover:bg-amber-950/40 border border-stone-300 dark:border-[#444444] text-xs font-semibold text-stone-700 dark:text-[#e0e0e0] hover:text-amber-600 dark:hover:text-amber-400 transition-colors shadow-2xs inline-flex items-center gap-1.5"
-                  >
-                    <span>▼ 다음 {Math.min(100, processedRows.length - visibleRows.length)}개 행 더 불러오기 (스크롤 시 자동 로드)</span>
-                  </button>
-                </td>
+                  style={{ height: `${paddingBottom}px` }}
+                  className="p-0 border-0 pointer-events-none"
+                />
               </tr>
             )}
 
@@ -2318,9 +2393,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             {processedRows.length !== table.rows.length && (
               <> (검색 일치: <strong className="text-amber-600 dark:text-amber-400">{processedRows.length}</strong>개)</>
             )}
-            {visibleRows.length < processedRows.length && (
-              <span className="text-[11px] text-stone-400 dark:text-[#888888] ml-1">
-                [화면 표시: {visibleRows.length}개]
+            {processedRows.length > 50 && (
+              <span className="text-[11px] text-amber-600 dark:text-amber-400/90 ml-1.5 font-medium inline-flex items-center gap-1">
+                ⚡ 가상 스크롤 활성
               </span>
             )}
           </span>
@@ -2334,6 +2409,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           <span>WonBee Realtime Data Grid</span>
         </div>
       </div>
+    </>
+  )}
 
       {/* Add Row Modal (Popup as requested) */}
       <AddRowModal

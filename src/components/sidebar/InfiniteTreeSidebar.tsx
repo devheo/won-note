@@ -14,8 +14,6 @@ import {
   Copy,
   Search,
   GripVertical,
-  Database,
-  Layers,
   Sparkles,
 } from 'lucide-react';
 
@@ -28,9 +26,9 @@ interface InfiniteTreeSidebarProps {
   onAddFolder: (parentId: string | null, title?: string) => void;
   onDeleteTreeItem: (itemId: string) => void;
   onDuplicateTable: (tableId: string) => void;
-  useServer: boolean;
-  onOpenServerSettings: () => void;
-  onOpenDataPortability: () => void;
+  useServer?: boolean;
+  onOpenServerSettings?: () => void;
+  onOpenDataPortability?: () => void;
 }
 
 export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
@@ -461,22 +459,6 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
             </p>
           </div>
         </div>
-
-        {/* Server / Serverless Status Mode Pill */}
-        <button
-          onClick={onOpenServerSettings}
-          title="저장소 & USE_SERVER 모드 설정"
-          className="flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-white dark:bg-[#252525] border border-stone-200 dark:border-[#383838] hover:border-amber-400 transition-colors shadow-2xs"
-        >
-          <div
-            className={`w-1.5 h-1.5 rounded-full ${
-              useServer ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'
-            }`}
-          />
-          <span className="text-stone-600 dark:text-[#cccccc]">
-            {useServer ? 'Server' : 'IndexedDB'}
-          </span>
-        </button>
       </div>
 
       {/* Quick Search Bar */}
@@ -537,19 +519,6 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
             테이블이 없습니다.<br />새 테이블을 만들어 시작하세요! 🐝
           </div>
         )}
-      </div>
-
-      {/* Sidebar Footer: Data Merge & Portable Tools */}
-      <div className="p-3 border-t border-stone-200/80 dark:border-[#333333] bg-stone-100/40 dark:bg-[#181818] flex items-center justify-between text-xs">
-        <button
-          onClick={onOpenDataPortability}
-          className="flex items-center gap-1.5 text-stone-600 dark:text-[#cccccc] hover:text-amber-600 dark:hover:text-amber-400 transition-colors font-medium"
-        >
-          <Layers className="w-3.5 h-3.5 text-amber-500" />
-          데이터 병합 (JSON)
-        </button>
-
-        <span className="text-[10px] text-stone-400 dark:text-[#777777] font-mono">v1.0.0</span>
       </div>
     </aside>
   );

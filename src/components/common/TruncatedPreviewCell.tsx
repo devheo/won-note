@@ -19,7 +19,7 @@ interface TruncatedPreviewCellProps {
   isWrapCells?: boolean;
 }
 
-export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
+const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
   value,
   columnType,
   highlightQuery = '',
@@ -337,3 +337,6 @@ export const TruncatedPreviewCell: React.FC<TruncatedPreviewCellProps> = ({
     </div>
   );
 };
+
+export const TruncatedPreviewCell = React.memo(TruncatedPreviewCellComponent);
+

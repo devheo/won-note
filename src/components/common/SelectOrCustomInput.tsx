@@ -113,8 +113,8 @@ export const SelectOrCustomInput: React.FC<SelectOrCustomInputProps> = ({
         }`}
       >
         <option value="">{placeholder}</option>
-        {options.map((opt) => (
-          <option key={opt.id} value={opt.label || opt.id} className="dark:bg-[#1f1f1f]">
+        {options.map((opt, optIdx) => (
+          <option key={`opt-${opt.id || opt.label}-${optIdx}`} value={opt.label || opt.id} className="dark:bg-[#1f1f1f]">
             {opt.label}
           </option>
         ))}

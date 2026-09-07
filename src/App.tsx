@@ -28,20 +28,24 @@ import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
 import { TextPasteModal } from './components/modals/TextPasteModal';
 import { UniversalImportModal } from './components/modals/UniversalImportModal';
 import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
+import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
+import { SettingsMenuDropdown } from './components/common/SettingsMenuDropdown';
+import { PerformanceSettingsModal } from './components/modals/PerformanceSettingsModal';
+import {
+  PerformanceOptions,
+  loadPerformanceOptions,
+  savePerformanceOptions,
+} from './types/performance';
 import { envService } from './services/storage/envService';
 import {
-  Sun,
-  Moon,
-  Database,
-  Layers,
   Sparkles,
   Plus,
   Loader2,
   Table as TableIcon,
   ChevronRight,
-  Settings,
+  Search,
 } from 'lucide-react';
 
 export default function App() {
@@ -61,6 +65,8 @@ export default function App() {
   // Theme State
   const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
+      const envTheme = envService.getEnv().theme;
+      if (envTheme) return envTheme === 'dark';
       return (
         localStorage.getItem('wonbee_theme') === 'dark' ||
         (!localStorage.getItem('wonbee_theme') &&
@@ -102,6 +108,38 @@ export default function App() {
   const [isTextPasteOpen, setIsTextPasteOpen] = useState(false);
   const [isUniversalImportOpen, setIsUniversalImportOpen] = useState(false);
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+
+  // Performance Optimization Options State
+  const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
+  const [isPerfModalOpen, setIsPerfModalOpen] = useState(false);
+
+  const handleUpdatePerfOptions = (newOpts: PerformanceOptions) => {
+    setPerfOptions(newOpts);
+    savePerformanceOptions(newOpts);
+  };
+
+  // View Mode: 'table' vs 'kanban' (Persisted in localStorage)
+  const [viewMode, setViewMode] = useState<'table' | 'kanban'>(() => {
+    return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban') || 'table';
+  });
+
+  const handleViewModeChange = (mode: 'table' | 'kanban') => {
+    setViewMode(mode);
+    localStorage.setItem('wonbee_view_mode', mode);
+  };
+
+  // Global Keyboard Listener for Cmd+K / Ctrl+K Command Palette
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setIsCommandPaletteOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
 
   // Repository Instance
   const repository = useMemo(() => {
@@ -607,40 +645,35 @@ export default function App() {
                 if (currentEnv.zoomLevel) setZoomLevel(currentEnv.zoomLevel);
               }}
             />
+
+            {/* Application Settings Menu Dropdown ("설정" 탭 - 속도 설정, 라이트/다크 모드, 서버 환경) */}
+            <SettingsMenuDropdown
+              isDarkMode={isDarkMode}
+              onToggleTheme={(dark) => {
+                setIsDarkMode(dark);
+                envService.updateEnv({ theme: dark ? 'dark' : 'light' });
+              }}
+              onOpenSpeedSettings={() => setIsPerfModalOpen(true)}
+              onOpenServerSettings={() => setIsServerSettingsOpen(true)}
+              useServer={useServer}
+              zoomLevel={zoomLevel}
+              onChangeZoom={handleZoomChange}
+            />
           </div>
 
           {/* Top Right Action Items */}
           <div className="flex items-center gap-2">
-            {/* Server Settings Button */}
+            {/* Command Palette Trigger Button (Ctrl+K) */}
             <button
-              onClick={() => setIsServerSettingsOpen(true)}
-              className="px-2.5 py-1 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors"
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="px-2.5 py-1 bg-stone-100 hover:bg-stone-200 dark:bg-[#282828] dark:hover:bg-[#333333] text-stone-600 dark:text-[#cccccc] border border-stone-200 dark:border-[#383838] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors shadow-2xs"
+              title="커맨드 팔레트 열기 (Ctrl+K 또는 ⌘K)"
             >
-              <Database className="w-3.5 h-3.5 text-blue-500" />
-              {useServer ? 'Server API' : 'IndexedDB'}
-            </button>
-
-            {/* Dark / Light Theme Toggle */}
-            <button
-              onClick={() => {
-                const nextMode = !isDarkMode;
-                setIsDarkMode(nextMode);
-                envService.updateEnv({ theme: nextMode ? 'dark' : 'light' });
-              }}
-              className="px-2.5 py-1 rounded-lg bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] transition-all flex items-center gap-1.5 text-xs font-semibold"
-              title={isDarkMode ? '밝고 깨끗한 라이트 모드로 전환' : '모던 다크 모드로 전환'}
-            >
-              {isDarkMode ? (
-                <>
-                  <Sun className="w-3.5 h-3.5 text-amber-400" />
-                  <span>다크 모드</span>
-                </>
-              ) : (
-                <>
-                  <Moon className="w-3.5 h-3.5 text-stone-500" />
-                  <span>라이트 모드</span>
-                </>
-              )}
+              <Search className="w-3.5 h-3.5 text-amber-500" />
+              <span className="hidden sm:inline">빠른 실행</span>
+              <kbd className="px-1.5 py-0.2 rounded bg-stone-200/80 dark:bg-[#383838] text-[10px] font-mono text-stone-500 dark:text-[#aaaaaa] border border-stone-300/80 dark:border-[#444444]">
+                ⌘K
+              </kbd>
             </button>
           </div>
         </header>
@@ -669,6 +702,11 @@ export default function App() {
                   setSelectedDetailRowIndex(idx);
                 }}
                 onImportCsvToNewTable={handleImportCsvToNewTable}
+                viewMode={viewMode}
+                onViewModeChange={handleViewModeChange}
+                perfOptions={perfOptions}
+                onUpdatePerfOptions={handleUpdatePerfOptions}
+                onOpenPerfModal={() => setIsPerfModalOpen(true)}
               />
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400">
@@ -805,6 +843,68 @@ export default function App() {
           if (newEnv.activeTableId && workspace.tables[newEnv.activeTableId]) {
             setActiveTableId(newEnv.activeTableId);
           }
+        }}
+      />
+
+      {/* 10. Performance & Speed Optimization Settings Modal */}
+      <PerformanceSettingsModal
+        isOpen={isPerfModalOpen}
+        onClose={() => setIsPerfModalOpen(false)}
+        options={perfOptions}
+        onChangeOptions={handleUpdatePerfOptions}
+        columns={activeTable?.columns || []}
+      />
+
+      {/* 11. Command Palette Modal (Ctrl+K / ⌘K) */}
+      <CommandPaletteModal
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        workspace={workspace}
+        activeTable={activeTable}
+        onSelectTable={handleSelectActiveTable}
+        onOpenAddRowModal={() => {
+          if (activeTable) {
+            const newRowId = `row_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+            const initialData: Record<string, any> = {};
+            const newRow: TableRow = {
+              id: newRowId,
+              data: initialData,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+            };
+            const { updatedTable, updatedRow } = applyAutoUpdateDateToRow(
+              activeTable,
+              newRow.id,
+              newRow.data,
+              undefined,
+              { richContent: '', stickers: [] }
+            );
+            handleUpdateTable(updatedTable);
+            setSelectedDetailRow(updatedRow);
+          }
+        }}
+        onToggleViewMode={() => handleViewModeChange(viewMode === 'table' ? 'kanban' : 'table')}
+        currentViewMode={viewMode}
+        isDarkMode={isDarkMode}
+        onToggleDarkMode={() => {
+          setIsDarkMode((prev) => {
+            const next = !prev;
+            envService.updateEnv({ theme: next ? 'dark' : 'light' });
+            return next;
+          });
+        }}
+        onOpenDataPortability={() => setIsDataPortabilityOpen(true)}
+        onOpenTextPaste={() => setIsTextPasteOpen(true)}
+        onOpenUniversalImport={() => setIsUniversalImportOpen(true)}
+        onAddNewTable={() => handleAddTable(null)}
+        onResetZoom={() => handleZoomChange(100)}
+        onOpenRowDetail={(row, idx) => {
+          setSelectedDetailRow(row);
+          setSelectedDetailRowIndex(idx);
+        }}
+        onOpenRowEditor={(row) => {
+          setEditingRow(row);
+          setEditingTargetColId(null);
         }}
       />
     </div>
