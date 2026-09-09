@@ -118,6 +118,11 @@
   word-wrap: break-word;
   outline: none;
   tab-size: 4;
+  -moz-tab-size: 4;
+}
+
+.ProseMirror p {
+  white-space: pre-wrap !important;
 }
 
 .ProseMirror-selectednode {
@@ -125,7 +130,17 @@
 }
 
 .ProseMirror pre {
-  white-space: pre-wrap !important;
+  white-space: pre !important;
+  tab-size: 4 !important;
+  -moz-tab-size: 4 !important;
+  overflow-x: auto;
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace !important;
+}
+
+.ProseMirror pre code {
+  white-space: pre !important;
+  font-family: inherit !important;
+  display: block;
 }
 
 /* Rich rendered HTML Excel tables in viewers */
@@ -254,47 +269,189 @@
   margin-bottom: 0.35rem;
 }
 
-/* TipTap Table Styles with Resizable Cells & Dark Mode */
+/* TipTap Image Layout & Side-by-side Styling */
 .tiptap img,
 .prose img {
   max-width: 100%;
   height: auto;
-  border-radius: 8px;
-  display: block;
-  margin: 0.75rem 0;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  display: inline-block;
+  vertical-align: middle;
+  margin: 0.35rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 
-.tiptap table {
-  border-collapse: collapse;
+.dark .tiptap img,
+.dark .prose img {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.tiptap [data-layout="center"],
+.prose [data-layout="center"],
+.tiptap img[data-layout="center"] {
+  display: block !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  clear: both;
+}
+
+.tiptap [data-layout="left"],
+.prose [data-layout="left"],
+.tiptap img[data-layout="left"] {
+  float: left !important;
+  margin: 0.25rem 1rem 0.5rem 0 !important;
+  clear: left;
+}
+
+.tiptap [data-layout="right"],
+.prose [data-layout="right"],
+.tiptap img[data-layout="right"] {
+  float: right !important;
+  margin: 0.25rem 0 0.5rem 1rem !important;
+  clear: right;
+}
+
+.tiptap [data-layout="inline"],
+.prose [data-layout="inline"],
+.tiptap img[data-layout="inline"] {
+  display: inline-block !important;
+  vertical-align: middle !important;
+  margin: 0.25rem 0.4rem !important;
+}
+
+/* TipTap Table Styles with Resizable Cells, Clear Borders & Dark Mode */
+.tiptap table,
+.wonbee-rendered-table table,
+.wonbee-rich-table {
+  border-collapse: collapse !important;
   table-layout: fixed;
   width: 100%;
   margin: 1.25rem 0;
   overflow: hidden;
-  border-radius: 8px;
-  border: 1px solid #e7e5e4;
+  border-radius: 6px;
+  border: 1px solid var(--table-border-color, #d1d5db) !important;
 }
 
-.dark .tiptap table {
-  border-color: #383838;
+.dark .tiptap table,
+.dark .wonbee-rendered-table table,
+.dark .wonbee-rich-table {
+  border-color: var(--table-border-color, #444444) !important;
 }
 
 .tiptap table td,
-.tiptap table th {
-  min-width: 1em;
-  border: 1px solid #e7e5e4;
+.tiptap table th,
+.wonbee-rendered-table td,
+.wonbee-rendered-table th,
+.wonbee-rich-table td,
+.wonbee-rich-table th {
+  min-width: 1.5em;
+  border: 1px solid var(--table-border-color, #d1d5db) !important;
   padding: 8px 12px;
-  vertical-align: top;
+  vertical-align: middle;
   box-sizing: border-box;
   position: relative;
   font-size: 0.85rem;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .dark .tiptap table td,
-.dark .tiptap table th {
-  border-color: #383838;
+.dark .tiptap table th,
+.dark .wonbee-rendered-table td,
+.dark .wonbee-rendered-table th,
+.dark .wonbee-rich-table td,
+.dark .wonbee-rich-table th {
+  border-color: var(--table-border-color, #444444) !important;
+}
+
+/* Table Border Variations */
+/* 1. All Borders (Default Full Grid) */
+.tiptap table.wonbee-table-border-all,
+.tiptap table[data-border-style="all"] {
+  border: 1px solid var(--table-border-color, #d1d5db) !important;
+}
+.tiptap table.wonbee-table-border-all td,
+.tiptap table.wonbee-table-border-all th,
+.tiptap table[data-border-style="all"] td,
+.tiptap table[data-border-style="all"] th {
+  border: 1px solid var(--table-border-color, #d1d5db) !important;
+}
+
+/* 2. Outer Border Only (바깥쪽 테두리만) */
+.tiptap table.wonbee-table-border-outer,
+.tiptap table[data-border-style="outer"],
+.wonbee-rendered-table table.wonbee-table-border-outer {
+  border: 1.5px solid var(--table-border-color, #d1d5db) !important;
+}
+.tiptap table.wonbee-table-border-outer td,
+.tiptap table.wonbee-table-border-outer th,
+.tiptap table[data-border-style="outer"] td,
+.tiptap table[data-border-style="outer"] th {
+  border: 1px dashed var(--table-border-color, #e5e7eb) !important;
+}
+.dark .tiptap table.wonbee-table-border-outer td,
+.dark .tiptap table.wonbee-table-border-outer th,
+.dark .tiptap table[data-border-style="outer"] td,
+.dark .tiptap table[data-border-style="outer"] th {
+  border: 1px dashed var(--table-border-color, #383838) !important;
+}
+
+/* 3. Thick Outer Border (굵은 바깥 테두리) */
+.tiptap table.wonbee-table-border-thick,
+.tiptap table[data-border-style="thick"],
+.wonbee-rendered-table table.wonbee-table-border-thick {
+  border: 2.5px solid var(--table-border-color, #9ca3af) !important;
+}
+.dark .tiptap table.wonbee-table-border-thick,
+.dark .tiptap table[data-border-style="thick"] {
+  border-color: var(--table-border-color, #555555) !important;
+}
+
+/* 4. Horizontal Separators Only (가로줄만) */
+.tiptap table.wonbee-table-border-horizontal,
+.tiptap table[data-border-style="horizontal"],
+.wonbee-rendered-table table.wonbee-table-border-horizontal {
+  border-left: none !important;
+  border-right: none !important;
+  border-top: 2px solid var(--table-border-color, #d1d5db) !important;
+  border-bottom: 2px solid var(--table-border-color, #d1d5db) !important;
+}
+.tiptap table.wonbee-table-border-horizontal td,
+.tiptap table.wonbee-table-border-horizontal th,
+.tiptap table[data-border-style="horizontal"] td,
+.tiptap table[data-border-style="horizontal"] th {
+  border-left: none !important;
+  border-right: none !important;
+  border-top: 1px solid var(--table-border-color, #e5e7eb) !important;
+  border-bottom: 1px solid var(--table-border-color, #e5e7eb) !important;
+}
+.dark .tiptap table.wonbee-table-border-horizontal td,
+.dark .tiptap table.wonbee-table-border-horizontal th,
+.dark .tiptap table[data-border-style="horizontal"] td,
+.dark .tiptap table[data-border-style="horizontal"] th {
+  border-top-color: var(--table-border-color, #383838) !important;
+  border-bottom-color: var(--table-border-color, #383838) !important;
+}
+
+/* 5. No Borders (테두리 없음 - 옅은 가이드 점선) */
+.tiptap table.wonbee-table-border-none,
+.tiptap table[data-border-style="none"],
+.wonbee-rendered-table table.wonbee-table-border-none {
+  border: none !important;
+}
+.tiptap table.wonbee-table-border-none td,
+.tiptap table.wonbee-table-border-none th,
+.tiptap table[data-border-style="none"] td,
+.tiptap table[data-border-style="none"] th {
+  border: 1px dotted rgba(200, 200, 200, 0.3) !important;
+}
+.dark .tiptap table.wonbee-table-border-none td,
+.dark .tiptap table.wonbee-table-border-none th,
+.dark .tiptap table[data-border-style="none"] td,
+.dark .tiptap table[data-border-style="none"] th {
+  border: 1px dotted rgba(80, 80, 80, 0.4) !important;
 }
 
 .tiptap table th {
@@ -352,17 +509,17 @@ pre[class*="language-"] {
   hyphens: none;
 }
 
-/* SQL & Code Syntax Tokens */
+/* SQL & Code Syntax Tokens (Prism Light & Dark) */
 .token.comment,
 .token.prolog,
 .token.doctype,
 .token.cdata {
-  color: #64748b;
+  color: #6e7781;
   font-style: italic;
 }
 
 .token.punctuation {
-  color: #94a3b8;
+  color: #57606a;
 }
 
 .token.property,
@@ -372,7 +529,7 @@ pre[class*="language-"] {
 .token.constant,
 .token.symbol,
 .token.deleted {
-  color: #f97316; /* Orange / Amber for numbers and constants */
+  color: #0969da;
 }
 
 .token.selector,
@@ -381,7 +538,7 @@ pre[class*="language-"] {
 .token.char,
 .token.builtin,
 .token.inserted {
-  color: #10b981; /* Green for strings and text literals */
+  color: #a31515;
 }
 
 .token.operator,
@@ -389,26 +546,26 @@ pre[class*="language-"] {
 .token.url,
 .language-css .token.string,
 .style .token.string {
-  color: #38bdf8; /* Light Cyan for operators */
+  color: #0550ae;
 }
 
 .token.atrule,
 .token.attr-value,
 .token.keyword {
-  color: #38bdf8; /* Cyan for SQL / Code Keywords (SELECT, FROM, WHERE) */
+  color: #0550ae;
   font-weight: 600;
 }
 
 .token.function,
 .token.class-name {
-  color: #fbbf24; /* Amber/Yellow for Functions (COUNT, SUM, AVG, etc.) */
+  color: #795e26;
   font-weight: 600;
 }
 
 .token.regex,
 .token.important,
 .token.variable {
-  color: #c084fc; /* Purple for variables */
+  color: #8250df;
 }
 
 .token.important,
@@ -418,6 +575,64 @@ pre[class*="language-"] {
 
 .token.italic {
   font-style: italic;
+}
+
+/* Dark Mode Tokens Override */
+.dark .token.comment,
+.dark .token.prolog,
+.dark .token.doctype,
+.dark .token.cdata {
+  color: #94a3b8;
+}
+
+.dark .token.punctuation {
+  color: #64748b;
+}
+
+.dark .token.property,
+.dark .token.tag,
+.dark .token.boolean,
+.dark .token.number,
+.dark .token.constant,
+.dark .token.symbol,
+.dark .token.deleted {
+  color: #fb923c;
+}
+
+.dark .token.selector,
+.dark .token.attr-name,
+.dark .token.string,
+.dark .token.char,
+.dark .token.builtin,
+.dark .token.inserted {
+  color: #4ade80;
+}
+
+.dark .token.operator,
+.dark .token.entity,
+.dark .token.url,
+.dark .language-css .token.string,
+.dark .style .token.string {
+  color: #38bdf8;
+}
+
+.dark .token.atrule,
+.dark .token.attr-value,
+.dark .token.keyword {
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.dark .token.function,
+.dark .token.class-name {
+  color: #facc15;
+  font-weight: 600;
+}
+
+.dark .token.regex,
+.dark .token.important,
+.dark .token.variable {
+  color: #c084fc;
 }
 
 /* TipTap Table, Cell Formatting & Column Resize Handles */
@@ -556,6 +771,173 @@ pre[class*="language-"] {
   border-color: rgba(147, 51, 234, 0.6);
   color: #f3e8ff;
 }
+
+/* TipTap Task List Styles */
+ul[data-type="taskList"] {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0;
+}
+
+ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+ul[data-type="taskList"] li > label {
+  user-select: none;
+  margin-top: 0.2rem;
+  cursor: pointer;
+}
+
+ul[data-type="taskList"] li > label input[type="checkbox"] {
+  cursor: pointer;
+  width: 1rem;
+  height: 1rem;
+  accent-color: #f59e0b;
+  border-radius: 0.25rem;
+}
+
+ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+}
+
+/* TipTap CodeBlock Lowlight Syntax Highlighting (Light Theme by Default) */
+.hljs-comment,
+.hljs-quote {
+  color: #6e7781 !important;
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-subst {
+  color: #0550ae !important;
+  font-weight: 600;
+}
+
+.hljs-number,
+.hljs-literal {
+  color: #0969da !important;
+}
+
+.hljs-string,
+.hljs-doctag {
+  color: #a31515 !important;
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-selector-id {
+  color: #795e26 !important;
+}
+
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #267f99 !important;
+}
+
+.hljs-variable,
+.hljs-template-variable {
+  color: #001080 !important;
+}
+
+.hljs-function,
+.hljs-params {
+  color: #795e26 !important;
+}
+
+.hljs-attr,
+.hljs-attribute {
+  color: #116329 !important;
+}
+
+.hljs-built_in {
+  color: #0550ae !important;
+}
+
+.hljs-symbol,
+.hljs-bullet {
+  color: #8250df !important;
+}
+
+.hljs-meta {
+  color: #6e7781 !important;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: bold;
+}
+
+/* TipTap CodeBlock Lowlight (Dark Mode Override) */
+.dark .hljs-comment,
+.dark .hljs-quote {
+  color: #6a9955 !important;
+  font-style: italic;
+}
+
+.dark .hljs-keyword,
+.dark .hljs-selector-tag,
+.dark .hljs-subst {
+  color: #569cd6 !important;
+  font-weight: 600;
+}
+
+.dark .hljs-number,
+.dark .hljs-literal {
+  color: #b5cea8 !important;
+}
+
+.dark .hljs-string,
+.dark .hljs-doctag {
+  color: #ce9178 !important;
+}
+
+.dark .hljs-title,
+.dark .hljs-section,
+.dark .hljs-selector-id {
+  color: #dcdcaa !important;
+}
+
+.dark .hljs-type,
+.dark .hljs-class .hljs-title {
+  color: #4ec9b0 !important;
+}
+
+.dark .hljs-variable,
+.dark .hljs-template-variable {
+  color: #9cdcfe !important;
+}
+
+.dark .hljs-function,
+.dark .hljs-params {
+  color: #dcdcaa !important;
+}
+
+.dark .hljs-attr,
+.dark .hljs-attribute {
+  color: #9cdcfe !important;
+}
+
+.dark .hljs-built_in {
+  color: #4ec9b0 !important;
+}
+
+.dark .hljs-symbol,
+.dark .hljs-bullet {
+  color: #c586c0 !important;
+}
+
+.dark .hljs-meta {
+  color: #9b9b9b !important;
+}
+
 
 
 

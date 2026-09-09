@@ -200,7 +200,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
   const handleSaveField = (colId: string) => {
     const targetCol = columns.find((c) => c.id === colId);
     const cleaned =
-      typeof editValue === 'string' && targetCol?.type !== 'richText'
+      typeof editValue === 'string' && targetCol?.type !== 'richText' && targetCol?.type !== 'code'
         ? cleanTextValue(editValue)
         : editValue;
 
@@ -770,7 +770,6 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                           ) : col.type === 'code' ? (
                             <CodeBlockViewer
                               code={String(val ?? '')}
-                              language="sql"
                               maxHeight="max-h-72"
                             />
                           ) : (() => {

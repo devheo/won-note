@@ -52,32 +52,32 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
 
   return (
     <div
-      className={`rounded-xl overflow-hidden bg-[#16181d] border border-[#2d3139] shadow-lg flex flex-col my-1 text-left font-mono ${className}`}
+      className={`rounded-xl overflow-hidden bg-stone-50/90 dark:bg-[#16181d] border border-stone-200 dark:border-[#2d3139] shadow-sm dark:shadow-lg flex flex-col my-1 text-left font-mono ${className}`}
       onClick={(e) => e.stopPropagation()}
     >
       {/* Header with language tag and Copy button */}
-      <div className="flex items-center justify-between px-3 py-1.5 bg-[#1f232b] border-b border-[#2d3139] text-xs select-none">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-stone-100/80 dark:bg-[#1f232b] border-b border-stone-200 dark:border-[#2d3139] text-xs select-none">
         <div className="flex items-center gap-1.5">
           {getLangIcon()}
-          <span className="font-bold text-[11px] text-stone-300 uppercase tracking-wider">
+          <span className="font-bold text-[11px] text-stone-700 dark:text-stone-300 uppercase tracking-wider">
             {lang === 'sql' ? 'SQL Query' : lang}
           </span>
-          <span className="text-[10px] text-stone-500">({lineCount}줄)</span>
+          <span className="text-[10px] text-stone-400 dark:text-stone-500">({lineCount}줄)</span>
         </div>
 
         <button
           type="button"
           onClick={handleCopy}
-          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all shadow-sm ${
+          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold transition-all shadow-xs ${
             copied
-              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-              : 'bg-stone-800 hover:bg-amber-500 hover:text-stone-950 text-stone-300 border border-stone-700 hover:border-amber-400'
+              ? 'bg-emerald-50 dark:bg-emerald-500/20 text-emerald-600 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-500/40'
+              : 'bg-white hover:bg-amber-500 hover:text-white dark:bg-stone-800 dark:hover:bg-amber-500 dark:hover:text-stone-950 text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-700 hover:border-amber-400'
           }`}
           title="코드 클립보드에 복사"
         >
           {copied ? (
             <>
-              <Check className="w-3 h-3 text-emerald-400" />
+              <Check className="w-3 h-3 text-emerald-500 dark:text-emerald-400" />
               <span>복사됨!</span>
             </>
           ) : (
@@ -94,7 +94,7 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
         <div className="flex">
           {/* Line Numbers */}
           {showLineNumbers && lineCount > 1 && (
-            <div className="select-none pr-3 mr-3 border-r border-[#2d3139] text-[#555d6e] text-right font-mono text-[11px] leading-relaxed">
+            <div className="select-none pr-3 mr-3 border-r border-stone-200 dark:border-[#2d3139] text-stone-400 dark:text-[#555d6e] text-right font-mono text-[11px] leading-relaxed">
               {Array.from({ length: lineCount }).map((_, i) => (
                 <div key={i}>{i + 1}</div>
               ))}
@@ -102,7 +102,7 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
           )}
 
           {/* Highlighted Code */}
-          <pre className="m-0 p-0 bg-transparent overflow-visible text-[#e2e8f0] font-mono text-[11.5px] leading-relaxed flex-1">
+          <pre className="m-0 p-0 bg-transparent overflow-visible text-stone-800 dark:text-[#e2e8f0] font-mono text-[11.5px] leading-relaxed flex-1">
             <code
               className={`language-${lang}`}
               dangerouslySetInnerHTML={{ __html: highlightedHtml }}

@@ -117,9 +117,27 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
     return { isCode: true, language: 'javascript', reason: 'JS/TS 코드' };
   }
 
-  // 7. Java / C# Heuristic Detection
-  if (/\b(public\s+class|public\s+static\s+void|System\.out\.println|private\s+final|@Override)\b/.test(trimmed)) {
-    return { isCode: true, language: 'java', reason: 'Java 코드' };
+  // 7. Java Heuristic Detection (Comprehensive patterns for classes, methods, imports, annotations)
+  const javaPatterns = [
+    /\b(package\s+[a-zA-Z0-9_.]+;)/,
+    /\b(import\s+java[x]?\.[a-zA-Z0-9_.*]+;)/,
+    /\b(public|private|protected)\s+(static\s+)?(final\s+)?(class|interface|enum|record)\b/,
+    /\b(public|private|protected)\s+(static\s+)?(final\s+)?(void|int|long|double|float|boolean|char|byte|short|String|List|Map|Set|Optional|[A-Z]\w+)\s+\w+\s*\(/,
+    /\b(public\s+static\s+void\s+main\s*\()/i,
+    /\bSystem\.(out|err)\.(println|print|printf)\b/,
+    /@(Override|Autowired|Service|Controller|RestController|Repository|Entity|Table|Column|Bean|Component|Configuration|Getter|Setter|Data|Builder|Value|Transactional)\b/,
+    /\b(throws\s+[A-Z]\w*Exception|catch\s*\(\s*[A-Z]\w*Exception)/,
+    /\b(new\s+[A-Z]\w*(<[^>]*>)?\s*\()/,
+    /\b(class\s+\w+(\s+extends\s+\w+)?(\s+implements\s+[\w,\s]+)?\s*\{)/,
+  ];
+
+  let javaScore = 0;
+  for (const pattern of javaPatterns) {
+    if (pattern.test(trimmed)) javaScore++;
+  }
+
+  if (javaScore >= 1) {
+    return { isCode: true, language: 'java', reason: 'Java 코드 감지' };
   }
 
   // 8. Bash / Shell Script Heuristic Detection
@@ -156,11 +174,96 @@ export function extractRawCode(text: string): string {
   return text;
 }
 
-function escapeHtml(str: string): string {
+export function escapeHtml(str: string): string {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+/**
+ * Intelligent Code Formatter for Java, SQL, and C-like languages.
+ * Restores lines and indentations if code was flattened into a single line or lost newlines.
+ */
+export function formatJavaOrGeneralCode(code: string): string {
+  if (!code || typeof code !== 'string') return '';
+  const trimmed = code.trim();
+  if (trimmed.length === 0) return '';
+
+  // If it's already well formatted with multiple lines, check if any line has flattened comments/statements
+  const lines = trimmed.split('\n');
+  const isSingleOrFewLines = lines.length <= 2 && trimmed.length > 60;
+  const hasFlattenedJavaComment = /\/\/[^\n]+?(?:public|private|protected|static|final|class|interface|enum|void|int|long|double|float|boolean|char|byte|short|String|return|if|for|while|import|package|@\w+|\})/.test(trimmed);
+  const hasMultipleStatementsOnOneLine = /(?:;|\{)\s*(?:public|private|protected|static|final|class|interface|enum|void|int|long|double|float|boolean|char|byte|short|String|return|if|for|while|import|package|@\w+)/.test(trimmed);
+
+  // If it's not flattened and has multiple lines, return as is
+  if (!isSingleOrFewLines && !hasFlattenedJavaComment && !hasMultipleStatementsOnOneLine) {
+    return code;
+  }
+
+  // Keywords that denote the beginning of a new statement/field in Java/C-like languages
+  const keywordPattern = '(?:public|private|protected|static|final|class|interface|enum|record|void|int|long|double|float|boolean|char|byte|short|String|[A-Z]\\w+|return|if|for|while|import|package|@\\w+|\\})';
+
+  let processed = trimmed;
+
+  // 1. Separate comments glued to subsequent keywords (e.g. "// 지로 이미지 public static final ...")
+  // Using global regex replacement
+  processed = processed.replace(
+    new RegExp(`(//[^\r\n]*?)\\s+(?=${keywordPattern}\\b)`, 'g'),
+    '$1\n'
+  );
+
+  // 2. Separate statements after semicolons that are glued to next keywords (e.g. "; public static ...")
+  processed = processed.replace(
+    new RegExp(`(;)\\s*(?=${keywordPattern}\\b)`, 'g'),
+    '$1\n'
+  );
+
+  // 3. Separate opening braces (e.g. "public class Constant { public static ...")
+  processed = processed.replace(
+    new RegExp(`(\\{)\\s*(?=\\S)`, 'g'),
+    '$1\n'
+  );
+
+  // 4. Separate closing braces
+  processed = processed.replace(
+    new RegExp(`(\\S)\\s*(\\})`, 'g'),
+    '$1\n$2'
+  );
+  processed = processed.replace(
+    new RegExp(`(\\})(?!\\n)\\s*`, 'g'),
+    '$1\n'
+  );
+
+  // 5. Now recompute proper indentation level
+  const rawLines = processed.split('\n');
+  let indentLevel = 0;
+  const formattedLines: string[] = [];
+
+  for (let i = 0; i < rawLines.length; i++) {
+    const rawLine = rawLines[i].trim();
+    if (!rawLine) continue;
+
+    // If line starts with closing brace, decrement before adding
+    if (rawLine.startsWith('}')) {
+      indentLevel = Math.max(0, indentLevel - 1);
+    }
+
+    const indentStr = '    '.repeat(indentLevel);
+    formattedLines.push(indentStr + rawLine);
+
+    // If line ends with opening brace (or contains more { than }), increment indent
+    const openBraces = (rawLine.match(/\{/g) || []).length;
+    const closeBraces = (rawLine.match(/\}/g) || []).length;
+    const diff = openBraces - closeBraces;
+    if (diff > 0) {
+      indentLevel += diff;
+    } else if (diff < 0 && !rawLine.startsWith('}')) {
+      indentLevel = Math.max(0, indentLevel + diff);
+    }
+  }
+
+  return formattedLines.join('\n');
 }

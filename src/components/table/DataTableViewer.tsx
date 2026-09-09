@@ -1159,11 +1159,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   return (
     <div className="flex-1 h-screen flex flex-col overflow-hidden bg-white dark:bg-[#181818] select-none transition-colors">
       {/* Table Action Bar */}
-      <div className="px-6 py-3 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/70 dark:bg-[#1e1e1e]/60 flex items-center justify-between gap-4 flex-wrap">
+      <div className="px-4 sm:px-6 py-2.5 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/70 dark:bg-[#1e1e1e]/60 flex items-center justify-between gap-2.5 sm:gap-3.5 flex-wrap">
         {/* Search Input, View Mode Switcher & Active Sort Notification */}
-        <div className="flex items-center gap-2.5 flex-1 min-w-[240px]">
+        <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap flex-1 min-w-0">
           {/* View Mode Switcher Pill (Table vs Kanban) */}
-          <div className="flex items-center bg-stone-200/70 dark:bg-[#252525] p-0.5 rounded-xl border border-stone-200/80 dark:border-[#383838] shadow-2xs flex-shrink-0">
+          <div className="flex items-center bg-stone-200/70 dark:bg-[#252525] p-0.5 rounded-xl border border-stone-200/80 dark:border-[#383838] shadow-2xs shrink-0 whitespace-nowrap">
             <button
               type="button"
               onClick={() => setViewMode('table')}
@@ -1192,7 +1192,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             </button>
           </div>
 
-          <div className="relative w-full max-w-sm">
+          <div className="relative w-48 sm:w-56 md:w-64 shrink-0">
             {isSearching ? (
               <Loader2 className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-amber-500 animate-spin" />
             ) : (
@@ -1230,7 +1230,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                 searchTargetMode: perfOptions.searchTargetMode === 'all' ? 'primary' : 'all',
               });
             }}
-            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
               perfOptions.searchTargetMode === 'primary'
                 ? 'bg-amber-500 text-stone-950 border-amber-500 font-bold shadow-2xs'
                 : 'bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border-stone-200/80 dark:border-[#383838]'
@@ -1250,10 +1250,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           </button>
 
           {/* Column Filter Selector Dropdown (Opt-in column filtering: status/select enabled by default, others opt-in) */}
-          <div className="relative" ref={filterConfigRef}>
+          <div className="relative shrink-0" ref={filterConfigRef}>
             <button
               onClick={() => setIsFilterConfigOpen(!isFilterConfigOpen)}
-              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
                 isFilterConfigOpen
                   ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm font-bold'
                   : enabledFilterColIds.size > 0
@@ -1373,19 +1373,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           {(totalStickersCount > 0 || totalStickersCount === -1 || onlyStickerFilter) && (
             <button
               onClick={() => setOnlyStickerFilter((prev) => !prev)}
-              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
                 onlyStickerFilter
-                  ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm'
+                  ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm font-bold'
                   : 'bg-amber-500/10 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-300/70 dark:border-amber-700/60 hover:bg-amber-500/20'
               }`}
               title={onlyStickerFilter ? '전체 행 보기로 복귀' : '원노트 스티커 메모가 부착된 행만 모아보기'}
             >
-              <Pin className="w-3.5 h-3.5 fill-current text-amber-500" />
+              <Pin className="w-3.5 h-3.5 fill-current text-amber-500 shrink-0" />
               <span>
                 스티커 메모 {totalStickersCount >= 0 ? `(${totalStickersCount}개)` : '필터'}
               </span>
               {onlyStickerFilter && (
-                <span className="text-[10px] ml-0.5 px-1 py-0.2 rounded bg-stone-900 text-amber-300 font-bold">
+                <span className="text-[10px] ml-0.5 px-1 py-0.2 rounded bg-stone-900 text-amber-300 font-bold shrink-0">
                   필터 ON
                 </span>
               )}
@@ -1394,11 +1394,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
           {/* Active Sort Notification & Priority Reset Button */}
           {sortColumnId && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100/90 dark:bg-amber-950/80 text-amber-900 dark:text-amber-300 text-xs border border-amber-300 dark:border-amber-800 animate-in fade-in flex-shrink-0">
+            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-100/90 dark:bg-amber-950/80 text-amber-900 dark:text-amber-300 text-xs border border-amber-300 dark:border-amber-800 animate-in fade-in shrink-0 whitespace-nowrap">
               <span>{table.columns.find((c) => c.id === sortColumnId)?.name} 열 정렬 중</span>
               <button
                 onClick={() => setSortColumnId(null)}
-                className="ml-1 px-1.5 py-0.2 rounded bg-white/80 dark:bg-amber-900/60 hover:bg-white dark:hover:bg-amber-800 text-[10px] font-bold transition-colors"
+                className="ml-1 px-1.5 py-0.2 rounded bg-white/80 dark:bg-amber-900/60 hover:bg-white dark:hover:bg-amber-800 text-[10px] font-bold transition-colors whitespace-nowrap"
                 title="행 위치/우선순위 직접 변경을 위해 사용자 우선순위 순서로 복귀"
               >
                 우선순위(수동) 순서로 복귀
@@ -1408,33 +1408,33 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         </div>
 
         {/* Right Toolbar Controls */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap shrink-0">
           {/* Wrap Cells Toggle Button (모든 데이터 한눈에 전체보기 / 줄바꿈 모드) */}
           <button
             onClick={toggleWrapCells}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all border ${
+            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
               isWrapCells
                 ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-xs'
                 : 'bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border-stone-200/60 dark:border-[#383838]'
             }`}
             title={isWrapCells ? '셀 요약 축약 보기로 전환 (호버 시 팝오버 확인)' : '모든 셀의 내용 전체 펼쳐보기 (줄바꿈 모드)'}
           >
-            <WrapText className={`w-3.5 h-3.5 ${isWrapCells ? 'text-stone-950' : 'text-amber-500'}`} />
+            <WrapText className={`w-3.5 h-3.5 ${isWrapCells ? 'text-stone-950' : 'text-amber-500'} shrink-0`} />
             <span>{isWrapCells ? '줄바꿈 전체보기 ON' : '줄바꿈 전체보기'}</span>
           </button>
 
           {/* Row Height Density Dropdown */}
-          <div className="relative" ref={densityMenuRef}>
+          <div className="relative shrink-0" ref={densityMenuRef}>
             <button
               onClick={() => setIsDensityMenuOpen(!isDensityMenuOpen)}
-              className="px-2.5 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838]"
+              className="px-2.5 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838] shrink-0 whitespace-nowrap"
               title="행 높이 밀도 조절"
             >
-              <AlignJustify className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+              <AlignJustify className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
               <span>
                 높이: {rowDensity === 'compact' ? '좁게' : rowDensity === 'spacious' ? '넓게' : '보통'}
               </span>
-              <ChevronDown className="w-3 h-3 text-stone-400" />
+              <ChevronDown className="w-3 h-3 text-stone-400 shrink-0" />
             </button>
 
             {isDensityMenuOpen && (
@@ -1486,14 +1486,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           </div>
 
           {/* Row Actions Menu Button */}
-          <div className="relative" ref={rowMenuRef}>
+          <div className="relative shrink-0" ref={rowMenuRef}>
             <button
               onClick={() => setIsRowMenuOpen(!isRowMenuOpen)}
-              className="px-3 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838]"
+              className="px-3 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838] shrink-0 whitespace-nowrap"
             >
-              <Rows className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400" />
+              <Rows className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
               <span>행 작업 ({selectedRowIds.size}개 선택)</span>
-              <ChevronDown className="w-3 h-3 text-stone-400" />
+              <ChevronDown className="w-3 h-3 text-stone-400 shrink-0" />
             </button>
 
             {isRowMenuOpen && (
@@ -1673,9 +1673,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           {/* Quick Add Row Button (Opens Add Row Modal) */}
           <button
             onClick={() => handleOpenAddRowModal('bottom')}
-            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm active:scale-98"
+            className="px-3.5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-sm active:scale-98 shrink-0 whitespace-nowrap"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3.5 h-3.5 shrink-0" />
             <span>새 행 추가</span>
           </button>
         </div>

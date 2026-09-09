@@ -367,7 +367,7 @@ export function delimitedTextToHtmlTable(rawText: string): string | null {
     return null;
   }
 
-  let html = '<table class="wonbee-rich-table"><thead><tr>';
+  let html = '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"><thead><tr>';
   for (const col of parsed.columns) {
     html += `<th>${escapeHtmlForTable(col.name)}</th>`;
   }

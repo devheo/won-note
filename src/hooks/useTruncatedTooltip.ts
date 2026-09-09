@@ -9,10 +9,42 @@ export interface TruncationHint {
   hasNewlines?: boolean;
 }
 
-export function useTruncatedTooltip() {
+// Global active tooltip manager to ensure only ONE cell tooltip is ever visible at a time.
+let activeTooltipDismissFn: (() => void) | null = null;
+
+export function dismissAllCellTooltips() {
+  if (activeTooltipDismissFn) {
+    activeTooltipDismissFn();
+    activeTooltipDismissFn = null;
+  }
+}
+
+export function useTruncatedTooltip(hoverDelayMs = 380) {
   const [isTruncated, setIsTruncated] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
   const textRef = useRef<HTMLDivElement | null>(null);
+  const enterTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const leaveTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const clearEnterTimer = useCallback(() => {
+    if (enterTimerRef.current) {
+      clearTimeout(enterTimerRef.current);
+      enterTimerRef.current = null;
+    }
+  }, []);
+
+  const clearLeaveTimer = useCallback(() => {
+    if (leaveTimerRef.current) {
+      clearTimeout(leaveTimerRef.current);
+      leaveTimerRef.current = null;
+    }
+  }, []);
+
+  const forceClose = useCallback(() => {
+    clearEnterTimer();
+    clearLeaveTimer();
+    setIsHovered(false);
+  }, [clearEnterTimer, clearLeaveTimer]);
 
   const checkTruncation = useCallback((hint?: TruncationHint): boolean => {
     // 1. Rich elements (images, stickers, code blocks, HTML tables/formatting) always warrant preview
@@ -35,7 +67,6 @@ export function useTruncatedTooltip() {
     }
 
     // 3. Check child elements (especially elements with line-clamp-3, truncate, or text wrappers)
-    // In CSS line-clamp, overflow is clipped on the clamped child element, not on the outer container!
     const allDescendants = el.querySelectorAll('*');
     for (let i = 0; i < allDescendants.length; i++) {
       const child = allDescendants[i] as HTMLElement;
@@ -49,7 +80,6 @@ export function useTruncatedTooltip() {
     }
 
     // 4. Reliable content-based heuristic fallback:
-    // If text has newlines, or exceeds typical column capacity (15+ chars)
     if (hint?.hasNewlines || (hint?.textLength && hint.textLength > 15)) {
       setIsTruncated(true);
       return true;
@@ -59,16 +89,66 @@ export function useTruncatedTooltip() {
     return false;
   }, []);
 
-  const handleMouseEnter = useCallback((hint?: TruncationHint) => {
-    const truncated = checkTruncation(hint);
-    if (truncated) {
-      setIsHovered(true);
-    }
-  }, [checkTruncation]);
+  const handleMouseEnter = useCallback(
+    (hint?: TruncationHint, onWillShow?: () => void) => {
+      clearLeaveTimer();
+      clearEnterTimer();
+
+      // Dismiss any other currently open tooltip immediately so two tooltips NEVER overlap
+      if (activeTooltipDismissFn && activeTooltipDismissFn !== forceClose) {
+        activeTooltipDismissFn();
+        activeTooltipDismissFn = null;
+      }
+
+      const truncated = checkTruncation(hint);
+      if (!truncated) return;
+
+      // Register this instance as the pending/active tooltip dismisser
+      activeTooltipDismissFn = forceClose;
+
+      // Add a deliberate hover delay (380ms) so passing the mouse over doesn't trigger rapid flashing
+      enterTimerRef.current = setTimeout(() => {
+        if (onWillShow) {
+          onWillShow();
+        }
+        setIsHovered(true);
+        activeTooltipDismissFn = forceClose;
+      }, hoverDelayMs);
+    },
+    [checkTruncation, clearEnterTimer, clearLeaveTimer, forceClose, hoverDelayMs]
+  );
 
   const handleMouseLeave = useCallback(() => {
-    setIsHovered(false);
-  }, []);
+    clearEnterTimer();
+    clearLeaveTimer();
+
+    // Short grace period (120ms) so user can move mouse onto the floating popover itself
+    leaveTimerRef.current = setTimeout(() => {
+      setIsHovered(false);
+      if (activeTooltipDismissFn === forceClose) {
+        activeTooltipDismissFn = null;
+      }
+    }, 120);
+  }, [clearEnterTimer, clearLeaveTimer, forceClose]);
+
+  const handlePopoverMouseEnter = useCallback(() => {
+    clearLeaveTimer();
+    clearEnterTimer();
+  }, [clearEnterTimer, clearLeaveTimer]);
+
+  const handlePopoverMouseLeave = useCallback(() => {
+    handleMouseLeave();
+  }, [handleMouseLeave]);
+
+  useEffect(() => {
+    return () => {
+      clearEnterTimer();
+      clearLeaveTimer();
+      if (activeTooltipDismissFn === forceClose) {
+        activeTooltipDismissFn = null;
+      }
+    };
+  }, [clearEnterTimer, clearLeaveTimer, forceClose]);
 
   useEffect(() => {
     const el = textRef.current;
@@ -89,6 +169,9 @@ export function useTruncatedTooltip() {
     isHovered,
     handleMouseEnter,
     handleMouseLeave,
+    handlePopoverMouseEnter,
+    handlePopoverMouseLeave,
+    forceClose,
     checkTruncation,
   };
 }

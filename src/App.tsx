@@ -343,6 +343,147 @@ export default function App() {
     await syncToLocalFileIfConnected(updatedWs);
   };
 
+  // Add new TO-DO Kanban Board
+  const handleAddTodoBoard = async (parentId: string | null = null, title = '할 일 TO-DO 보드') => {
+    const newTableId = `table-${Date.now().toString(36)}`;
+    const newTableTitle = `📋 ${title}`;
+
+    const newTable: TableDocument = {
+      id: newTableId,
+      title: newTableTitle,
+      description: '칸반 보드로 드래그 앤 드롭 관리하는 TO-DO 리스트입니다.',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      columns: [
+        { id: 'col-task', name: '할 일 (Task)', type: 'text', width: 240, isPrimaryKey: true },
+        {
+          id: 'col-status',
+          name: '진행 상태',
+          type: 'status',
+          width: 140,
+          options: [
+            { id: 'todo', label: '할 일 (To Do)', color: '#3B82F6' },
+            { id: 'progress', label: '진행 중 (In Progress)', color: '#F59E0B' },
+            { id: 'review', label: '검토/대기 (Review)', color: '#8B5CF6' },
+            { id: 'done', label: '완료 (Done)', color: '#10B981' },
+          ],
+        },
+        {
+          id: 'col-priority',
+          name: '우선순위',
+          type: 'select',
+          width: 120,
+          options: [
+            { id: 'p1', label: '🔥 긴급 (P1)', color: '#EF4444' },
+            { id: 'p2', label: '⚡ 보통 (P2)', color: '#F59E0B' },
+            { id: 'p3', label: '🌱 여유 (P3)', color: '#10B981' },
+          ],
+        },
+        { id: 'col-due', name: '마감일', type: 'date', width: 130 },
+        { id: 'col-assignee', name: '담당자', type: 'text', width: 110 },
+        { id: 'col-note', name: '체크리스트 & 메모', type: 'richText', width: 280 },
+        {
+          id: 'col-updated-at',
+          name: '수정일',
+          type: 'date',
+          width: 155,
+          autoUpdateDate: true,
+        },
+      ],
+      rows: [
+        {
+          id: 'row-todo-1',
+          data: {
+            'col-task': '호버 툴팁 라이트/다크 테마 동기화 점검',
+            'col-status': 'done',
+            'col-priority': 'p1',
+            'col-due': '2026-09-08',
+            'col-assignee': '원비 🐝',
+            'col-note': '셀 호버 팝오버 및 플로팅 컨트롤러 테마 미적용 버그 해결 완료!',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '<p>✅ <strong>호버 툴팁 테마 완벽 동기화</strong></p><p>라이트 모드에서 산뜻한 화이트 테마, 다크 모드에서는 깊이감 있는 다크 테마가 적용되었습니다.</p>',
+          stickers: [{ id: 'stk-1', text: '테마 동기화 완료! 🎨', color: 'emerald' }],
+          createdAt: Date.now() - 3600000 * 2,
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'row-todo-2',
+          data: {
+            'col-task': 'TO-DO 칸반보드 드래그 앤 드롭 체험하기',
+            'col-status': 'progress',
+            'col-priority': 'p1',
+            'col-due': '2026-09-09',
+            'col-assignee': '나',
+            'col-note': '카드를 마우스로 집어서 다른 상태 레인으로 이동시켜 보세요.',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '<p>💡 <strong>칸반보드 사용 꿀팁</strong></p><ul><li>카드를 마우스로 드래그하여 상태를 즉시 변경할 수 있습니다.</li><li>우측 상단 에디터 버튼을 누르면 체크리스트를 넣을 수 있습니다.</li></ul>',
+          stickers: [{ id: 'stk-2', text: '드래그 앤 드롭 가능! 🚀', color: 'amber' }],
+          createdAt: Date.now() - 3600000,
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'row-todo-3',
+          data: {
+            'col-task': '신규 기능 요구사항 정의 및 백로그 정리',
+            'col-status': 'todo',
+            'col-priority': 'p2',
+            'col-due': '2026-09-12',
+            'col-assignee': '기획팀',
+            'col-note': '다음 스프린트 목표 수립 및 우선순위 검토',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '<p>📋 <strong>체크리스트</strong></p><p>☐ 사용자 피드백 수집<br/>☐ 백로그 우선순위 매트릭스 도출</p>',
+          stickers: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'row-todo-4',
+          data: {
+            'col-task': '주간 업무 보고서 엑셀/CSV 내보내기 검토',
+            'col-status': 'review',
+            'col-priority': 'p3',
+            'col-due': '2026-09-15',
+            'col-assignee': '운영팀',
+            'col-note': '상단 툴바에서 엑셀 CSV 내보내기 기능 테스트',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '',
+          stickers: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+    };
+
+    const newTreeItem: TreeItem = {
+      id: newTableId,
+      parentId,
+      title: newTableTitle,
+      type: 'table',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const updatedWs: WorkspaceData = {
+      ...workspace,
+      tree: [...workspace.tree, newTreeItem],
+      tables: {
+        ...workspace.tables,
+        [newTableId]: newTable,
+      },
+      exportedAt: Date.now(),
+    };
+
+    setWorkspace(updatedWs);
+    setActiveTableId(newTableId);
+    handleViewModeChange('kanban'); // 바로 칸반보드 뷰로 보여주기
+    await repository.saveWorkspace(updatedWs);
+    await syncToLocalFileIfConnected(updatedWs);
+  };
+
   // Add new Folder
   const handleAddFolder = async (parentId: string | null = null, title = '새 폴더') => {
     const newFolderId = `folder-${Date.now().toString(36)}`;

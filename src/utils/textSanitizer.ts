@@ -36,8 +36,9 @@ export function cleanTextValue(val: any): string {
 
   const originalStr = str;
 
-  // If HTML tags are present (e.g. <p>...</p>, <pre>...</pre>, <span>...</span>)
-  if (str.includes('<') && str.includes('>')) {
+  // Check if real HTML markup is present (prevent stripping Java generics like List<String> or <T> or comparisons)
+  const hasRealHtml = /<\/?(?:p|div|span|strong|b|em|i|s|del|h[1-6]|ul|ol|li|blockquote|pre|code|table|thead|tbody|tfoot|tr|th|td|img|br|hr|a)\b/i.test(str);
+  if (hasRealHtml) {
     // Preserve OneNote sticker tags as readable text summary
     if (str.includes('wonbee-sticker')) {
       str = str.replace(/<div[^>]*data-type=["']wonbee-sticker["'][^>]*>([\s\S]*?)(?:<\/div>|$)/gi, (fullMatch) => {
@@ -47,11 +48,26 @@ export function cleanTextValue(val: any): string {
       });
     }
 
+    // Preserve pre/code blocks by ensuring newlines before and after, preserving all indentations
+    str = str.replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_match, p1) => {
+      // Decode inside pre code block
+      const cleanInner = p1
+        .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, '$1')
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&amp;/gi, '&')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'");
+      return `\n${cleanInner}\n`;
+    });
+
     str = str
       // Convert block elements & linebreaks to real newlines
       .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/(p|div|li|tr|h[1-6]|blockquote)>/gi, '\n')
-      .replace(/<(p|div|li|tr|h[1-6]|blockquote)[^>]*>/gi, '')
+      .replace(/<\/(p|div|li|tr|h[1-6]|blockquote|pre)>/gi, '\n')
+      .replace(/<(p|div|li|tr|h[1-6]|blockquote|pre)[^>]*>/gi, '')
       .replace(/<td[^>]*>/gi, '\t')
       .replace(/<\/td>/gi, ' ')
       .replace(/<th[^>]*>/gi, '\t')
