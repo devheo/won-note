@@ -30,7 +30,7 @@ import {
   Image as ImageIcon,
   StickyNote,
 } from 'lucide-react';
-import { detectLanguage } from '../../utils/codeHighlighter';
+import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
@@ -778,16 +778,31 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               return <span className="text-stone-400 dark:text-[#777777] italic">(비어 있음)</span>;
                             }
 
-                            // Only treat as rich HTML if explicitly richText or contains complex rich elements like images/tables/stickers
+                            // 1. Pure code content (including TipTap single pre/code block or raw code)
+                            const pureCodeInfo = extractCodeBlockFromContent(strVal);
+                            if (pureCodeInfo.isPureCode) {
+                              return (
+                                <CodeBlockViewer
+                                  code={pureCodeInfo.code}
+                                  language={pureCodeInfo.language}
+                                  maxHeight="max-h-80"
+                                />
+                              );
+                            }
+
+                            // 2. Rich HTML content with potential embedded pre/code blocks, images, tables
                             const isRichHtml =
                               (col.type === 'richText' ||
                                strVal.includes('<img') ||
                                strVal.includes('<table') ||
                                strVal.includes('wonbee-sticker') ||
-                               strVal.includes('<sticker-node')) &&
+                               strVal.includes('<sticker-node') ||
+                               strVal.includes('<pre') ||
+                               strVal.includes('<code')) &&
                               (strVal.includes('<') && strVal.includes('>'));
 
                             if (isRichHtml) {
+                              const highlightedHtml = highlightHtmlCodeBlocks(strVal);
                               return (
                                 <div
                                   className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed"
@@ -798,14 +813,15 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                       if (src) setLightboxImg(src);
                                     }
                                   }}
-                                  dangerouslySetInnerHTML={{ __html: strVal }}
+                                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
                                 />
                               );
                             }
 
+                            // 3. Fallback plaintext: check if detected as code
                             const cleanedString = cleanTextValue(strVal);
                             const detected = detectLanguage(cleanedString);
-                            if (detected.isCode && (cleanedString.includes('\n') || cleanedString.length > 50)) {
+                            if (detected.isCode && (cleanedString.includes('\n') || cleanedString.length > 20)) {
                               return (
                                 <CodeBlockViewer
                                   code={cleanedString}

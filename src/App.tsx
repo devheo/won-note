@@ -403,7 +403,7 @@ export default function App() {
             'col-updated-at': formatDateTime(Date.now()),
           },
           richContent: '<p>✅ <strong>호버 툴팁 테마 완벽 동기화</strong></p><p>라이트 모드에서 산뜻한 화이트 테마, 다크 모드에서는 깊이감 있는 다크 테마가 적용되었습니다.</p>',
-          stickers: [{ id: 'stk-1', text: '테마 동기화 완료! 🎨', color: 'emerald' }],
+          stickers: [{ id: 'stk-1', title: '테마 동기화', content: '테마 동기화 완료! 🎨', color: 'green', position: { x: 20, y: 20 } }],
           createdAt: Date.now() - 3600000 * 2,
           updatedAt: Date.now(),
         },
@@ -419,7 +419,7 @@ export default function App() {
             'col-updated-at': formatDateTime(Date.now()),
           },
           richContent: '<p>💡 <strong>칸반보드 사용 꿀팁</strong></p><ul><li>카드를 마우스로 드래그하여 상태를 즉시 변경할 수 있습니다.</li><li>우측 상단 에디터 버튼을 누르면 체크리스트를 넣을 수 있습니다.</li></ul>',
-          stickers: [{ id: 'stk-2', text: '드래그 앤 드롭 가능! 🚀', color: 'amber' }],
+          stickers: [{ id: 'stk-2', title: '칸반 안내', content: '드래그 앤 드롭 가능! 🚀', color: 'amber', position: { x: 20, y: 20 } }],
           createdAt: Date.now() - 3600000,
           updatedAt: Date.now(),
         },
@@ -738,6 +738,7 @@ export default function App() {
         onSelectTable={handleSelectActiveTable}
         onUpdateTree={handleUpdateTree}
         onAddTable={handleAddTable}
+        onAddTodoBoard={handleAddTodoBoard}
         onAddFolder={handleAddFolder}
         onDeleteTreeItem={handleDeleteTreeItem}
         onDuplicateTable={handleDuplicateTable}
@@ -835,6 +836,7 @@ export default function App() {
                 table={activeTable}
                 onUpdateTable={handleUpdateTable}
                 onOpenRowEditor={(row, colId) => {
+                  setSelectedDetailRow(null);
                   setEditingRow(row);
                   setEditingTargetColId(colId || null);
                 }}
@@ -1040,12 +1042,14 @@ export default function App() {
         onOpenTextPaste={() => setIsTextPasteOpen(true)}
         onOpenUniversalImport={() => setIsUniversalImportOpen(true)}
         onAddNewTable={() => handleAddTable(null)}
+        onAddTodoBoard={() => handleAddTodoBoard(null)}
         onResetZoom={() => handleZoomChange(100)}
         onOpenRowDetail={(row, idx) => {
           setSelectedDetailRow(row);
           setSelectedDetailRowIndex(idx);
         }}
         onOpenRowEditor={(row) => {
+          setSelectedDetailRow(null);
           setEditingRow(row);
           setEditingTargetColId(null);
         }}

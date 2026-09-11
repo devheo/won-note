@@ -109,7 +109,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
       className={`relative group select-none transition-all duration-100 ${layoutClasses}`}
       style={{
         ...layoutStyles,
-        width: effectiveWidth === 'auto' ? undefined : effectiveWidth,
+        width: effectiveWidth === 'auto' ? 'fit-content' : effectiveWidth,
         maxWidth: '100%',
       }}
     >
@@ -117,13 +117,13 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
       {showToolbar && (
         <div
           contentEditable={false}
-          className="absolute -top-11 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1 bg-white/95 dark:bg-[#1e1e1e]/95 text-stone-800 dark:text-white px-2 py-1 rounded-xl shadow-xl border border-stone-200/90 dark:border-stone-600/80 backdrop-blur-sm text-xs animate-in fade-in zoom-in-95 select-none"
+          className="absolute -top-12 left-0 z-50 flex items-center flex-nowrap gap-1 bg-white/95 dark:bg-[#1e1e1e]/95 text-stone-800 dark:text-white px-2.5 py-1 rounded-xl shadow-2xl border border-stone-200/90 dark:border-stone-600/80 backdrop-blur-sm text-xs select-none whitespace-nowrap min-w-max pointer-events-auto"
         >
           {/* Quick Width Presets */}
-          <div className="flex items-center gap-0.5 border-r border-stone-200 dark:border-stone-700 pr-1.5 mr-0.5">
+          <div className="flex items-center gap-0.5 border-r border-stone-200 dark:border-stone-700 pr-1.5 mr-0.5 shrink-0">
             {[
               { label: '25%', val: '25%' },
-              { label: '50%', val: '48%' }, // 48% is optimal for 2 side-by-side images
+              { label: '50%', val: '50%' },
               { label: '75%', val: '75%' },
               { label: '100%', val: '100%' },
               { label: 'Auto', val: 'auto' },
@@ -132,12 +132,12 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
                 key={p.val}
                 type="button"
                 onClick={() => updateAttributes({ width: p.val })}
-                className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors ${
+                className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors shrink-0 ${
                   currentWidth === p.val
                     ? 'bg-amber-500 text-stone-950 font-bold'
                     : 'text-stone-600 dark:text-stone-300 hover:text-stone-900 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-stone-800'
                 }`}
-                title={`너비 ${p.label}로 설정`}
+                title={`이미지 크기 ${p.label}로 조절`}
               >
                 {p.label}
               </button>
@@ -145,7 +145,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
           </div>
 
           {/* Layout Options */}
-          <div className="flex items-center gap-0.5 border-r border-stone-200 dark:border-stone-700 pr-1.5 mr-0.5">
+          <div className="flex items-center gap-0.5 border-r border-stone-200 dark:border-stone-700 pr-1.5 mr-0.5 shrink-0">
             <button
               type="button"
               onClick={() => updateAttributes({ layout: 'inline' })}
@@ -200,7 +200,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
           <button
             type="button"
             onClick={deleteNode}
-            className="p-1 rounded text-rose-500 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-200 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
+            className="p-1 rounded text-rose-500 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-200 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors shrink-0"
             title="이미지 삭제"
           >
             <Trash2 className="w-3.5 h-3.5" />
@@ -208,16 +208,17 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
         </div>
       )}
 
-      {/* Main Image */}
+      {/* Main Image: Scales 100% with the wrapper dimensions without arbitrary container blank space */}
       <img
         src={src}
         alt={alt}
-        className={`rounded-xl object-contain shadow-md border border-stone-200 dark:border-[#383838] transition-all block w-full ${
+        className={`rounded-xl shadow-md border border-stone-200 dark:border-[#383838] transition-all block w-full h-auto ${
           selected ? 'ring-2 ring-amber-500 ring-offset-2 dark:ring-offset-stone-900' : ''
         }`}
         style={{
-          maxHeight: '520px',
           width: '100%',
+          height: 'auto',
+          display: 'block',
         }}
       />
 

@@ -336,6 +336,17 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [importInitialText, setImportInitialText] = useState<string>('');
   const [importInitialTab, setImportInitialTab] = useState<'file' | 'text'>('file');
 
+  // Click vs Double-click debouncer to prevent heavy RowDetailViewer from mounting during double-clicks
+  const rowClickTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (rowClickTimerRef.current) {
+        clearTimeout(rowClickTimerRef.current);
+      }
+    };
+  }, []);
+
   // Global Ctrl+V / Cmd+V paste listener for Excel/TSV/CSV tabular data
   useEffect(() => {
     const handleGlobalPaste = (e: ClipboardEvent) => {
@@ -1952,7 +1963,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                     if (editingCell) {
                       commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
                     }
-                    onOpenRowDetail(row, rIdx);
+                    if (rowClickTimerRef.current) {
+                      clearTimeout(rowClickTimerRef.current);
+                    }
+                    rowClickTimerRef.current = setTimeout(() => {
+                      onOpenRowDetail(row, rIdx);
+                      rowClickTimerRef.current = null;
+                    }, 220);
                   }}
                   onDoubleClick={(e) => {
                     const target = e.target as HTMLElement;
@@ -1966,6 +1983,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       target.closest('[data-editing-cell="true"]')
                     ) {
                       return;
+                    }
+                    if (rowClickTimerRef.current) {
+                      clearTimeout(rowClickTimerRef.current);
+                      rowClickTimerRef.current = null;
                     }
                     if (editingCell) {
                       commitCellEdit(editingCell.rowId, editingCell.colId, editingValue);
@@ -2054,6 +2075,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         }}
                         onDoubleClick={(e) => {
                           e.stopPropagation();
+                          if (rowClickTimerRef.current) {
+                            clearTimeout(rowClickTimerRef.current);
+                            rowClickTimerRef.current = null;
+                          }
                           if (col.type === 'richText') {
                             onOpenRowEditor(row, col.id);
                             return;

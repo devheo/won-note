@@ -36,6 +36,7 @@ interface CommandPaletteModalProps {
   onOpenTextPaste: () => void;
   onOpenUniversalImport: () => void;
   onAddNewTable: () => void;
+  onAddTodoBoard?: () => void;
   onResetZoom: () => void;
   onOpenRowDetail: (row: TableRow, index: number) => void;
   onOpenRowEditor: (row: TableRow) => void;
@@ -67,6 +68,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onOpenTextPaste,
   onOpenUniversalImport,
   onAddNewTable,
+  onAddTodoBoard,
   onResetZoom,
   onOpenRowDetail,
   onOpenRowEditor,
@@ -156,6 +158,23 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
           onClose();
         },
       },
+      ...(onAddTodoBoard
+        ? [
+            {
+              id: 'act_new_todo_board',
+              category: 'action' as const,
+              categoryLabel: '빠른 작업',
+              title: '새 TO-DO 칸반보드 만들기',
+              subtitle: '드래그 앤 드롭으로 관리하는 예쁜 TO-DO 보드 생성',
+              icon: <Layers className="w-4 h-4 text-amber-500" />,
+              badge: 'TO-DO',
+              onSelect: () => {
+                onAddTodoBoard();
+                onClose();
+              },
+            },
+          ]
+        : []),
       {
         id: 'act_universal_import',
         category: 'action',

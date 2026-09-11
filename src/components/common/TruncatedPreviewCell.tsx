@@ -1,7 +1,7 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useMemo } from 'react';
 import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
-import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon, Pin } from 'lucide-react';
-import { detectLanguage } from '../../utils/codeHighlighter';
+import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon, Pin, Code } from 'lucide-react';
+import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { HighlightText } from './HighlightText';
@@ -74,10 +74,27 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
     rawString.includes('<h1>') ||
     rawString.includes('<h2>') ||
     rawString.includes('<strong>') ||
+    rawString.includes('<span') ||
+    rawString.includes('<mark') ||
+    rawString.includes('<u>') ||
+    rawString.includes('<em>') ||
+    rawString.includes('<i>') ||
+    rawString.includes('<b>') ||
+    rawString.includes('style=') ||
     (rawString.startsWith('<p>') && rawString.includes('</p>'));
 
+  const pureCodeInfo = extractCodeBlockFromContent(rawString);
   const displayPlainText = cleanTextValue(rawString);
-  const detectedCode = !isRich ? detectLanguage(displayPlainText) : { isCode: false, language: 'plaintext' as const };
+  const detectedCode = pureCodeInfo.isPureCode
+    ? { isCode: true, language: pureCodeInfo.language }
+    : !isRich
+    ? detectLanguage(displayPlainText)
+    : { isCode: false, language: 'plaintext' as const };
+
+  const highlightedRichHtml = useMemo(() => {
+    if (!isRich) return '';
+    return highlightHtmlCodeBlocks(rawString);
+  }, [isRich, rawString]);
 
   // Only suppress floating popover for plain text if tooltipOnlyRichText is explicitly enabled by user
   const shouldShowTooltipPopover = !tooltipOnlyRichText || isRich;
@@ -276,6 +293,13 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                   )}
                 </span>
               </div>
+            ) : (pureCodeInfo.isPureCode || detectedCode.isCode) ? (
+              <div className="flex items-start gap-1.5 min-w-0 w-full">
+                <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+                <span className={`${clampClass} font-mono text-[11px] text-stone-700 dark:text-stone-300`}>
+                  <HighlightText text={pureCodeInfo.isPureCode ? pureCodeInfo.code : displayPlainText} highlight={highlightQuery} />
+                </span>
+              </div>
             ) : (
               <div className={`${clampClass} w-full`}>
                 {displayPlainText.length > 0 ? (
@@ -329,7 +353,9 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
           <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-200 dark:border-stone-800 text-[11px] text-stone-500 dark:text-stone-400 font-medium shrink-0">
             <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
               <Sparkles className="w-3 h-3" />
-              {hasImage
+              {pureCodeInfo.isPureCode
+                ? `코드 미리보기 (${pureCodeInfo.language.toUpperCase()})`
+                : hasImage
                 ? '이미지 및 서식 내용 미리보기'
                 : detectedCode.isCode
                 ? `코드 미리보기 (${detectedCode.language.toUpperCase()})`
@@ -337,7 +363,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
             </span>
             <div className="flex items-center gap-2">
               <span className="text-stone-400 dark:text-stone-500">{(displayPlainText || rawString).length}자</span>
-              {!detectedCode.isCode && (
+              {!pureCodeInfo.isPureCode && !detectedCode.isCode && (
                 <button
                   onClick={handleCopyText}
                   className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 text-[10px] transition-colors border border-stone-200/80 dark:border-transparent"
@@ -351,10 +377,16 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
           </div>
 
           <div className="overflow-y-auto custom-scrollbar flex-1 min-h-0">
-            {isRich ? (
+            {pureCodeInfo.isPureCode ? (
+              <CodeBlockViewer
+                code={pureCodeInfo.code}
+                language={pureCodeInfo.language}
+                maxHeight="max-h-64"
+              />
+            ) : isRich ? (
               <div
                 className="max-h-64 leading-relaxed text-stone-800 dark:text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table tiptap"
-                dangerouslySetInnerHTML={{ __html: rawString }}
+                dangerouslySetInnerHTML={{ __html: highlightedRichHtml }}
               />
             ) : detectedCode.isCode ? (
               <CodeBlockViewer

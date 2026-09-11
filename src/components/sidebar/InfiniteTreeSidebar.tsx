@@ -15,6 +15,7 @@ import {
   Search,
   GripVertical,
   Sparkles,
+  Layers,
 } from 'lucide-react';
 
 interface InfiniteTreeSidebarProps {
@@ -23,6 +24,7 @@ interface InfiniteTreeSidebarProps {
   onSelectTable: (tableId: string) => void;
   onUpdateTree: (updatedTree: TreeItem[]) => void;
   onAddTable: (parentId: string | null, title?: string) => void;
+  onAddTodoBoard?: (parentId: string | null, title?: string) => void;
   onAddFolder: (parentId: string | null, title?: string) => void;
   onDeleteTreeItem: (itemId: string) => void;
   onDuplicateTable: (tableId: string) => void;
@@ -37,6 +39,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   onSelectTable,
   onUpdateTree,
   onAddTable,
+  onAddTodoBoard,
   onAddFolder,
   onDeleteTreeItem,
   onDuplicateTable,
@@ -483,24 +486,38 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
         </div>
       </div>
 
-      {/* Action Buttons: Add Table, Add Folder */}
-      <div className="px-3 py-1.5 flex items-center gap-1.5">
-        <button
-          id="btn-add-root-table"
-          onClick={() => onAddTable(null)}
-          className="flex-1 py-1.5 px-2 bg-amber-400/90 hover:bg-amber-400 text-stone-950 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all active:scale-98"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          새 테이블
-        </button>
-        <button
-          id="btn-add-root-folder"
-          onClick={() => onAddFolder(null)}
-          className="py-1.5 px-2.5 bg-white dark:bg-[#252525] hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] text-xs font-medium rounded-lg flex items-center justify-center gap-1 transition-colors"
-          title="새 폴더 만들기"
-        >
-          <Folder className="w-3.5 h-3.5" />
-        </button>
+      {/* Action Buttons: Add Table, Add TO-DO Board, Add Folder */}
+      <div className="px-3 py-1.5 flex flex-col gap-1.5">
+        <div className="flex items-center gap-1.5">
+          <button
+            id="btn-add-root-table"
+            onClick={() => onAddTable(null)}
+            className="flex-1 py-1.5 px-2 bg-amber-400/90 hover:bg-amber-400 text-stone-950 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all active:scale-98"
+            title="기본 데이터 그리드 표 생성"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            새 테이블
+          </button>
+          <button
+            id="btn-add-root-folder"
+            onClick={() => onAddFolder(null)}
+            className="py-1.5 px-2.5 bg-white dark:bg-[#252525] hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] text-xs font-medium rounded-lg flex items-center justify-center gap-1 transition-colors"
+            title="새 폴더 만들기"
+          >
+            <Folder className="w-3.5 h-3.5" />
+          </button>
+        </div>
+        {onAddTodoBoard && (
+          <button
+            id="btn-add-todo-board"
+            onClick={() => onAddTodoBoard(null)}
+            className="w-full py-1.5 px-2.5 bg-white dark:bg-[#222222] hover:bg-amber-50 dark:hover:bg-[#2a261a] text-amber-700 dark:text-amber-400 border border-amber-300/80 dark:border-amber-600/40 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all hover:border-amber-400 active:scale-98"
+            title="드래그 앤 드롭으로 관리하는 TO-DO 칸반보드 생성"
+          >
+            <Layers className="w-3.5 h-3.5 text-amber-500" />
+            <span>📋 새 TO-DO 칸반보드</span>
+          </button>
+        )}
       </div>
 
       {/* Infinite Depth Tree Container */}

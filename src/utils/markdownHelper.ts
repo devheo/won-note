@@ -18,19 +18,25 @@ export function markdownToHtml(markdown: string): string {
   }) as string;
 
   // Post-process HTML for TipTap specific node schemas:
+  let processedHtml = rawHtml;
+
   // 1. Task Lists: TipTap expects <ul data-type="taskList"><li data-type="taskItem" data-checked="true/false">...
-  let processedHtml = rawHtml.replace(/<ul>(\s*<li><input[^>]*type="checkbox"[^>]*>[\s\S]*?<\/ul>)/g, (match) => {
-    return match
-      .replace(/^<ul>/, '<ul data-type="taskList">')
-      .replace(/<li><input([^>]*)type="checkbox"([^>]*)>([\s\S]*?)<\/li>/g, (_, p1, p2, text) => {
-        const isChecked = p1.includes('checked') || p2.includes('checked');
-        const cleanContent = text.trim();
-        return `<li data-type="taskItem" data-checked="${isChecked}"><label><input type="checkbox" ${isChecked ? 'checked="checked"' : ''} /></label><div><p>${cleanContent}</p></div></li>`;
-      });
-  });
+  if (processedHtml.includes('type="checkbox"')) {
+    processedHtml = processedHtml.replace(/<ul>(\s*<li[^>]*><input[^>]*type="checkbox"[^>]*>[\s\S]*?<\/ul>)/g, (match) => {
+      return match
+        .replace(/^<ul>/, '<ul data-type="taskList">')
+        .replace(/<li[^>]*><input([^>]*)type="checkbox"([^>]*)>([\s\S]*?)<\/li>/g, (_, p1, p2, text) => {
+          const isChecked = (p1 + p2).includes('checked');
+          const cleanContent = text.trim();
+          return `<li data-type="taskItem" data-checked="${isChecked}"><label><input type="checkbox" ${isChecked ? 'checked="checked"' : ''} /></label><div><p>${cleanContent}</p></div></li>`;
+        });
+    });
+  }
 
   // 2. Wrap tables with wonbee-rich-table styling class and default all borders
-  processedHtml = processedHtml.replace(/<table>/g, '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all">');
+  if (processedHtml.includes('<table>')) {
+    processedHtml = processedHtml.replace(/<table>/g, '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all">');
+  }
 
   return processedHtml;
 }
@@ -186,27 +192,30 @@ export function isLikelyMarkdown(text: string): boolean {
   const trimmed = text.trim();
   if (trimmed.length < 3) return false;
 
+  // Fast-sampling for large texts (first 8KB) to prevent catastrophic regex backtracking and main-thread freezes
+  const sample = trimmed.length > 8000 ? trimmed.slice(0, 8000) : trimmed;
+
   // 1. Headings (# Title, ## Title)
-  if (/^#{1,6}\s+\S/m.test(trimmed)) return true;
+  if (/^#{1,6}\s+\S/m.test(sample)) return true;
 
   // 2. Markdown Code Fences (```lang ... ```)
-  if (/^```[a-zA-Z0-9_-]*\s*[\s\S]*?```/m.test(trimmed)) return true;
+  if (/^```[a-zA-Z0-9_-]*\s*[\s\S]*?```/m.test(sample)) return true;
 
   // 3. Markdown Tables (| Col1 | Col2 | and |---|---|)
-  if (/\|[^\n]+\|\s*\n\s*\|[\s-:|]+\|/m.test(trimmed)) return true;
+  if (/\|[^\n]+\|\s*\n\s*\|[\s-:|]+\|/m.test(sample)) return true;
 
   // 4. Task Lists (- [ ] or - [x])
-  if (/^[-*+]\s+\[[ xX]\]\s+\S/m.test(trimmed)) return true;
+  if (/^[-*+]\s+\[[ xX]\]\s+\S/m.test(sample)) return true;
 
   // 5. Blockquotes (> quote)
-  if (/^>\s+\S/m.test(trimmed)) return true;
+  if (/^>\s+\S/m.test(sample)) return true;
 
   // 6. Multiple list items with * or - or numbers
-  const listMatches = trimmed.match(/^(\s*[-*+]\s+\S+|\s*\d+\.\s+\S+)/gm);
+  const listMatches = sample.match(/^(\s*[-*+]\s+\S+|\s*\d+\.\s+\S+)/gm);
   if (listMatches && listMatches.length >= 2) return true;
 
   // 7. Bold/Italic formatting across text
-  if (/\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~/.test(trimmed)) return true;
+  if (/\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~/.test(sample)) return true;
 
   return false;
 }

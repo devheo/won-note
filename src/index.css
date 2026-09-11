@@ -331,16 +331,18 @@
   width: 100%;
   margin: 1.25rem 0;
   overflow: hidden;
-  border-radius: 6px;
-  border: 1px solid var(--table-border-color, #d1d5db) !important;
+  border-radius: 4px;
 }
 
-.dark .tiptap table,
-.dark .wonbee-rendered-table table,
-.dark .wonbee-rich-table {
-  border-color: var(--table-border-color, #444444) !important;
+/* Default border variables */
+:root {
+  --table-border-color: #cbd5e1;
+}
+.dark {
+  --table-border-color: #475569;
 }
 
+/* Common Cell Styles */
 .tiptap table td,
 .tiptap table th,
 .wonbee-rendered-table td,
@@ -348,7 +350,6 @@
 .wonbee-rich-table td,
 .wonbee-rich-table th {
   min-width: 1.5em;
-  border: 1px solid var(--table-border-color, #d1d5db) !important;
   padding: 8px 12px;
   vertical-align: middle;
   box-sizing: border-box;
@@ -357,101 +358,187 @@
   line-height: 1.45;
 }
 
-.dark .tiptap table td,
-.dark .tiptap table th,
-.dark .wonbee-rendered-table td,
-.dark .wonbee-rendered-table th,
-.dark .wonbee-rich-table td,
-.dark .wonbee-rich-table th {
-  border-color: var(--table-border-color, #444444) !important;
+/* Explicit Table Border Color Priority */
+table[data-border-color],
+table[style*="--table-border-color"],
+.tiptap table[data-border-color],
+.tiptap table[style*="--table-border-color"],
+.wonbee-rendered-table table[data-border-color],
+.wonbee-rendered-table table[style*="--table-border-color"] {
+  border-color: var(--table-border-color) !important;
+  outline-color: var(--table-border-color) !important;
+}
+
+/* Base Fallback Border if no style attribute is specified */
+.tiptap table:not([data-border-style]),
+.wonbee-rendered-table table:not([data-border-style]),
+.wonbee-rich-table:not([data-border-style]) {
+  border: 1px solid var(--table-border-color, #cbd5e1) !important;
+}
+.tiptap table:not([data-border-style]) td,
+.tiptap table:not([data-border-style]) th,
+.wonbee-rendered-table table:not([data-border-style]) td,
+.wonbee-rendered-table table:not([data-border-style]) th,
+.wonbee-rich-table:not([data-border-style]) td,
+.wonbee-rich-table:not([data-border-style]) th {
+  border: 1px solid var(--table-border-color, #cbd5e1) !important;
 }
 
 /* Table Border Variations */
-/* 1. All Borders (Default Full Grid) */
-.tiptap table.wonbee-table-border-all,
-.tiptap table[data-border-style="all"] {
-  border: 1px solid var(--table-border-color, #d1d5db) !important;
+
+/* 1. All Borders (모든 테두리 - 기본 완전 격자) */
+table.wonbee-table-border-all,
+table[data-border-style="all"] {
+  border: 1px solid var(--table-border-color, #cbd5e1) !important;
 }
-.tiptap table.wonbee-table-border-all td,
-.tiptap table.wonbee-table-border-all th,
-.tiptap table[data-border-style="all"] td,
-.tiptap table[data-border-style="all"] th {
-  border: 1px solid var(--table-border-color, #d1d5db) !important;
+table.wonbee-table-border-all td,
+table.wonbee-table-border-all th,
+table[data-border-style="all"] td,
+table[data-border-style="all"] th {
+  border: 1px solid var(--table-border-color, #cbd5e1) !important;
+}
+.dark table.wonbee-table-border-all,
+.dark table[data-border-style="all"] {
+  border-color: var(--table-border-color, #475569) !important;
+}
+.dark table.wonbee-table-border-all td,
+.dark table.wonbee-table-border-all th,
+.dark table[data-border-style="all"] td,
+.dark table[data-border-style="all"] th {
+  border-color: var(--table-border-color, #475569) !important;
 }
 
-/* 2. Outer Border Only (바깥쪽 테두리만) */
+/* 2. Outer Border Only (바깥쪽 테두리만) - 오직 바깥 4면에만 또렷한 2px 실선, 내부 셀은 완전히 테두리 없음 */
+table.wonbee-table-border-outer,
+table[data-border-style="outer"],
 .tiptap table.wonbee-table-border-outer,
 .tiptap table[data-border-style="outer"],
-.wonbee-rendered-table table.wonbee-table-border-outer {
-  border: 1.5px solid var(--table-border-color, #d1d5db) !important;
+.wonbee-rendered-table table.wonbee-table-border-outer,
+.wonbee-rendered-table table[data-border-style="outer"] {
+  border: 2.5px solid var(--table-border-color, #475569) !important;
+  outline: 1px solid var(--table-border-color, #475569) !important;
 }
+.dark table.wonbee-table-border-outer,
+.dark table[data-border-style="outer"],
+.dark .tiptap table.wonbee-table-border-outer,
+.dark .tiptap table[data-border-style="outer"] {
+  border-color: var(--table-border-color, #94a3b8) !important;
+  outline-color: var(--table-border-color, #94a3b8) !important;
+}
+
+/* 내부 모든 셀은 테두리 제거 (에디터 & 뷰어 모두 적용) */
+table.wonbee-table-border-outer td,
+table.wonbee-table-border-outer th,
+table[data-border-style="outer"] td,
+table[data-border-style="outer"] th,
 .tiptap table.wonbee-table-border-outer td,
 .tiptap table.wonbee-table-border-outer th,
 .tiptap table[data-border-style="outer"] td,
-.tiptap table[data-border-style="outer"] th {
-  border: 1px dashed var(--table-border-color, #e5e7eb) !important;
+.tiptap table[data-border-style="outer"] th,
+.wonbee-rendered-table table.wonbee-table-border-outer td,
+.wonbee-rendered-table table.wonbee-table-border-outer th,
+.wonbee-rendered-table table[data-border-style="outer"] td,
+.wonbee-rendered-table table[data-border-style="outer"] th {
+  border: none !important;
+  border-width: 0 !important;
 }
-.dark .tiptap table.wonbee-table-border-outer td,
-.dark .tiptap table.wonbee-table-border-outer th,
-.dark .tiptap table[data-border-style="outer"] td,
-.dark .tiptap table[data-border-style="outer"] th {
-  border: 1px dashed var(--table-border-color, #383838) !important;
+/* 에디터에서 마우스 호버 시에만 미세한 셀 영역 가이드 */
+.tiptap table[data-border-style="outer"] td:hover,
+.tiptap table[data-border-style="outer"] th:hover {
+  outline: 1px dashed rgba(160, 160, 160, 0.4);
+  outline-offset: -1px;
 }
 
-/* 3. Thick Outer Border (굵은 바깥 테두리) */
+/* 3. Thick Outer Border (굵은 바깥 테두리) - 바깥 3.5px 굵은 실선, 내부 셀은 1px 일반 실선 */
+table.wonbee-table-border-thick,
+table[data-border-style="thick"],
 .tiptap table.wonbee-table-border-thick,
 .tiptap table[data-border-style="thick"],
-.wonbee-rendered-table table.wonbee-table-border-thick {
-  border: 2.5px solid var(--table-border-color, #9ca3af) !important;
+.wonbee-rendered-table table.wonbee-table-border-thick,
+.wonbee-rendered-table table[data-border-style="thick"] {
+  border: 3.5px solid var(--table-border-color, #334155) !important;
+  outline: 1px solid var(--table-border-color, #334155) !important;
 }
-.dark .tiptap table.wonbee-table-border-thick,
-.dark .tiptap table[data-border-style="thick"] {
-  border-color: var(--table-border-color, #555555) !important;
+.dark table.wonbee-table-border-thick,
+.dark table[data-border-style="thick"] {
+  border-color: var(--table-border-color, #cbd5e1) !important;
+  outline-color: var(--table-border-color, #cbd5e1) !important;
+}
+table.wonbee-table-border-thick td,
+table.wonbee-table-border-thick th,
+table[data-border-style="thick"] td,
+table[data-border-style="thick"] th {
+  border: 1px solid var(--table-border-color, #cbd5e1) !important;
+}
+.dark table.wonbee-table-border-thick td,
+.dark table.wonbee-table-border-thick th,
+.dark table[data-border-style="thick"] td,
+.dark table[data-border-style="thick"] th {
+  border-color: var(--table-border-color, #475569) !important;
 }
 
-/* 4. Horizontal Separators Only (가로줄만) */
+/* 4. Horizontal Separators Only (가로 구분선만) - 위/아래 2px 실선, 행 구분선 1px, 세로선 완전 제거 */
+table.wonbee-table-border-horizontal,
+table[data-border-style="horizontal"],
 .tiptap table.wonbee-table-border-horizontal,
 .tiptap table[data-border-style="horizontal"],
-.wonbee-rendered-table table.wonbee-table-border-horizontal {
+.wonbee-rendered-table table.wonbee-table-border-horizontal,
+.wonbee-rendered-table table[data-border-style="horizontal"] {
+  border-top: 2px solid var(--table-border-color, #64748b) !important;
+  border-bottom: 2px solid var(--table-border-color, #64748b) !important;
   border-left: none !important;
   border-right: none !important;
-  border-top: 2px solid var(--table-border-color, #d1d5db) !important;
-  border-bottom: 2px solid var(--table-border-color, #d1d5db) !important;
+  outline: none !important;
 }
+table.wonbee-table-border-horizontal td,
+table.wonbee-table-border-horizontal th,
+table[data-border-style="horizontal"] td,
+table[data-border-style="horizontal"] th,
 .tiptap table.wonbee-table-border-horizontal td,
 .tiptap table.wonbee-table-border-horizontal th,
 .tiptap table[data-border-style="horizontal"] td,
-.tiptap table[data-border-style="horizontal"] th {
+.tiptap table[data-border-style="horizontal"] th,
+.wonbee-rendered-table table.wonbee-table-border-horizontal td,
+.wonbee-rendered-table table.wonbee-table-border-horizontal th,
+.wonbee-rendered-table table[data-border-style="horizontal"] td,
+.wonbee-rendered-table table[data-border-style="horizontal"] th {
   border-left: none !important;
   border-right: none !important;
-  border-top: 1px solid var(--table-border-color, #e5e7eb) !important;
-  border-bottom: 1px solid var(--table-border-color, #e5e7eb) !important;
+  border-top: 1px solid var(--table-border-color, #cbd5e1) !important;
+  border-bottom: 1px solid var(--table-border-color, #cbd5e1) !important;
 }
-.dark .tiptap table.wonbee-table-border-horizontal td,
-.dark .tiptap table.wonbee-table-border-horizontal th,
-.dark .tiptap table[data-border-style="horizontal"] td,
-.dark .tiptap table[data-border-style="horizontal"] th {
-  border-top-color: var(--table-border-color, #383838) !important;
-  border-bottom-color: var(--table-border-color, #383838) !important;
+.dark table.wonbee-table-border-horizontal td,
+.dark table.wonbee-table-border-horizontal th,
+.dark table[data-border-style="horizontal"] td,
+.dark table[data-border-style="horizontal"] th {
+  border-top-color: var(--table-border-color, #475569) !important;
+  border-bottom-color: var(--table-border-color, #475569) !important;
 }
 
-/* 5. No Borders (테두리 없음 - 옅은 가이드 점선) */
+/* 5. No Borders (테두리 없음) */
+table.wonbee-table-border-none,
+table[data-border-style="none"],
 .tiptap table.wonbee-table-border-none,
 .tiptap table[data-border-style="none"],
-.wonbee-rendered-table table.wonbee-table-border-none {
+.wonbee-rendered-table table.wonbee-table-border-none,
+.wonbee-rendered-table table[data-border-style="none"] {
   border: none !important;
+  outline: none !important;
 }
-.tiptap table.wonbee-table-border-none td,
-.tiptap table.wonbee-table-border-none th,
+table.wonbee-table-border-none td,
+table.wonbee-table-border-none th,
+table[data-border-style="none"] td,
+table[data-border-style="none"] th,
+.wonbee-rendered-table table.wonbee-table-border-none td,
+.wonbee-rendered-table table.wonbee-table-border-none th,
+.wonbee-rendered-table table[data-border-style="none"] td,
+.wonbee-rendered-table table[data-border-style="none"] th {
+  border: none !important;
+  border-width: 0 !important;
+}
 .tiptap table[data-border-style="none"] td,
 .tiptap table[data-border-style="none"] th {
-  border: 1px dotted rgba(200, 200, 200, 0.3) !important;
-}
-.dark .tiptap table.wonbee-table-border-none td,
-.dark .tiptap table.wonbee-table-border-none th,
-.dark .tiptap table[data-border-style="none"] td,
-.dark .tiptap table[data-border-style="none"] th {
-  border: 1px dotted rgba(80, 80, 80, 0.4) !important;
+  border: 1px dotted rgba(160, 160, 160, 0.25) !important;
 }
 
 .tiptap table th {
@@ -494,51 +581,75 @@
   cursor: col-resize;
 }
 
-/* Prism.js Syntax Highlighting Theme (Dark Elegant Theme) */
+/* Prism.js Syntax Highlighting Theme - High Visibility & Contrast */
 code[class*="language-"],
 pre[class*="language-"] {
-  color: #e2e8f0;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'JetBrains Mono', 'Fira Code', Menlo, Monaco, Consolas, monospace;
   direction: ltr;
   text-align: left;
   white-space: pre-wrap;
   word-spacing: normal;
-  word-break: break-all;
-  line-height: 1.5;
-  tab-size: 2;
+  word-break: normal;
+  line-height: 1.6;
+  tab-size: 4;
   hyphens: none;
 }
 
-/* SQL & Code Syntax Tokens (Prism Light & Dark) */
+/* Light theme default text color for code blocks */
+code[class*="language-"],
+pre[class*="language-"] {
+  color: #0f172a; /* High-contrast Slate-900 in light mode */
+}
+
+/* Dark theme & Dark Code Block text color */
+.dark code[class*="language-"],
+.dark pre[class*="language-"],
+.code-theme-dark code[class*="language-"],
+.code-theme-dark pre[class*="language-"],
+[data-code-theme="dark"] code[class*="language-"],
+[data-code-theme="dark"] pre[class*="language-"] {
+  color: #f1f5f9 !important; /* Crisp Slate-100 in dark mode */
+}
+
+/* SQL & Code Syntax Tokens (Prism Light Mode - Deep, Vivid High Contrast) */
 .token.comment,
 .token.prolog,
 .token.doctype,
 .token.cdata {
-  color: #6e7781;
+  color: #64748b !important;
   font-style: italic;
 }
 
 .token.punctuation {
-  color: #57606a;
+  color: #334155 !important;
 }
 
 .token.property,
-.token.tag,
-.token.boolean,
-.token.number,
 .token.constant,
 .token.symbol,
 .token.deleted {
-  color: #0969da;
+  color: #ea580c !important;
+  font-weight: 600;
+}
+
+.token.boolean,
+.token.number {
+  color: #ea580c !important;
+  font-weight: 600;
+}
+
+.token.tag {
+  color: #dc2626 !important;
+  font-weight: 600;
 }
 
 .token.selector,
 .token.attr-name,
 .token.string,
 .token.char,
-.token.builtin,
 .token.inserted {
-  color: #a31515;
+  color: #16a34a !important;
+  font-weight: 500;
 }
 
 .token.operator,
@@ -546,26 +657,32 @@ pre[class*="language-"] {
 .token.url,
 .language-css .token.string,
 .style .token.string {
-  color: #0550ae;
+  color: #db2777 !important;
+  font-weight: 600;
 }
 
 .token.atrule,
 .token.attr-value,
 .token.keyword {
-  color: #0550ae;
+  color: #0284c7 !important;
+  font-weight: 700;
+}
+
+.token.function {
+  color: #d97706 !important;
   font-weight: 600;
 }
 
-.token.function,
-.token.class-name {
-  color: #795e26;
+.token.class-name,
+.token.builtin {
+  color: #0891b2 !important;
   font-weight: 600;
 }
 
 .token.regex,
 .token.important,
 .token.variable {
-  color: #8250df;
+  color: #7c3aed !important;
 }
 
 .token.important,
@@ -577,101 +694,146 @@ pre[class*="language-"] {
   font-style: italic;
 }
 
-/* Dark Mode Tokens Override */
+/* Prism Tokens - Dark Mode & Dark Code Block (Vibrant, Luminous High-Contrast IDE Theme) */
 .dark .token.comment,
 .dark .token.prolog,
 .dark .token.doctype,
-.dark .token.cdata {
-  color: #94a3b8;
+.dark .token.cdata,
+.code-theme-dark .token.comment,
+.code-theme-dark .token.prolog,
+.code-theme-dark .token.doctype,
+.code-theme-dark .token.cdata,
+[data-code-theme="dark"] .token.comment,
+[data-code-theme="dark"] .token.prolog,
+[data-code-theme="dark"] .token.doctype,
+[data-code-theme="dark"] .token.cdata {
+  color: #94a3b8 !important;
+  font-style: italic;
 }
 
-.dark .token.punctuation {
-  color: #64748b;
+.dark .token.punctuation,
+.code-theme-dark .token.punctuation,
+[data-code-theme="dark"] .token.punctuation {
+  color: #cbd5e1 !important;
 }
 
 .dark .token.property,
-.dark .token.tag,
-.dark .token.boolean,
-.dark .token.number,
 .dark .token.constant,
 .dark .token.symbol,
-.dark .token.deleted {
-  color: #fb923c;
+.dark .token.deleted,
+.code-theme-dark .token.property,
+.code-theme-dark .token.constant,
+.code-theme-dark .token.symbol,
+.code-theme-dark .token.deleted,
+[data-code-theme="dark"] .token.property,
+[data-code-theme="dark"] .token.constant,
+[data-code-theme="dark"] .token.symbol,
+[data-code-theme="dark"] .token.deleted {
+  color: #fb923c !important;
+  font-weight: 600;
+}
+
+.dark .token.boolean,
+.dark .token.number,
+.code-theme-dark .token.boolean,
+.code-theme-dark .token.number,
+[data-code-theme="dark"] .token.boolean,
+[data-code-theme="dark"] .token.number {
+  color: #fb923c !important;
+  font-weight: 600;
+}
+
+.dark .token.tag,
+.code-theme-dark .token.tag,
+[data-code-theme="dark"] .token.tag {
+  color: #f87171 !important;
+  font-weight: 600;
 }
 
 .dark .token.selector,
 .dark .token.attr-name,
 .dark .token.string,
 .dark .token.char,
-.dark .token.builtin,
-.dark .token.inserted {
-  color: #4ade80;
+.dark .token.inserted,
+.code-theme-dark .token.selector,
+.code-theme-dark .token.attr-name,
+.code-theme-dark .token.string,
+.code-theme-dark .token.char,
+.code-theme-dark .token.inserted,
+[data-code-theme="dark"] .token.selector,
+[data-code-theme="dark"] .token.attr-name,
+[data-code-theme="dark"] .token.string,
+[data-code-theme="dark"] .token.char,
+[data-code-theme="dark"] .token.inserted {
+  color: #4ade80 !important;
+  font-weight: 500;
 }
 
 .dark .token.operator,
 .dark .token.entity,
 .dark .token.url,
 .dark .language-css .token.string,
-.dark .style .token.string {
-  color: #38bdf8;
+.dark .style .token.string,
+.code-theme-dark .token.operator,
+.code-theme-dark .token.entity,
+.code-theme-dark .token.url,
+.code-theme-dark .language-css .token.string,
+.code-theme-dark .style .token.string,
+[data-code-theme="dark"] .token.operator,
+[data-code-theme="dark"] .token.entity,
+[data-code-theme="dark"] .token.url,
+[data-code-theme="dark"] .language-css .token.string,
+[data-code-theme="dark"] .style .token.string {
+  color: #f472b6 !important;
+  font-weight: 600;
 }
 
 .dark .token.atrule,
 .dark .token.attr-value,
-.dark .token.keyword {
-  color: #38bdf8;
-  font-weight: 600;
+.dark .token.keyword,
+.code-theme-dark .token.atrule,
+.code-theme-dark .token.attr-value,
+.code-theme-dark .token.keyword,
+[data-code-theme="dark"] .token.atrule,
+[data-code-theme="dark"] .token.attr-value,
+[data-code-theme="dark"] .token.keyword {
+  color: #38bdf8 !important;
+  font-weight: 700;
 }
 
 .dark .token.function,
-.dark .token.class-name {
-  color: #facc15;
+.code-theme-dark .token.function,
+[data-code-theme="dark"] .token.function {
+  color: #facc15 !important;
+  font-weight: 600;
+}
+
+.dark .token.class-name,
+.dark .token.builtin,
+.code-theme-dark .token.class-name,
+.code-theme-dark .token.builtin,
+[data-code-theme="dark"] .token.class-name,
+[data-code-theme="dark"] .token.builtin {
+  color: #2dd4bf !important;
   font-weight: 600;
 }
 
 .dark .token.regex,
 .dark .token.important,
-.dark .token.variable {
-  color: #c084fc;
+.dark .token.variable,
+.code-theme-dark .token.regex,
+.code-theme-dark .token.important,
+.code-theme-dark .token.variable,
+[data-code-theme="dark"] .token.regex,
+[data-code-theme="dark"] .token.important,
+[data-code-theme="dark"] .token.variable {
+  color: #c084fc !important;
 }
 
 /* TipTap Table, Cell Formatting & Column Resize Handles */
 .tiptap .tableWrapper {
   overflow-x: auto;
   margin: 0.75rem 0;
-}
-
-.tiptap table {
-  border-collapse: collapse;
-  table-layout: fixed;
-  width: 100%;
-  margin: 0;
-  overflow: hidden;
-}
-
-.tiptap table td,
-.tiptap table th {
-  min-width: 2em;
-  border: 1px solid #d6d3d1;
-  padding: 6px 10px;
-  vertical-align: top;
-  box-sizing: border-box;
-  position: relative;
-}
-
-.dark .tiptap table td,
-.dark .tiptap table th {
-  border-color: #404040;
-}
-
-.tiptap table th {
-  font-weight: 600;
-  text-align: left;
-  background-color: #f5f5f4;
-}
-
-.dark .tiptap table th {
-  background-color: #262626;
 }
 
 .tiptap table .selectedCell:after {
@@ -804,67 +966,83 @@ ul[data-type="taskList"] li > div {
   flex: 1 1 auto;
 }
 
-/* TipTap CodeBlock Lowlight Syntax Highlighting (Light Theme by Default) */
+/* TipTap CodeBlock Lowlight Syntax Highlighting (Light Theme - Deep, Vivid High Contrast) */
 .hljs-comment,
 .hljs-quote {
-  color: #6e7781 !important;
+  color: #64748b !important;
   font-style: italic;
 }
 
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-subst {
-  color: #0550ae !important;
-  font-weight: 600;
+  color: #0284c7 !important;
+  font-weight: 700;
 }
 
 .hljs-number,
-.hljs-literal {
-  color: #0969da !important;
+.hljs-literal,
+.hljs-boolean {
+  color: #ea580c !important;
+  font-weight: 600;
 }
 
 .hljs-string,
-.hljs-doctag {
-  color: #a31515 !important;
+.hljs-doctag,
+.hljs-regexp,
+.hljs-template-tag {
+  color: #16a34a !important;
+  font-weight: 500;
 }
 
 .hljs-title,
-.hljs-section,
-.hljs-selector-id {
-  color: #795e26 !important;
+.hljs-title.function_,
+.hljs-function,
+.hljs-section {
+  color: #d97706 !important;
+  font-weight: 600;
 }
 
 .hljs-type,
-.hljs-class .hljs-title {
-  color: #267f99 !important;
+.hljs-title.class_,
+.hljs-class .hljs-title,
+.hljs-built_in {
+  color: #0891b2 !important;
+  font-weight: 600;
 }
 
 .hljs-variable,
-.hljs-template-variable {
-  color: #001080 !important;
-}
-
-.hljs-function,
-.hljs-params {
-  color: #795e26 !important;
-}
-
+.hljs-template-variable,
+.hljs-params,
 .hljs-attr,
-.hljs-attribute {
-  color: #116329 !important;
+.hljs-attribute,
+.hljs-property {
+  color: #7c3aed !important;
 }
 
-.hljs-built_in {
-  color: #0550ae !important;
+.hljs-operator {
+  color: #db2777 !important;
+  font-weight: 600;
+}
+
+.hljs-punctuation {
+  color: #334155 !important;
 }
 
 .hljs-symbol,
 .hljs-bullet {
-  color: #8250df !important;
+  color: #ea580c !important;
 }
 
-.hljs-meta {
-  color: #6e7781 !important;
+.hljs-meta,
+.hljs-meta .hljs-keyword {
+  color: #6366f1 !important;
+}
+
+.hljs-tag,
+.hljs-name {
+  color: #dc2626 !important;
+  font-weight: 600;
 }
 
 .hljs-emphasis {
@@ -875,67 +1053,151 @@ ul[data-type="taskList"] li > div {
   font-weight: bold;
 }
 
-/* TipTap CodeBlock Lowlight (Dark Mode Override) */
+/* TipTap CodeBlock Lowlight (Dark Mode & Dark Code Block - Luminous, High Contrast IDE Theme) */
 .dark .hljs-comment,
-.dark .hljs-quote {
-  color: #6a9955 !important;
+.dark .hljs-quote,
+.code-theme-dark .hljs-comment,
+.code-theme-dark .hljs-quote,
+[data-code-theme="dark"] .hljs-comment,
+[data-code-theme="dark"] .hljs-quote {
+  color: #94a3b8 !important;
   font-style: italic;
 }
 
 .dark .hljs-keyword,
 .dark .hljs-selector-tag,
-.dark .hljs-subst {
-  color: #569cd6 !important;
-  font-weight: 600;
+.dark .hljs-subst,
+.code-theme-dark .hljs-keyword,
+.code-theme-dark .hljs-selector-tag,
+.code-theme-dark .hljs-subst,
+[data-code-theme="dark"] .hljs-keyword,
+[data-code-theme="dark"] .hljs-selector-tag,
+[data-code-theme="dark"] .hljs-subst {
+  color: #38bdf8 !important;
+  font-weight: 700;
 }
 
 .dark .hljs-number,
-.dark .hljs-literal {
-  color: #b5cea8 !important;
+.dark .hljs-literal,
+.dark .hljs-boolean,
+.code-theme-dark .hljs-number,
+.code-theme-dark .hljs-literal,
+.code-theme-dark .hljs-boolean,
+[data-code-theme="dark"] .hljs-number,
+[data-code-theme="dark"] .hljs-literal,
+[data-code-theme="dark"] .hljs-boolean {
+  color: #fb923c !important;
+  font-weight: 600;
 }
 
 .dark .hljs-string,
-.dark .hljs-doctag {
-  color: #ce9178 !important;
+.dark .hljs-doctag,
+.dark .hljs-regexp,
+.dark .hljs-template-tag,
+.code-theme-dark .hljs-string,
+.code-theme-dark .hljs-doctag,
+.code-theme-dark .hljs-regexp,
+.code-theme-dark .hljs-template-tag,
+[data-code-theme="dark"] .hljs-string,
+[data-code-theme="dark"] .hljs-doctag,
+[data-code-theme="dark"] .hljs-regexp,
+[data-code-theme="dark"] .hljs-template-tag {
+  color: #4ade80 !important;
+  font-weight: 500;
 }
 
 .dark .hljs-title,
+.dark .hljs-title.function_,
+.dark .hljs-function,
 .dark .hljs-section,
-.dark .hljs-selector-id {
-  color: #dcdcaa !important;
+.code-theme-dark .hljs-title,
+.code-theme-dark .hljs-title.function_,
+.code-theme-dark .hljs-function,
+.code-theme-dark .hljs-section,
+[data-code-theme="dark"] .hljs-title,
+[data-code-theme="dark"] .hljs-title.function_,
+[data-code-theme="dark"] .hljs-function,
+[data-code-theme="dark"] .hljs-section {
+  color: #facc15 !important;
+  font-weight: 600;
 }
 
 .dark .hljs-type,
-.dark .hljs-class .hljs-title {
-  color: #4ec9b0 !important;
+.dark .hljs-title.class_,
+.dark .hljs-class .hljs-title,
+.dark .hljs-built_in,
+.code-theme-dark .hljs-type,
+.code-theme-dark .hljs-title.class_,
+.code-theme-dark .hljs-class .hljs-title,
+.code-theme-dark .hljs-built_in,
+[data-code-theme="dark"] .hljs-type,
+[data-code-theme="dark"] .hljs-title.class_,
+[data-code-theme="dark"] .hljs-class .hljs-title,
+[data-code-theme="dark"] .hljs-built_in {
+  color: #2dd4bf !important;
+  font-weight: 600;
 }
 
 .dark .hljs-variable,
-.dark .hljs-template-variable {
-  color: #9cdcfe !important;
-}
-
-.dark .hljs-function,
-.dark .hljs-params {
-  color: #dcdcaa !important;
-}
-
+.dark .hljs-template-variable,
+.dark .hljs-params,
 .dark .hljs-attr,
-.dark .hljs-attribute {
-  color: #9cdcfe !important;
+.dark .hljs-attribute,
+.dark .hljs-property,
+.code-theme-dark .hljs-variable,
+.code-theme-dark .hljs-template-variable,
+.code-theme-dark .hljs-params,
+.code-theme-dark .hljs-attr,
+.code-theme-dark .hljs-attribute,
+.code-theme-dark .hljs-property,
+[data-code-theme="dark"] .hljs-variable,
+[data-code-theme="dark"] .hljs-template-variable,
+[data-code-theme="dark"] .hljs-params,
+[data-code-theme="dark"] .hljs-attr,
+[data-code-theme="dark"] .hljs-attribute,
+[data-code-theme="dark"] .hljs-property {
+  color: #c084fc !important;
 }
 
-.dark .hljs-built_in {
-  color: #4ec9b0 !important;
+.dark .hljs-operator,
+.code-theme-dark .hljs-operator,
+[data-code-theme="dark"] .hljs-operator {
+  color: #f472b6 !important;
+  font-weight: 600;
+}
+
+.dark .hljs-punctuation,
+.code-theme-dark .hljs-punctuation,
+[data-code-theme="dark"] .hljs-punctuation {
+  color: #cbd5e1 !important;
 }
 
 .dark .hljs-symbol,
-.dark .hljs-bullet {
-  color: #c586c0 !important;
+.dark .hljs-bullet,
+.code-theme-dark .hljs-symbol,
+.code-theme-dark .hljs-bullet,
+[data-code-theme="dark"] .hljs-symbol,
+[data-code-theme="dark"] .hljs-bullet {
+  color: #fb923c !important;
 }
 
-.dark .hljs-meta {
-  color: #9b9b9b !important;
+.dark .hljs-meta,
+.dark .hljs-meta .hljs-keyword,
+.code-theme-dark .hljs-meta,
+.code-theme-dark .hljs-meta .hljs-keyword,
+[data-code-theme="dark"] .hljs-meta,
+[data-code-theme="dark"] .hljs-meta .hljs-keyword {
+  color: #a78bfa !important;
+}
+
+.dark .hljs-tag,
+.dark .hljs-name,
+.code-theme-dark .hljs-tag,
+.code-theme-dark .hljs-name,
+[data-code-theme="dark"] .hljs-tag,
+[data-code-theme="dark"] .hljs-name {
+  color: #f87171 !important;
+  font-weight: 600;
 }
 
 
