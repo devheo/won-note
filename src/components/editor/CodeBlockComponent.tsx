@@ -5,17 +5,18 @@ import { formatJavaOrGeneralCode, detectLanguage } from '../../utils/codeHighlig
 
 const COMMON_LANGUAGES = [
   { value: 'auto', label: '⚡ 자동 언어 감지' },
+  { value: 'c', label: 'C / Pro*C' },
+  { value: 'cpp', label: 'C++' },
   { value: 'sql', label: 'SQL' },
   { value: 'java', label: 'Java' },
   { value: 'javascript', label: 'JavaScript' },
   { value: 'typescript', label: 'TypeScript' },
   { value: 'python', label: 'Python' },
+  { value: 'bash', label: 'Bash / Shell' },
   { value: 'json', label: 'JSON' },
   { value: 'html', label: 'HTML / XML' },
   { value: 'css', label: 'CSS' },
-  { value: 'bash', label: 'Bash / Shell' },
   { value: 'csharp', label: 'C#' },
-  { value: 'cpp', label: 'C / C++' },
   { value: 'plaintext', label: '일반 텍스트' },
 ];
 
@@ -99,14 +100,26 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
   // Automatically detect language from code content when in 'auto' mode
   const detectedInfo = useMemo(() => {
     const text = node?.textContent || '';
-    if (!text.trim()) return { language: 'java', isCode: false };
+    if (!text.trim()) return { language: 'plaintext', isCode: false };
     const detected = detectLanguage(text);
+    if (detected.isCode) {
+      return {
+        language: detected.language,
+        isCode: true,
+      };
+    }
     const sample = text.length > 32000 ? text.slice(0, 32000) : text;
     const hasJavaPattern = /\b(?:package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|private\s+|protected\s+|@Override|public\s+static\s+final)\b/.test(sample);
-    const lang = detected.isCode ? detected.language : (hasJavaPattern ? 'java' : 'java');
+    if (hasJavaPattern) {
+      return { language: 'java', isCode: true };
+    }
+    const hasSqlPattern = /\b(?:SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(sample);
+    if (hasSqlPattern) {
+      return { language: 'sql', isCode: true };
+    }
     return {
-      language: lang,
-      isCode: detected.isCode || hasJavaPattern,
+      language: 'plaintext',
+      isCode: false,
     };
   }, [node?.textContent]);
 

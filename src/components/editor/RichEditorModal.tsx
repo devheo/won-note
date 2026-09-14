@@ -28,7 +28,13 @@ import { delimitedTextToHtmlTable } from '../../utils/csvParser';
 import { compressAndResizeImage } from '../../utils/imageOptimizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
-import { markdownToHtml, htmlToMarkdown, isLikelyMarkdown } from '../../utils/markdownHelper';
+import {
+  markdownToHtml,
+  htmlToMarkdown,
+  isLikelyMarkdown,
+  MARKDOWN_LANGUAGE_TEMPLATES,
+  MarkdownLanguageTemplate,
+} from '../../utils/markdownHelper';
 import {
   X,
   Bold,
@@ -1381,6 +1387,74 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     setTimeout(() => setToastMessage(null), 2500);
   }, [editor, getSelectedText]);
 
+  const handleInsertCBlock = useCallback(() => {
+    if (!editor) return;
+    const selected = getSelectedText();
+    if (selected && selected.trim() !== '') {
+      if (editor.isActive('codeBlock')) {
+        editor.chain().focus().updateAttributes('codeBlock', { language: 'c' }).run();
+      } else {
+        editor.chain().focus().setCodeBlock({ language: 'c' }).run();
+      }
+      setToastMessage('✓ 선택 영역이 C / Pro*C 코드 블록으로 변환되었습니다.');
+      setTimeout(() => setToastMessage(null), 2500);
+      return;
+    }
+
+    const sampleC = `/* C / Pro*C 전문 처리 소스 코드 */\n#include <stdio.h>\n#include <string.h>\n\nint processTransaction(const char* szFileID, char* szXCH_DIS, char* szPRC_PRG_DIS) {\n    if (!memcmp(szFileID, "TC33", 4)) { /* 미지급 전문 */\n        writeLog("미지급 전문 처리 [%s]", szFileID);\n        memcpy(szXCH_DIS, "21", sizeof(szXCH_DIS) - 1);  /* 21: 미지급 */\n    } else {\n        writeLog("일반 전문 처리 [%s]", szFileID);\n        memcpy(szXCH_DIS, "22", sizeof(szXCH_DIS) - 1);  /* 22: 일반 */\n    }\n    memcpy(szPRC_PRG_DIS, "31", sizeof(szPRC_PRG_DIS) - 1);  /* 31: 결제원수신 */\n    return 0;\n}`;
+    editor.chain().focus().insertContent({
+      type: 'codeBlock',
+      attrs: { language: 'c' },
+      content: [{ type: 'text', text: sampleC }],
+    }).run();
+    setToastMessage('✓ C / Pro*C 코드 블록 템플릿이 삽입되었습니다.');
+    setTimeout(() => setToastMessage(null), 2500);
+  }, [editor, getSelectedText]);
+
+  const handleInsertPythonBlock = useCallback(() => {
+    if (!editor) return;
+    const selected = getSelectedText();
+    if (selected && selected.trim() !== '') {
+      if (editor.isActive('codeBlock')) {
+        editor.chain().focus().updateAttributes('codeBlock', { language: 'python' }).run();
+      } else {
+        editor.chain().focus().setCodeBlock({ language: 'python' }).run();
+      }
+      setToastMessage('✓ 선택 영역이 Python 코드 블록으로 변환되었습니다.');
+      setTimeout(() => setToastMessage(null), 2500);
+      return;
+    }
+
+    const samplePython = `# Python Data Pipeline\nimport os\nimport pandas as pd\n\ndef process_records(file_path: str) -> pd.DataFrame:\n    df = pd.read_csv(file_path)\n    summary = df.groupby('status').agg({'amount': 'sum', 'id': 'count'})\n    return summary\n\nif __name__ == '__main__':\n    print("데이터 처리 파이프라인 기동 완료")\n`;
+    editor.chain().focus().insertContent({
+      type: 'codeBlock',
+      attrs: { language: 'python' },
+      content: [{ type: 'text', text: samplePython }],
+    }).run();
+    setToastMessage('✓ Python 코드 블록 템플릿이 삽입되었습니다.');
+    setTimeout(() => setToastMessage(null), 2500);
+  }, [editor, getSelectedText]);
+
+  const handleInsertMarkdownTemplate = useCallback((tpl: MarkdownLanguageTemplate) => {
+    if (!editor) return;
+    const html = markdownToHtml(tpl.markdown);
+    editor.chain().focus().insertContent(html).run();
+    setToastMessage(`✓ ${tpl.name} 마크다운 템플릿이 삽입되었습니다. (코드 블록 하이라이팅 적용)`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, [editor]);
+
+  const handleDownloadMarkdownTemplate = useCallback((tpl: MarkdownLanguageTemplate) => {
+    const blob = new Blob([tpl.markdown], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = tpl.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    setToastMessage(`✓ ${tpl.filename} 마크다운 템플릿 파일이 다운로드되었습니다.`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, []);
+
   const handlePasteCodeFromClipboard = async () => {
     if (!editor) return;
     try {
@@ -2132,24 +2206,27 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
                   {/* Language Templates Grid */}
                   <div>
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-2">
-                      주요 언어 코드 블록 템플릿
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-300">
+                        주요 언어 코드 블록 템플릿
+                      </span>
+                      <span className="text-[10px] text-stone-400">선택 영역 변환 또는 템플릿 삽입</span>
                     </div>
                     <div className="grid grid-cols-2 gap-2">
                       <button
                         type="button"
                         onClick={() => {
-                          handleInsertBashBlock();
+                          handleInsertCBlock();
                           setActiveTopDialog(null);
                         }}
                         className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
                       >
-                        <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                          <Terminal className="w-4 h-4" />
+                        <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                          <Cpu className="w-4 h-4" />
                         </div>
                         <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Bash / Shell</div>
-                          <div className="text-[10px] text-stone-400">명령어 & 쉘 스크립트</div>
+                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">C / Pro*C</div>
+                          <div className="text-[10px] text-stone-400">전문 처리 & 메모리 복사</div>
                         </div>
                       </button>
 
@@ -2183,7 +2260,41 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                         </div>
                         <div>
                           <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Java 클래스</div>
-                          <div className="text-[10px] text-stone-400">메서드 & 엔티티</div>
+                          <div className="text-[10px] text-stone-400">Spring 서비스 & 엔티티</div>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleInsertPythonBlock();
+                          setActiveTopDialog(null);
+                        }}
+                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
+                      >
+                        <div className="p-1.5 rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400">
+                          <Code className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Python</div>
+                          <div className="text-[10px] text-stone-400">데이터 처리 & 파이프라인</div>
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleInsertBashBlock();
+                          setActiveTopDialog(null);
+                        }}
+                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
+                      >
+                        <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+                          <Terminal className="w-4 h-4" />
+                        </div>
+                        <div>
+                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Bash / Shell</div>
+                          <div className="text-[10px] text-stone-400">명령어 & 쉘 스크립트</div>
                         </div>
                       </button>
 
@@ -2191,8 +2302,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                         type="button"
                         onClick={() => {
                           if (editor) {
-                            const template = `function calculateMetrics(data) {\n  return data.map(item => ({\n    id: item.id,\n    total: item.quantity * item.price\n  }));\n}`;
-                            editor.chain().focus().insertContent(`<pre><code class="language-javascript">${escapeHtml(template)}</code></pre><p></p>`).run();
+                            const template = `function calculateMetrics(data: any[]) {\n  return data.map(item => ({\n    id: item.id,\n    total: item.quantity * item.price\n  }));\n}`;
+                            editor.chain().focus().insertContent(`<pre><code class="language-typescript">${escapeHtml(template)}</code></pre><p></p>`).run();
                           }
                           setActiveTopDialog(null);
                         }}
@@ -2241,10 +2352,18 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                   </div>
 
                   {/* Markdown 연동 */}
-                  <div className="pt-2 border-t border-stone-100 dark:border-stone-800">
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-1.5">
-                      마크다운 (.md) 파일 연동
+                  <div className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 flex items-center gap-1.5">
+                        <span>마크다운 (.md) 파일 연동</span>
+                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium">
+                          코드 블록 하이라이팅 연동
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-stone-400">드래그&드롭 지원</span>
                     </div>
+
+                    {/* Basic Markdown Import / Export Actions */}
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
@@ -2253,6 +2372,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                           mdFileInputRef.current?.click();
                         }}
                         className="flex-1 py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        title="마크다운 파일을 가져옵니다. C, SQL, Java 등 코드 블록의 언어가 자동으로 인식되어 하이라이팅이 적용됩니다."
                       >
                         <FileDown className="w-3.5 h-3.5 text-amber-500" />
                         <span>MD 가져오기</span>
@@ -2264,6 +2384,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                           setActiveTopDialog(null);
                         }}
                         className="flex-1 py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        title="현재 에디터의 내용을 주요 언어 코드 블록(```c, ```sql 등)이 보존된 마크다운으로 복사합니다."
                       >
                         <Download className="w-3.5 h-3.5 text-sky-500" />
                         <span>MD 복사</span>
@@ -2275,10 +2396,64 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                           setActiveTopDialog(null);
                         }}
                         className="flex-1 py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        title="현재 에디터의 서식 및 코드 블록을 .md 파일로 내보냅니다."
                       >
                         <FileText className="w-3.5 h-3.5 text-emerald-500" />
                         <span>.md 다운로드</span>
                       </button>
+                    </div>
+
+                    {/* Major Language Markdown Document Templates */}
+                    <div className="pt-2 border-t border-stone-100/80 dark:border-stone-800/80">
+                      <div className="text-[10px] font-semibold text-stone-500 dark:text-stone-400 mb-2 flex items-center justify-between">
+                        <span>주요 언어 마크다운 문서 템플릿 (코드 블록 포함)</span>
+                        <span className="text-[9px] text-stone-400">클릭 시 에디터 삽입 / .md 다운로드</span>
+                      </div>
+                      <div className="max-h-48 overflow-y-auto pr-1 space-y-1.5 custom-scrollbar">
+                        {MARKDOWN_LANGUAGE_TEMPLATES.map((tpl) => (
+                          <div
+                            key={tpl.id}
+                            className="p-2 rounded-xl border border-stone-200/80 dark:border-stone-700/60 bg-stone-50/70 dark:bg-[#1e1e1e] flex items-center justify-between gap-2 hover:border-amber-500/40 transition-all"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-bold bg-stone-200 dark:bg-stone-800 text-stone-700 dark:text-stone-300">
+                                  {tpl.badge}
+                                </span>
+                                <span className="text-xs font-medium text-stone-800 dark:text-stone-200 truncate">
+                                  {tpl.name}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-stone-400 dark:text-stone-500 truncate mt-0.5">
+                                {tpl.description}
+                              </p>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleInsertMarkdownTemplate(tpl);
+                                  setActiveTopDialog(null);
+                                }}
+                                className="px-2 py-1 rounded-lg bg-stone-200 dark:bg-stone-800 hover:bg-amber-500 hover:text-stone-950 dark:hover:bg-amber-500 dark:hover:text-stone-950 text-stone-700 dark:text-stone-300 text-[11px] font-medium transition-colors"
+                                title="에디터에 이 마크다운 템플릿을 삽입합니다."
+                              >
+                                삽입
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  handleDownloadMarkdownTemplate(tpl);
+                                }}
+                                className="p-1 rounded-lg border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 transition-colors"
+                                title="이 템플릿을 .md 파일로 다운로드합니다."
+                              >
+                                <FileDown className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
                     </div>
                   </div>
 

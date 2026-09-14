@@ -1,5 +1,6 @@
 import { marked } from 'marked';
 import { TableColumn, TableRow } from '../types';
+import { detectLanguage } from './codeHighlighter';
 
 /**
  * Converts Markdown string into semantic HTML that TipTap seamlessly consumes,
@@ -29,6 +30,14 @@ export function markdownToHtml(markdown: string): string {
         .trim();
     }
   }
+
+  // Auto-detect language for code blocks missing an explicit language tag (``` ... ```)
+  // Ensures major languages like c, sql, java, python, bash get syntax highlighting templates applied
+  cleanMd = cleanMd.replace(/```\s*\n([\s\S]*?)```/g, (match, code) => {
+    const detected = detectLanguage(code);
+    const lang = detected.isCode ? detected.language : '';
+    return `\`\`\`${lang}\n${code}\`\`\``;
+  });
 
   // Configure marked for GitHub Flavored Markdown with breaks enabled
   const rawHtml = marked.parse(cleanMd, {
@@ -102,8 +111,17 @@ export function htmlToMarkdown(html: string): string {
     if (tagName === 'pre') {
       const codeEl = el.querySelector('code');
       const langClass = (codeEl?.className || el.className || '').match(/language-([a-zA-Z0-9_-]+)/);
-      const lang = langClass ? langClass[1] : '';
+      let lang = langClass ? langClass[1] : '';
       const codeContent = codeEl ? codeEl.textContent : el.textContent;
+      // If language attribute is missing, auto-detect language so output Markdown preserves syntax blocks
+      if (!lang || lang === 'auto' || lang === 'plaintext') {
+        const detected = detectLanguage(codeContent || '');
+        if (detected.isCode) {
+          lang = detected.language;
+        } else {
+          lang = '';
+        }
+      }
       return `\n\`\`\`${lang}\n${codeContent || ''}\n\`\`\`\n\n`;
     }
 
@@ -406,3 +424,267 @@ export function extractMarkdownCellPreview(text: string): MarkdownCellPreviewInf
     codeLanguage,
   };
 }
+
+export interface MarkdownLanguageTemplate {
+  id: string;
+  name: string;
+  language: string;
+  category: string;
+  badge: string;
+  description: string;
+  filename: string;
+  markdown: string;
+}
+
+export const MARKDOWN_LANGUAGE_TEMPLATES: MarkdownLanguageTemplate[] = [
+  {
+    id: 'c-proc',
+    name: 'C / Pro*C 전문 처리 모듈 명세서',
+    language: 'c',
+    category: '시스템 / 금융',
+    badge: 'C / Pro*C',
+    description: '패킷 전문 수신/송신, memcpy, memcmp 및 로그 기록 로직 템플릿',
+    filename: 'c_module_spec.md',
+    markdown: `# C / Pro*C 전문 처리 모듈 명세서
+
+## 1. 개요 및 처리 로직
+- 금융 결제원 전문 송수신 처리 모듈 (\`bnkcliR.pc\`)
+- 전문 식별자(\`szFileID\`)에 따른 분기 및 메모리 버퍼 복사
+
+## 2. 소스 코드 구현
+\`\`\`c
+#include <stdio.h>
+#include <string.h>
+
+int processTransaction(const char* szFileID, char* szXCH_DIS, char* szPRC_PRG_DIS) {
+    /* 자기앞 미지급 전문 처리 (TC33) */
+    if (!memcmp(szFileID, "TC33", 4)) {
+        writeLog("[INFO] 미지급 전문 수신: FileID=[%s]", szFileID);
+        memcpy(szXCH_DIS, "21", 2);      /* 21: 미지급 수신 처리 */
+    } else {
+        writeLog("[INFO] 일반 거래 전문 수신: FileID=[%s]", szFileID);
+        memcpy(szXCH_DIS, "22", 2);      /* 22: 일반 수신 처리 */
+    }
+
+    memcpy(szPRC_PRG_DIS, "31", 2);      /* 31: 결제원 수신 완료 */
+    return 0;
+}
+\`\`\`
+
+## 3. 검증 및 점검 사항
+- [x] TC33 자기앞 미지급 패킷 수신 테스트 완료
+- [x] 버퍼 오버플로우 방지 및 \`sizeof() - 1\` 검증 완료`,
+  },
+  {
+    id: 'sql-db',
+    name: 'SQL 데이터베이스 & 쿼리 명세서',
+    language: 'sql',
+    category: '데이터베이스',
+    badge: 'SQL / DDL',
+    description: '테이블 정의(DDL), 인덱스 구성 및 대용량 조회 최적화 쿼리 템플릿',
+    filename: 'database_schema.md',
+    markdown: `# 데이터베이스 테이블 및 쿼리 명세서
+
+## 1. 테이블 정의 (DDL)
+\`\`\`sql
+CREATE TABLE TB_TRANSACTION_LOG (
+    TX_ID         VARCHAR2(32)   NOT NULL,
+    USER_ID       VARCHAR2(20)   NOT NULL,
+    FILE_ID       CHAR(4)        NOT NULL,
+    TRANS_AMOUNT  NUMBER(15, 2)  DEFAULT 0,
+    STATUS_CODE   CHAR(2)        NOT NULL,
+    CREATED_AT    TIMESTAMP      DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT PK_TB_TRANSACTION_LOG PRIMARY KEY (TX_ID)
+);
+
+CREATE INDEX IDX_TRANS_USER_DATE ON TB_TRANSACTION_LOG (USER_ID, CREATED_AT DESC);
+\`\`\`
+
+## 2. 주요 조회 및 통계 쿼리
+\`\`\`sql
+SELECT 
+    FILE_ID,
+    COUNT(*) AS TOTAL_COUNT,
+    NVL(SUM(TRANS_AMOUNT), 0) AS TOTAL_AMOUNT,
+    MAX(CREATED_AT) AS LAST_TRANS_TIME
+FROM TB_TRANSACTION_LOG
+WHERE STATUS_CODE = '01'
+  AND CREATED_AT >= TRUNC(SYSDATE)
+GROUP BY FILE_ID
+ORDER BY TOTAL_AMOUNT DESC;
+\`\`\`
+
+## 3. 튜닝 및 인덱스 가이드
+- 복합 인덱스(\`USER_ID\`, \`CREATED_AT\`)를 활용한 인덱스 레인지 스캔 유도`,
+  },
+  {
+    id: 'java-spring',
+    name: 'Java / Spring 서비스 명세서',
+    language: 'java',
+    category: '백엔드 서비스',
+    badge: 'Java / Spring',
+    description: 'Spring Service 인터페이스, 트랜잭션 및 비즈니스 예외 처리 템플릿',
+    filename: 'java_service_spec.md',
+    markdown: `# Java Spring 서비스 구현 명세서
+
+## 1. 핵심 비즈니스 로직
+\`\`\`java
+package com.example.service;
+
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class TransactionService {
+
+    private final TransactionRepository transactionRepository;
+
+    @Transactional(rollbackFor = Exception.class)
+    public TransactionResponse processPacket(TransactionRequest request) {
+        log.info("전문 처리 시작: fileId={}, userId={}", request.getFileId(), request.getUserId());
+        
+        if ("TC33".equals(request.getFileId())) {
+            request.updateStatus("21"); // 미지급 수신 처리
+        } else {
+            request.updateStatus("22"); // 일반 수신 처리
+        }
+
+        Transaction entity = transactionRepository.save(request.toEntity());
+        return TransactionResponse.of(entity);
+    }
+}
+\`\`\`
+
+## 2. 단위 테스트 가이드
+- Mockito를 활용한 \`processPacket\` 상태 분기 단위 테스트 수행`,
+  },
+  {
+    id: 'python-script',
+    name: 'Python 데이터 처리 & 스크립트',
+    language: 'python',
+    category: '데이터 / 자동화',
+    badge: 'Python',
+    description: '데이터 정제, 판다스 집계 파이프라인 및 배치 스크립트 템플릿',
+    filename: 'python_pipeline.md',
+    markdown: `# Python 데이터 분석 및 배치 처리 명세서
+
+## 1. 데이터 파이프라인 함수
+\`\`\`python
+import os
+import pandas as pd
+from typing import Dict, Any
+
+def process_log_data(file_path: str) -> pd.DataFrame:
+    """전문 로그 데이터를 파싱하고 요약 집계합니다."""
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"파일을 찾을 수 없습니다: {file_path}")
+
+    df = pd.read_csv(file_path, encoding="utf-8")
+    
+    # 상태 코드 정규화 및 집계
+    df["is_cleared"] = df["status_code"].isin(["21", "22"])
+    summary = df.groupby("file_id").agg({
+        "amount": ["count", "sum", "mean"],
+        "is_cleared": "sum"
+    }).reset_index()
+
+    return summary
+
+if __name__ == "__main__":
+    result = process_log_data("./data/transaction_log.csv")
+    print(result.head())
+\`\`\`
+
+## 2. 의존성 패키지
+- \`pandas>=2.0.0\``,
+  },
+  {
+    id: 'bash-shell',
+    name: 'Bash / Shell 배포 & 기동 스크립트',
+    language: 'bash',
+    category: 'DevOps / 인프라',
+    badge: 'Bash / Shell',
+    description: '서버 환경변수 설정, 데몬 기동 및 프로세스 헬스체크 템플릿',
+    filename: 'deploy_script.md',
+    markdown: `# 서버 기동 및 배포 스크립트 명세서
+
+## 1. 기동 쉘 스크립트 (\`run.sh\`)
+\`\`\`bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_NAME="bank-client-daemon"
+CONF_DIR="/etc/bank/conf"
+LOG_DIR="/var/log/bank"
+
+echo "==> [\$(date '+%Y-%m-%d %H:%M:%S')] \${APP_NAME} 기동 준비..."
+
+mkdir -p "\${LOG_DIR}"
+export LOG_LEVEL="INFO"
+export PROCESS_COUNT=4
+
+# 실행 중인 기존 프로세스 확인 및 안전 종료
+if pgrep -f "\${APP_NAME}" > /dev/null; then
+    echo "기존 실행 프로세스 종료 중..."
+    pkill -15 -f "\${APP_NAME}" || true
+    sleep 2
+fi
+
+nohup ./bin/\${APP_NAME} --config "\${CONF_DIR}/daemon.conf" >> "\${LOG_DIR}/app.log" 2>&1 &
+echo "==> \${APP_NAME} 백그라운드 기동 완료 (PID: \$!)"
+\`\`\`
+
+## 2. 크론탭(Crontab) 등록
+- \`0 2 * * * /app/bin/run.sh\` (매일 새벽 2시 안전 재기동)`,
+  },
+  {
+    id: 'typescript-api',
+    name: 'TypeScript / API 규격 명세서',
+    language: 'typescript',
+    category: '웹 / API',
+    badge: 'TypeScript',
+    description: 'RESTful API 인터페이스, DTO 타입 정의 및 JSON 응답 구조 템플릿',
+    filename: 'api_specification.md',
+    markdown: `# RESTful API 인터페이스 규격서
+
+## 1. 타입 및 인터페이스 정의
+\`\`\`typescript
+export interface TransactionPayload {
+  transactionId: string;
+  fileId: 'TC11' | 'TC33' | 'TC44';
+  amount: number;
+  timestamp: string;
+}
+
+export interface ApiResponse<T> {
+  success: boolean;
+  code: string;
+  message: string;
+  data: T;
+}
+
+export async function submitTransaction(payload: TransactionPayload): Promise<ApiResponse<string>> {
+  const res = await fetch('/api/v1/transactions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+\`\`\`
+
+## 2. JSON 페이로드 예시
+\`\`\`json
+{
+  "success": true,
+  "code": "OK_200",
+  "message": "전문 처리가 정상 완료되었습니다.",
+  "data": "TX-20260914-001"
+}
+\`\`\``,
+  },
+];
