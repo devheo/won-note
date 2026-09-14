@@ -543,19 +543,30 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       return rawContent;
     }
 
+    // Fast check for markdown code fences (```...```) or Markdown content
+    const hasMarkdownFences = rawContent.includes('```');
+    const isMd = hasMarkdownFences || isLikelyMarkdown(rawContent);
+
     // Fast check for real rich HTML block tags on sample
     const sample = trimmed.length > 32000 ? trimmed.slice(0, 32000) : trimmed;
-    const hasRealHtmlTags =
-      /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|h[1-6]|ul|ol|li|blockquote|p|div|span|strong|b|em|i|u|s|del|mark|a|hr)\b/i.test(sample) ||
+    const hasComplexHtml =
+      /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|svg)\b/i.test(sample) ||
       /style\s*=\s*["']/i.test(sample) ||
       /data-color\s*=/i.test(sample);
-    if (hasRealHtmlTags) {
+
+    if (hasComplexHtml && !hasMarkdownFences) {
       return rawContent;
     }
 
     // Check if it's Markdown format (e.g. ## headers, | table |, - list, ```` code blocks, etc.)
-    if (isLikelyMarkdown(rawContent)) {
+    if (isMd) {
       return markdownToHtml(rawContent);
+    }
+
+    const hasRealHtmlTags =
+      /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|h[1-6]|ul|ol|li|blockquote|p|div|span|strong|b|em|i|u|s|del|mark|a|hr)\b/i.test(sample);
+    if (hasRealHtmlTags) {
+      return rawContent;
     }
 
     // Check if it's source code (Java, SQL, JS, etc.) or has Java patterns
@@ -1678,6 +1689,44 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               tableEl.style.removeProperty('--table-border-color');
               tableEl.style.borderColor = '';
             }
+
+            const effectiveColor = targetColor || 'var(--table-border-color, #475569)';
+            const gridColor = targetColor || 'var(--table-border-color, #cbd5e1)';
+
+            if (style === 'outer') {
+              tableEl.style.border = `2.5px solid ${effectiveColor}`;
+              tableEl.style.outline = `1px solid ${effectiveColor}`;
+            } else if (style === 'thick') {
+              tableEl.style.border = `3.5px solid ${effectiveColor}`;
+              tableEl.style.outline = `1px solid ${effectiveColor}`;
+            } else if (style === 'horizontal') {
+              tableEl.style.borderLeft = 'none';
+              tableEl.style.borderRight = 'none';
+              tableEl.style.borderTop = `2px solid ${effectiveColor}`;
+              tableEl.style.borderBottom = `2px solid ${effectiveColor}`;
+              tableEl.style.outline = 'none';
+            } else if (style === 'none') {
+              tableEl.style.border = 'none';
+              tableEl.style.outline = 'none';
+            } else {
+              tableEl.style.border = `1px solid ${gridColor}`;
+              tableEl.style.outline = 'none';
+            }
+
+            const cells = tableEl.querySelectorAll('td, th');
+            cells.forEach((cellEl) => {
+              const el = cellEl as HTMLElement;
+              if (style === 'outer' || style === 'none') {
+                el.style.border = 'none';
+              } else if (style === 'horizontal') {
+                el.style.borderLeft = 'none';
+                el.style.borderRight = 'none';
+                el.style.borderTop = `1px solid ${gridColor}`;
+                el.style.borderBottom = `1px solid ${gridColor}`;
+              } else {
+                el.style.border = `1px solid ${gridColor}`;
+              }
+            });
           }
         }
       } catch {
@@ -1765,6 +1814,41 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               tableEl.style.removeProperty('--table-border-color');
               tableEl.style.borderColor = '';
             }
+
+            const style = currentAttrs.borderStyle || 'all';
+            const effectiveColor = color || 'var(--table-border-color, #475569)';
+            const gridColor = color || 'var(--table-border-color, #cbd5e1)';
+
+            if (style === 'outer') {
+              tableEl.style.border = `2.5px solid ${effectiveColor}`;
+              tableEl.style.outline = `1px solid ${effectiveColor}`;
+            } else if (style === 'thick') {
+              tableEl.style.border = `3.5px solid ${effectiveColor}`;
+              tableEl.style.outline = `1px solid ${effectiveColor}`;
+            } else if (style === 'horizontal') {
+              tableEl.style.borderTop = `2px solid ${effectiveColor}`;
+              tableEl.style.borderBottom = `2px solid ${effectiveColor}`;
+            } else if (style === 'none') {
+              tableEl.style.border = 'none';
+              tableEl.style.outline = 'none';
+            } else {
+              tableEl.style.border = `1px solid ${gridColor}`;
+            }
+
+            const cells = tableEl.querySelectorAll('td, th');
+            cells.forEach((cellEl) => {
+              const el = cellEl as HTMLElement;
+              if (style === 'outer' || style === 'none') {
+                el.style.border = 'none';
+              } else if (style === 'horizontal') {
+                el.style.borderLeft = 'none';
+                el.style.borderRight = 'none';
+                el.style.borderTop = `1px solid ${gridColor}`;
+                el.style.borderBottom = `1px solid ${gridColor}`;
+              } else {
+                el.style.border = `1px solid ${gridColor}`;
+              }
+            });
           }
         }
       } catch {

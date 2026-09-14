@@ -16,6 +16,13 @@ interface CodeBlockViewerProps {
   compact?: boolean;
 }
 
+const getAppTheme = (): 'dark' | 'light' => {
+  if (typeof document !== 'undefined') {
+    return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  }
+  return 'light';
+};
+
 export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
   code,
   language: explicitLanguage,
@@ -27,29 +34,56 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
   const [copied, setCopied] = useState(false);
   const [codeTheme, setCodeTheme] = useState<'dark' | 'light'>(() => {
     try {
-      const saved = localStorage.getItem('wonbee_code_theme');
-      if (saved === 'light' || saved === 'dark') return saved;
+      const explicit = localStorage.getItem('wonbee_code_theme_explicit');
+      if (explicit === 'light' || explicit === 'dark') return explicit;
     } catch (_) {}
-    return 'dark'; // Default to high-contrast Dark IDE theme
+    return getAppTheme();
   });
 
   useEffect(() => {
+    const updateThemeFromApp = () => {
+      try {
+        const explicit = localStorage.getItem('wonbee_code_theme_explicit');
+        if (explicit === 'light' || explicit === 'dark') {
+          setCodeTheme(explicit);
+          return;
+        }
+      } catch (_) {}
+      setCodeTheme(getAppTheme());
+    };
+
+    // Keep in sync with app dark/light mode toggle
+    const observer = new MutationObserver(() => {
+      updateThemeFromApp();
+    });
+    if (typeof document !== 'undefined') {
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+    }
+
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'wonbee_code_theme' && (e.newValue === 'light' || e.newValue === 'dark')) {
+      if (e.key === 'wonbee_theme') {
+        updateThemeFromApp();
+      } else if (e.key === 'wonbee_code_theme_explicit' && (e.newValue === 'light' || e.newValue === 'dark')) {
         setCodeTheme(e.newValue);
       }
     };
+
     const handleCustom = () => {
-      try {
-        const saved = localStorage.getItem('wonbee_code_theme');
-        if (saved === 'light' || saved === 'dark') setCodeTheme(saved);
-      } catch (_) {}
+      updateThemeFromApp();
     };
+
     window.addEventListener('storage', handleStorage);
     window.addEventListener('wonbee_code_theme_change', handleCustom);
+    window.addEventListener('wonbee_theme_change', handleCustom);
+
     return () => {
+      observer.disconnect();
       window.removeEventListener('storage', handleStorage);
       window.removeEventListener('wonbee_code_theme_change', handleCustom);
+      window.removeEventListener('wonbee_theme_change', handleCustom);
     };
   }, []);
 
@@ -58,7 +92,7 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
     const nextTheme = codeTheme === 'dark' ? 'light' : 'dark';
     setCodeTheme(nextTheme);
     try {
-      localStorage.setItem('wonbee_code_theme', nextTheme);
+      localStorage.setItem('wonbee_code_theme_explicit', nextTheme);
       window.dispatchEvent(new Event('wonbee_code_theme_change'));
     } catch (_) {}
   };
@@ -95,7 +129,7 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
       className={`rounded-xl overflow-hidden border flex flex-col my-1 text-left font-mono transition-colors duration-150 ${
         isDark
           ? 'code-theme-dark bg-[#16181d] border-[#2d3139] shadow-md text-[#f1f5f9]'
-          : 'bg-[#f8fafc] border-stone-300 shadow-xs text-[#0f172a]'
+          : 'code-theme-light bg-[#f8fafc] border-stone-300 shadow-xs text-[#0f172a]'
       } ${className}`}
       onClick={(e) => e.stopPropagation()}
     >

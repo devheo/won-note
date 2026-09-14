@@ -12,6 +12,8 @@ import 'prismjs/components/prism-java';
 import 'prismjs/components/prism-markup'; // HTML / XML
 import 'prismjs/components/prism-css';
 import 'prismjs/components/prism-yaml';
+import 'prismjs/components/prism-c';
+import 'prismjs/components/prism-cpp';
 
 export type SupportedLanguage =
   | 'sql'
@@ -21,6 +23,8 @@ export type SupportedLanguage =
   | 'python'
   | 'bash'
   | 'java'
+  | 'c'
+  | 'cpp'
   | 'markup'
   | 'css'
   | 'yaml'
@@ -53,7 +57,11 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
     if (['py', 'python'].includes(lang)) return { isCode: true, language: 'python' };
     if (['sh', 'bash', 'shell'].includes(lang)) return { isCode: true, language: 'bash' };
     if (['java'].includes(lang)) return { isCode: true, language: 'java' };
+    if (['c', 'pc', 'h'].includes(lang)) return { isCode: true, language: 'c' };
+    if (['cpp', 'cc', 'cxx', 'hpp'].includes(lang)) return { isCode: true, language: 'cpp' };
     if (['xml', 'html'].includes(lang)) return { isCode: true, language: 'markup' };
+    if (['css'].includes(lang)) return { isCode: true, language: 'css' };
+    if (['yaml', 'yml'].includes(lang)) return { isCode: true, language: 'yaml' };
     return { isCode: true, language: 'sql' }; // default fallback
   }
 
@@ -181,6 +189,29 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
     return { isCode: true, language: 'bash', reason: 'Bash / Shell 스크립트 감지' };
   }
 
+  // 9. C / C++ / Pro*C Heuristic Detection
+  const cPatterns = [
+    /\b(memcpy|memset|memcmp|memmove|strcpy|strncpy|strcat|strncat|strlen|strcmp|strncmp)\s*\(/,
+    /\b(printf|sprintf|snprintf|fprintf|scanf|sscanf)\s*\(/,
+    /\b(sizeof\s*\([^)]+\))/,
+    /\b(malloc|calloc|realloc|free)\s*\(/,
+    /#\s*include\s*[<"][a-zA-Z0-9_./]+[>"]/,
+    /\b(struct\s+\w+|typedef\s+struct|enum\s+\w+)/,
+    /\b(EXEC\s+SQL\b)/i,
+    /\b(writeLog|printLog)\s*\(/,
+    /\b(int|char|long|short|void|double|float|unsigned|signed)\s+\*?\w+\s*\[?[^\]]*\]?\s*(=|;|\()/,
+    /\b\w+\.pc\b/i,
+  ];
+
+  let cScore = 0;
+  for (const pattern of cPatterns) {
+    if (pattern.test(sample)) cScore++;
+  }
+
+  if (cScore >= 1) {
+    return { isCode: true, language: 'c', reason: 'C / Pro*C 소스 코드 감지' };
+  }
+
   return { isCode: false, language: 'plaintext' };
 }
 
@@ -251,13 +282,15 @@ export function highlightHtmlCodeBlocks(htmlContent: string): string {
         const langMatch = classAttr.match(/language-([a-zA-Z0-9_-]+)/);
         if (langMatch) {
           const rawL = langMatch[1].toLowerCase();
-          if (['sql', 'javascript', 'typescript', 'json', 'python', 'bash', 'java', 'markup', 'css', 'yaml'].includes(rawL)) {
+          if (['sql', 'javascript', 'typescript', 'json', 'python', 'bash', 'java', 'c', 'cpp', 'markup', 'css', 'yaml'].includes(rawL)) {
             lang = rawL as SupportedLanguage;
           } else if (rawL === 'js') lang = 'javascript';
           else if (rawL === 'ts') lang = 'typescript';
           else if (rawL === 'sh' || rawL === 'shell') lang = 'bash';
           else if (rawL === 'py') lang = 'python';
           else if (rawL === 'html' || rawL === 'xml') lang = 'markup';
+          else if (rawL === 'pc' || rawL === 'h') lang = 'c';
+          else if (rawL === 'cc' || rawL === 'cxx' || rawL === 'hpp') lang = 'cpp';
         }
       }
 
@@ -269,10 +302,12 @@ export function highlightHtmlCodeBlocks(htmlContent: string): string {
         }
       }
 
-      const formatted = formatJavaOrGeneralCode(rawCode);
+      // Only format if code appears flattened to single line or lacks standard newlines
+      const lineCount = (rawCode.match(/\n/g) || []).length;
+      const formatted = lineCount >= 2 ? rawCode : formatJavaOrGeneralCode(rawCode);
       const highlighted = highlightCode(formatted, lang);
 
-      return `<pre class="code-theme-dark rounded-xl my-3 p-3.5 overflow-x-auto font-mono text-xs leading-relaxed bg-[#181a1f] text-[#f1f5f9] border border-[#2d3139] shadow-md language-${lang}"><code class="language-${lang} block whitespace-pre">${highlighted}</code></pre>`;
+      return `<pre class="rounded-xl my-3 p-3.5 overflow-x-auto font-mono text-xs leading-relaxed bg-[#f8fafc] dark:bg-[#181a1f] text-[#0f172a] dark:text-[#f1f5f9] border border-stone-300 dark:border-[#2d3139] shadow-xs dark:shadow-md language-${lang}"><code class="language-${lang} block whitespace-pre">${highlighted}</code></pre>`;
     }
   );
 }
@@ -355,16 +390,17 @@ export function formatJavaOrGeneralCode(code: string): string {
     return code;
   }
 
-  // If it's already well formatted with multiple lines, check if any line has flattened comments/statements
   const lines = trimmed.split('\n');
-  if (lines.length > 100) {
+
+  // If code already has multiple real lines (>= 3 lines), do not format and risk distorting comments or indents
+  if (lines.length >= 3) {
     return code;
   }
 
   const isSingleOrFewLines = lines.length <= 2 && trimmed.length > 60;
   const checkSample = trimmed.length > 8000 ? trimmed.slice(0, 8000) : trimmed;
   const hasFlattenedJavaComment = /\/\/[^\n]+?(?:public|private|protected|static|final|class|interface|enum|void|int|long|double|float|boolean|char|byte|short|String|return|if|for|while|import|package|@\w+|\})/.test(checkSample);
-  const hasMultipleStatementsOnOneLine = /(?:;|\{)\s*(?:public|private|protected|static|final|class|interface|enum|void|int|long|double|float|boolean|char|byte|short|String|return|if|for|while|import|package|@\w+)/.test(checkSample);
+  const hasMultipleStatementsOnOneLine = /(?:;|\{)[^\n\r]*?(?:public|private|protected|static|final|class|interface|enum|void|int|long|double|float|boolean|char|byte|short|String|return|if|for|while|import|package|@\w+)/.test(checkSample);
 
   // If it's not flattened and has multiple lines, return as is
   if (!isSingleOrFewLines && !hasFlattenedJavaComment && !hasMultipleStatementsOnOneLine) {

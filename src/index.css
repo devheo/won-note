@@ -611,6 +611,14 @@ pre[class*="language-"] {
   color: #f1f5f9 !important; /* Crisp Slate-100 in dark mode */
 }
 
+/* Explicit Light Code Block text color */
+.code-theme-light code[class*="language-"],
+.code-theme-light pre[class*="language-"],
+[data-code-theme="light"] code[class*="language-"],
+[data-code-theme="light"] pre[class*="language-"] {
+  color: #0f172a !important; /* Crisp Slate-900 in light mode */
+}
+
 /* SQL & Code Syntax Tokens (Prism Light Mode - Deep, Vivid High Contrast) */
 .token.comment,
 .token.prolog,
@@ -1199,6 +1207,248 @@ ul[data-type="taskList"] li > div {
   color: #f87171 !important;
   font-weight: 600;
 }
+
+/* Explicit Light Code Theme Token Colors (Both Prism & Highlight.js) */
+.code-theme-light .token.comment,
+.code-theme-light .token.prolog,
+.code-theme-light .token.doctype,
+.code-theme-light .token.cdata,
+[data-code-theme="light"] .token.comment,
+[data-code-theme="light"] .token.prolog,
+[data-code-theme="light"] .token.doctype,
+[data-code-theme="light"] .token.cdata,
+.code-theme-light .hljs-comment,
+.code-theme-light .hljs-quote,
+[data-code-theme="light"] .hljs-comment,
+[data-code-theme="light"] .hljs-quote {
+  color: #64748b !important;
+  font-style: italic;
+}
+
+.code-theme-light .token.punctuation,
+[data-code-theme="light"] .token.punctuation,
+.code-theme-light .hljs-punctuation,
+[data-code-theme="light"] .hljs-punctuation {
+  color: #334155 !important;
+}
+
+.code-theme-light .token.keyword,
+.code-theme-light .token.atrule,
+.code-theme-light .token.attr-value,
+[data-code-theme="light"] .token.keyword,
+[data-code-theme="light"] .token.atrule,
+[data-code-theme="light"] .token.attr-value,
+.code-theme-light .hljs-keyword,
+.code-theme-light .hljs-selector-tag,
+.code-theme-light .hljs-subst,
+[data-code-theme="light"] .hljs-keyword,
+[data-code-theme="light"] .hljs-selector-tag,
+[data-code-theme="light"] .hljs-subst {
+  color: #0284c7 !important;
+  font-weight: 700;
+}
+
+.code-theme-light .token.number,
+.code-theme-light .token.boolean,
+.code-theme-light .token.constant,
+.code-theme-light .token.symbol,
+[data-code-theme="light"] .token.number,
+[data-code-theme="light"] .token.boolean,
+[data-code-theme="light"] .token.constant,
+[data-code-theme="light"] .token.symbol,
+.code-theme-light .hljs-number,
+.code-theme-light .hljs-literal,
+.code-theme-light .hljs-boolean,
+[data-code-theme="light"] .hljs-number,
+[data-code-theme="light"] .hljs-literal,
+[data-code-theme="light"] .hljs-boolean {
+  color: #ea580c !important;
+  font-weight: 600;
+}
+
+.code-theme-light .token.string,
+.code-theme-light .token.char,
+.code-theme-light .token.attr-name,
+.code-theme-light .token.selector,
+[data-code-theme="light"] .token.string,
+[data-code-theme="light"] .token.char,
+[data-code-theme="light"] .token.attr-name,
+[data-code-theme="light"] .token.selector,
+.code-theme-light .hljs-string,
+.code-theme-light .hljs-doctag,
+.code-theme-light .hljs-regexp,
+.code-theme-light .hljs-template-tag,
+[data-code-theme="light"] .hljs-string,
+[data-code-theme="light"] .hljs-doctag,
+[data-code-theme="light"] .hljs-regexp,
+[data-code-theme="light"] .hljs-template-tag {
+  color: #16a34a !important;
+  font-weight: 500;
+}
+
+.code-theme-light .token.function,
+[data-code-theme="light"] .token.function,
+.code-theme-light .hljs-title,
+.code-theme-light .hljs-title.function_,
+.code-theme-light .hljs-function,
+.code-theme-light .hljs-section,
+[data-code-theme="light"] .hljs-title,
+[data-code-theme="light"] .hljs-title.function_,
+[data-code-theme="light"] .hljs-function,
+[data-code-theme="light"] .hljs-section {
+  color: #d97706 !important;
+  font-weight: 600;
+}
+
+.code-theme-light .token.operator,
+.code-theme-light .token.entity,
+.code-theme-light .token.url,
+[data-code-theme="light"] .token.operator,
+[data-code-theme="light"] .token.entity,
+[data-code-theme="light"] .token.url,
+.code-theme-light .hljs-operator,
+[data-code-theme="light"] .hljs-operator {
+  color: #db2777 !important;
+  font-weight: 600;
+}
+
+.code-theme-light .token.class-name,
+.code-theme-light .token.builtin,
+[data-code-theme="light"] .token.class-name,
+[data-code-theme="light"] .token.builtin,
+.code-theme-light .hljs-type,
+.code-theme-light .hljs-title.class_,
+.code-theme-light .hljs-built_in,
+[data-code-theme="light"] .hljs-type,
+[data-code-theme="light"] .hljs-title.class_,
+[data-code-theme="light"] .hljs-built_in {
+  color: #0891b2 !important;
+  font-weight: 600;
+}
+
+.code-theme-light .token.variable,
+.code-theme-light .token.property,
+[data-code-theme="light"] .token.variable,
+[data-code-theme="light"] .token.property,
+.code-theme-light .hljs-variable,
+.code-theme-light .hljs-property,
+.code-theme-light .hljs-params,
+[data-code-theme="light"] .hljs-variable,
+[data-code-theme="light"] .hljs-property,
+[data-code-theme="light"] .hljs-params {
+  color: #7c3aed !important;
+}
+
+.code-theme-light .token.tag,
+[data-code-theme="light"] .token.tag,
+.code-theme-light .hljs-tag,
+.code-theme-light .hljs-name,
+[data-code-theme="light"] .hljs-tag,
+[data-code-theme="light"] .hljs-name {
+  color: #dc2626 !important;
+  font-weight: 600;
+}
+
+.code-theme-light .token.meta,
+[data-code-theme="light"] .token.meta,
+.code-theme-light .hljs-meta,
+[data-code-theme="light"] .hljs-meta {
+  color: #6366f1 !important;
+}
+
+/* ==========================================================================
+   WonBee Markdown Content Rendering (Preview & Detail Viewer)
+   ========================================================================== */
+.wonbee-markdown-content {
+  line-height: 1.6;
+}
+
+.wonbee-markdown-content h1,
+.wonbee-markdown-content h2,
+.wonbee-markdown-content h3,
+.wonbee-markdown-content h4,
+.wonbee-markdown-content h5,
+.wonbee-markdown-content h6 {
+  font-weight: 700;
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
+  color: inherit;
+}
+.wonbee-markdown-content h1 { font-size: 1.35rem; border-bottom: 1px solid rgba(156, 163, 175, 0.3); padding-bottom: 0.3rem; }
+.wonbee-markdown-content h2 { font-size: 1.18rem; border-bottom: 1px solid rgba(156, 163, 175, 0.2); padding-bottom: 0.2rem; }
+.wonbee-markdown-content h3 { font-size: 1.05rem; }
+.wonbee-markdown-content h4 { font-size: 0.95rem; }
+
+.wonbee-markdown-content p {
+  margin-top: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.wonbee-markdown-content blockquote {
+  border-left: 3.5px solid #f59e0b;
+  padding-left: 0.85rem;
+  margin: 0.6rem 0;
+  color: #475569;
+  background: rgba(245, 158, 11, 0.05);
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  border-radius: 0 0.375rem 0.375rem 0;
+}
+.dark .wonbee-markdown-content blockquote {
+  color: #94a3b8;
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.wonbee-markdown-content ul:not([data-type="taskList"]) {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin: 0.4rem 0;
+}
+
+.wonbee-markdown-content ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin: 0.4rem 0;
+}
+
+.wonbee-markdown-content li {
+  margin-bottom: 0.2rem;
+}
+
+.wonbee-markdown-content a {
+  color: #d97706;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.dark .wonbee-markdown-content a {
+  color: #fbbf24;
+}
+
+.wonbee-markdown-content hr {
+  border: 0;
+  border-top: 1px solid rgba(156, 163, 175, 0.3);
+  margin: 0.75rem 0;
+}
+
+.wonbee-markdown-content code:not(pre code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85em;
+  padding: 0.15rem 0.35rem;
+  border-radius: 0.25rem;
+  background-color: rgba(100, 116, 139, 0.12);
+  color: #ea580c;
+}
+.dark .wonbee-markdown-content code:not(pre code) {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #fb923c;
+}
+
+.wonbee-markdown-content .wonbee-task-list {
+  list-style: none;
+  padding-left: 0;
+  margin: 0.4rem 0;
+}
+
 
 
 

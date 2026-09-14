@@ -19,35 +19,77 @@ const COMMON_LANGUAGES = [
   { value: 'plaintext', label: '일반 텍스트' },
 ];
 
+const getAppTheme = (): 'dark' | 'light' => {
+  if (typeof document !== 'undefined') {
+    return document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+  }
+  return 'light';
+};
+
 export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
   node,
   updateAttributes,
 }) => {
   const [copied, setCopied] = useState(false);
-  // Default to 'dark' for maximum developer contrast and vibrant syntax highlighting
   const [codeTheme, setCodeTheme] = useState<'dark' | 'light'>(() => {
     try {
-      const saved = localStorage.getItem('wonbee_code_theme');
-      if (saved === 'light' || saved === 'dark') return saved;
+      const explicit = localStorage.getItem('wonbee_code_theme_explicit');
+      if (explicit === 'light' || explicit === 'dark') return explicit;
     } catch (_) {}
-    return 'dark';
+    return getAppTheme();
   });
 
   useEffect(() => {
+    const updateThemeFromApp = () => {
+      try {
+        const explicit = localStorage.getItem('wonbee_code_theme_explicit');
+        if (explicit === 'light' || explicit === 'dark') {
+          setCodeTheme(explicit);
+          return;
+        }
+      } catch (_) {}
+      setCodeTheme(getAppTheme());
+    };
+
+    const observer = new MutationObserver(() => {
+      updateThemeFromApp();
+    });
+    if (typeof document !== 'undefined') {
+      observer.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class'],
+      });
+    }
+
     const handleStorage = (e: StorageEvent) => {
-      if (e.key === 'wonbee_code_theme' && (e.newValue === 'light' || e.newValue === 'dark')) {
+      if (e.key === 'wonbee_theme') {
+        updateThemeFromApp();
+      } else if (e.key === 'wonbee_code_theme_explicit' && (e.newValue === 'light' || e.newValue === 'dark')) {
         setCodeTheme(e.newValue);
       }
     };
+
+    const handleCustom = () => {
+      updateThemeFromApp();
+    };
+
     window.addEventListener('storage', handleStorage);
-    return () => window.removeEventListener('storage', handleStorage);
+    window.addEventListener('wonbee_code_theme_change', handleCustom);
+    window.addEventListener('wonbee_theme_change', handleCustom);
+
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('storage', handleStorage);
+      window.removeEventListener('wonbee_code_theme_change', handleCustom);
+      window.removeEventListener('wonbee_theme_change', handleCustom);
+    };
   }, []);
 
   const toggleTheme = () => {
     const nextTheme = codeTheme === 'dark' ? 'light' : 'dark';
     setCodeTheme(nextTheme);
     try {
-      localStorage.setItem('wonbee_code_theme', nextTheme);
+      localStorage.setItem('wonbee_code_theme_explicit', nextTheme);
       window.dispatchEvent(new Event('wonbee_code_theme_change'));
     } catch (_) {}
   };
@@ -100,7 +142,7 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
       className={`relative my-4 rounded-xl border overflow-hidden group transition-colors duration-150 ${
         isDark
           ? 'code-theme-dark bg-[#181a1f] border-[#2d3139] shadow-lg text-[#f1f5f9]'
-          : 'bg-[#f8fafc] border-stone-300 shadow-xs text-[#0f172a]'
+          : 'code-theme-light bg-[#f8fafc] border-stone-300 shadow-xs text-[#0f172a]'
       }`}
     >
       {/* Code Header Bar */}

@@ -33,6 +33,7 @@ import {
 import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
+import { isLikelyMarkdown, markdownToHtml } from '../../utils/markdownHelper';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
@@ -790,7 +791,35 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               );
                             }
 
-                            // 2. Rich HTML content with potential embedded pre/code blocks, images, tables
+                            // 2. Check for Markdown content (code fences ```...```, headers #, markdown tables, lists, etc.)
+                            // Prioritize Markdown even if column is 'richText' or wrapped in basic HTML <p> tags
+                            const hasMarkdownFences = strVal.includes('```');
+                            const hasSticker = strVal.includes('wonbee-sticker') || strVal.includes('<sticker-node');
+                            const isMd =
+                              (hasMarkdownFences || isLikelyMarkdown(strVal)) &&
+                              !hasSticker &&
+                              !(strVal.includes('<table') && !hasMarkdownFences) &&
+                              !(strVal.includes('<img') && !hasMarkdownFences && !strVal.includes('!['));
+
+                            if (isMd) {
+                              const parsedHtml = markdownToHtml(strVal);
+                              const highlightedHtml = highlightHtmlCodeBlocks(parsedHtml);
+                              return (
+                                <div
+                                  className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table wonbee-markdown-content cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed"
+                                  onClick={(e) => {
+                                    const target = e.target as HTMLElement;
+                                    if (target.tagName === 'IMG') {
+                                      const src = target.getAttribute('src');
+                                      if (src) setLightboxImg(src);
+                                    }
+                                  }}
+                                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+                                />
+                              );
+                            }
+
+                            // 3. Rich HTML content with potential embedded pre/code blocks, images, tables
                             const isRichHtml =
                               (col.type === 'richText' ||
                                strVal.includes('<img') ||

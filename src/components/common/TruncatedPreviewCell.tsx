@@ -1,10 +1,11 @@
 import React, { useRef, useState, useMemo } from 'react';
 import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
 import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon, Pin, Code } from 'lucide-react';
-import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
+import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent, highlightCode } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { HighlightText } from './HighlightText';
+import { isLikelyMarkdown, markdownToHtml, cleanMarkdownForPreview, extractMarkdownCellPreview } from '../../utils/markdownHelper';
 
 interface TruncatedPreviewCellProps {
   value: any;
@@ -64,30 +65,68 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
   const hasTable = rawString.includes('<table');
   const hasSticker = rawString.includes('wonbee-sticker') || rawString.includes('<sticker-node');
   const hasNewlines = rawString.includes('\n') || rawString.includes('<br') || rawString.includes('<p>');
-  const isRich =
-    columnType === 'richText' ||
-    hasImage ||
-    hasTable ||
-    hasSticker ||
-    rawString.includes('<pre') ||
-    rawString.includes('<code') ||
-    rawString.includes('<h1>') ||
-    rawString.includes('<h2>') ||
-    rawString.includes('<strong>') ||
-    rawString.includes('<span') ||
-    rawString.includes('<mark') ||
-    rawString.includes('<u>') ||
-    rawString.includes('<em>') ||
-    rawString.includes('<i>') ||
-    rawString.includes('<b>') ||
-    rawString.includes('style=') ||
-    (rawString.startsWith('<p>') && rawString.includes('</p>'));
+  const hasMarkdownFences = rawString.includes('```');
 
   const pureCodeInfo = extractCodeBlockFromContent(rawString);
-  const displayPlainText = cleanTextValue(rawString);
+
+  // Detect Markdown: Prioritize markdown syntax even if columnType is 'richText' or has simple <p> wrapper
+  const isMarkdown = useMemo(() => {
+    if (pureCodeInfo.isPureCode) return false;
+    if (hasSticker) return false;
+    if (hasMarkdownFences) return true;
+    if (hasTable || (hasImage && !rawString.includes('!['))) return false;
+    return isLikelyMarkdown(rawString);
+  }, [pureCodeInfo.isPureCode, hasSticker, hasMarkdownFences, hasTable, hasImage, rawString]);
+
+  const isRich =
+    !isMarkdown &&
+    (columnType === 'richText' ||
+      hasImage ||
+      hasTable ||
+      hasSticker ||
+      rawString.includes('<pre') ||
+      rawString.includes('<code') ||
+      rawString.includes('<h1>') ||
+      rawString.includes('<h2>') ||
+      rawString.includes('<strong>') ||
+      rawString.includes('<span') ||
+      rawString.includes('<mark') ||
+      rawString.includes('<u>') ||
+      rawString.includes('<em>') ||
+      rawString.includes('<i>') ||
+      rawString.includes('<b>') ||
+      rawString.includes('style=') ||
+      (rawString.startsWith('<p>') && rawString.includes('</p>')));
+
+  const markdownHtml = useMemo(() => {
+    if (!isMarkdown) return '';
+    const parsed = markdownToHtml(rawString);
+    return highlightHtmlCodeBlocks(parsed);
+  }, [isMarkdown, rawString]);
+
+  const displayPlainText = useMemo(() => {
+    if (isMarkdown) {
+      return cleanMarkdownForPreview(rawString);
+    }
+    return cleanTextValue(rawString);
+  }, [isMarkdown, rawString]);
+
+  const markdownCellPreview = useMemo(() => {
+    if (!isMarkdown) return null;
+    const preview = extractMarkdownCellPreview(rawString);
+    if (!preview) return null;
+    const lang = preview.codeLanguage || detectLanguage(preview.codeSnippet).language || 'plaintext';
+    const highlightedCodeHtml = highlightCode(preview.codeSnippet, lang as any);
+    return {
+      ...preview,
+      codeLanguage: lang,
+      highlightedCodeHtml,
+    };
+  }, [isMarkdown, rawString]);
+
   const detectedCode = pureCodeInfo.isPureCode
     ? { isCode: true, language: pureCodeInfo.language }
-    : !isRich
+    : !isRich && !isMarkdown
     ? detectLanguage(displayPlainText)
     : { isCode: false, language: 'plaintext' as const };
 
@@ -96,8 +135,8 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
     return highlightHtmlCodeBlocks(rawString);
   }, [isRich, rawString]);
 
-  // Only suppress floating popover for plain text if tooltipOnlyRichText is explicitly enabled by user
-  const shouldShowTooltipPopover = !tooltipOnlyRichText || isRich;
+  // Show floating popover for rich text, markdown, or plain text (unless tooltipOnlyRichText is enabled)
+  const shouldShowTooltipPopover = !tooltipOnlyRichText || isRich || isMarkdown;
 
   const calculatePosition = (coords?: { clientX: number; clientY: number }) => {
     let clientX = coords?.clientX ?? mousePosRef.current.clientX;
@@ -109,8 +148,8 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
       clientY = rect.top + rect.height / 2;
     }
 
-    const popoverWidth = Math.min(Math.max(340, isRich ? 420 : 360), 540);
-    const estimatedHeight = Math.min(360, isRich || displayPlainText.length > 80 ? 280 : 160);
+    const popoverWidth = Math.min(Math.max(340, isRich || isMarkdown ? 440 : 360), 560);
+    const estimatedHeight = Math.min(360, isRich || isMarkdown || displayPlainText.length > 80 ? 280 : 160);
 
     // Standard position: anchored to the RIGHT of the mouse cursor
     let isRightOfCursor = true;
@@ -293,6 +332,38 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                   )}
                 </span>
               </div>
+            ) : isMarkdown ? (
+              <div className="w-full min-w-0 flex flex-col gap-0.5">
+                {markdownCellPreview && markdownCellPreview.hasCodeBlock ? (
+                  <>
+                    {markdownCellPreview.introText && (
+                      <div className="text-xs text-stone-800 dark:text-stone-200 truncate font-medium">
+                        <HighlightText text={markdownCellPreview.introText} highlight={highlightQuery} />
+                      </div>
+                    )}
+                    <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded font-mono text-[11px] bg-stone-100 dark:bg-[#181a1f] text-stone-800 dark:text-stone-200 border border-stone-200/90 dark:border-[#2d3139] shadow-2xs overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
+                      <Code className="w-3 h-3 text-sky-500 shrink-0" />
+                      {markdownCellPreview.codeLanguage && (
+                        <span className="text-[10px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-tight shrink-0">
+                          {markdownCellPreview.codeLanguage}
+                        </span>
+                      )}
+                      <span
+                        className="truncate font-mono"
+                        dangerouslySetInnerHTML={{ __html: markdownCellPreview.highlightedCodeHtml }}
+                      />
+                    </div>
+                  </>
+                ) : (
+                  <div className={`${clampClass} text-xs text-stone-700 dark:text-stone-300`}>
+                    {displayPlainText.length > 0 ? (
+                      <HighlightText text={displayPlainText} highlight={highlightQuery} />
+                    ) : (
+                      <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+                    )}
+                  </div>
+                )}
+              </div>
             ) : (pureCodeInfo.isPureCode || detectedCode.isCode) ? (
               <div className="flex items-start gap-1.5 min-w-0 w-full">
                 <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
@@ -354,11 +425,13 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
             <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
               <Sparkles className="w-3 h-3" />
               {pureCodeInfo.isPureCode
-                ? `코드 미리보기 (${pureCodeInfo.language.toUpperCase()})`
+                ? '코드 미리보기'
+                : isMarkdown
+                ? '내용 미리보기'
                 : hasImage
                 ? '이미지 및 서식 내용 미리보기'
                 : detectedCode.isCode
-                ? `코드 미리보기 (${detectedCode.language.toUpperCase()})`
+                ? '코드 미리보기'
                 : '전체 내용 미리보기'}
             </span>
             <div className="flex items-center gap-2">
@@ -382,6 +455,11 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 code={pureCodeInfo.code}
                 language={pureCodeInfo.language}
                 maxHeight="max-h-64"
+              />
+            ) : isMarkdown ? (
+              <div
+                className="max-h-72 leading-relaxed text-stone-800 dark:text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table wonbee-markdown-content tiptap [&_p]:mb-1.5 [&_p]:leading-relaxed"
+                dangerouslySetInnerHTML={{ __html: markdownHtml }}
               />
             ) : isRich ? (
               <div
