@@ -33,11 +33,21 @@ export function markdownToHtml(markdown: string): string {
 
   // Auto-detect language for code blocks missing an explicit language tag (``` ... ```)
   // Ensures major languages like c, sql, java, python, bash get syntax highlighting templates applied
-  cleanMd = cleanMd.replace(/```\s*\n([\s\S]*?)```/g, (match, code) => {
+  cleanMd = cleanMd.replace(/```([a-zA-Z0-9_-]*)\s*\n([\s\S]*?)```/g, (match, explicitLang, code) => {
+    const trimmedLang = (explicitLang || '').trim().toLowerCase();
+    if (trimmedLang && trimmedLang !== 'auto' && trimmedLang !== 'plaintext') {
+      return match;
+    }
     const detected = detectLanguage(code);
-    const lang = detected.isCode ? detected.language : '';
+    const lang = detected.isCode ? detected.language : (trimmedLang || 'plaintext');
     return `\`\`\`${lang}\n${code}\`\`\``;
   });
+
+  // Auto-close any unclosed markdown code fence (e.g. user pasted partial/unclosed ```)
+  const fenceMatches = cleanMd.match(/```/g);
+  if (fenceMatches && fenceMatches.length % 2 !== 0) {
+    cleanMd += '\n```\n';
+  }
 
   // Configure marked for GitHub Flavored Markdown with breaks enabled
   const rawHtml = marked.parse(cleanMd, {
@@ -236,9 +246,9 @@ export function isLikelyMarkdown(text: string): boolean {
   // Fast-sampling for large texts (first 16KB) to prevent catastrophic regex backtracking
   const sample = trimmed.length > 16000 ? trimmed.slice(0, 16000) : trimmed;
 
-  // PRIORITY 1: Markdown Code Fences (```lang ... ``` or ``` ... ```)
+  // PRIORITY 1: Markdown Code Fences (```lang ... ``` or unclosed ```)
   // Matches any markdown code block regardless of indentation or wrapping
-  if (/```[\s\S]+?```/.test(sample)) {
+  if (/```[\s\S]+?```/.test(sample) || /```[a-zA-Z0-9_-]*\s*\n/.test(sample)) {
     return true;
   }
 

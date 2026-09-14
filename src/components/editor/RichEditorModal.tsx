@@ -131,8 +131,10 @@ const lowlight = {
             targetLang = 'java';
           } else if (/\b(?:SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(sample)) {
             targetLang = 'sql';
+          } else if (/\b(?:memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|sizeof\s*\()\b/.test(sample)) {
+            targetLang = 'c';
           } else {
-            targetLang = 'java';
+            targetLang = 'c'; // Default to C/code when uncertain
           }
         }
       }
@@ -164,6 +166,9 @@ const lowlight = {
       }
       if (/\b(?:SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(sample)) {
         return baseLowlight.highlight('sql', value, options);
+      }
+      if (/\b(?:memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|sizeof\s*\()\b/.test(sample)) {
+        return baseLowlight.highlight('c', value, options);
       }
       return baseLowlight.highlightAuto(value, options);
     } catch (err) {
@@ -445,8 +450,13 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   
   // Top-level modal popup state (rendered at the very top of rich editor container, never clipped or constrained by toolbar overflow)
   const [activeTopDialog, setActiveTopDialog] = useState<
-    'table' | 'code' | 'image' | 'link' | 'border' | 'textColor' | 'highlight' | null
+    'table' | 'code' | 'image' | 'link' | 'border' | 'textColor' | 'highlight' | 'md_paste' | null
   >(null);
+
+  // Markdown (.md) Paste & Apply Dialog states
+  const [mdPasteInputText, setMdPasteInputText] = useState('');
+  const [mdPasteMode, setMdPasteMode] = useState<'insert' | 'replace'>('insert');
+  const [mdPasteActiveTab, setMdPasteActiveTab] = useState<'input' | 'preview'>('input');
 
   // Table Dialog states
   const [tableDialogRows, setTableDialogRows] = useState(3);
@@ -667,6 +677,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   }, [activeTopDialog, forceSave, onClose]);
 
   // TipTap Editor instance
+  const editorRef = useRef<any>(null);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -735,6 +746,37 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         const clipboardData = event.clipboardData;
         if (!clipboardData) return false;
 
+        const ed = editorRef.current || (view as any).editor;
+
+        // 0. Copied file check: User copied a .md / .markdown / .txt file in OS and pressed Ctrl+V
+        const files = clipboardData.files;
+        if (files && files.length > 0) {
+          const mdFile = Array.from(files).find(
+            (f) =>
+              f.name.endsWith('.md') ||
+              f.name.endsWith('.markdown') ||
+              f.name.endsWith('.txt') ||
+              f.type === 'text/markdown' ||
+              f.type === 'text/plain'
+          );
+          if (mdFile) {
+            event.preventDefault();
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+              const text = (ev.target?.result as string) || '';
+              const html = markdownToHtml(text);
+              const targetEd = editorRef.current || (view as any).editor;
+              if (targetEd) {
+                targetEd.chain().focus().insertContent(html).run();
+                setToastMessage(`✓ 복사한 마크다운 파일 (${mdFile.name})이 서식 및 코드 하이라이트와 함께 적용되었습니다.`);
+                setTimeout(() => setToastMessage(null), 3000);
+              }
+            };
+            reader.readAsText(mdFile);
+            return true;
+          }
+        }
+
         const htmlData = clipboardData.getData('text/html') || '';
         const plainText = clipboardData.getData('text/plain') || '';
 
@@ -766,8 +808,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               return `<th${cleanAttrs}>`;
             });
 
-          if (editor) {
-            editor.chain().focus().insertContent(cleanTableHtml).run();
+          if (ed) {
+            ed.chain().focus().insertContent(cleanTableHtml).run();
             setToastMessage('✓ 엑셀/스프레드시트 표 데이터(테두리 적용) 붙여넣기 완료');
             setTimeout(() => setToastMessage(null), 2500);
             return true;
@@ -779,8 +821,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           const tableHtml = delimitedTextToHtmlTable(plainText);
           if (tableHtml) {
             event.preventDefault();
-            if (editor) {
-              editor.chain().focus().insertContent(tableHtml).run();
+            if (ed) {
+              ed.chain().focus().insertContent(tableHtml).run();
               setToastMessage('✓ 스프레드시트 데이터가 테두리 표로 변환되어 삽입되었습니다.');
               setTimeout(() => setToastMessage(null), 2500);
               return true;
@@ -797,8 +839,9 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             if (file) {
               event.preventDefault();
               compressAndResizeImage(file).then(({ dataUrl }) => {
-                if (editor) {
-                  editor.chain().focus().setImage({
+                const targetEd = editorRef.current || (view as any).editor;
+                if (targetEd) {
+                  targetEd.chain().focus().setImage({
                     src: dataUrl,
                     alt: 'Pasted Image',
                     ...({ width: '50%', layout: 'inline' } as any),
@@ -826,29 +869,39 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           return true;
         }
 
-        // 3. Markdown content check: maintain full formatting (headings, tables, task lists, blockquotes, code blocks)
+        // 4. Markdown content check: maintain full formatting (headings, tables, task lists, blockquotes, code blocks)
         if (isLikelyMarkdown(plainText)) {
           event.preventDefault();
           const html = markdownToHtml(plainText);
-          if (editor) {
-            editor.chain().focus().insertContent(html).run();
+          if (ed) {
+            ed.chain().focus().insertContent(html).run();
+            setToastMessage('✓ 복사한 마크다운(.md) 서식 및 코드 블록이 완벽하게 적용되었습니다.');
+            setTimeout(() => setToastMessage(null), 3000);
             return true;
           }
         }
 
-        // 4. Source code check (Java, SQL, JS/TS, Python, etc.)
+        // 5. Source code check (C / Pro*C, SQL, Java, JS/TS, Python, Bash, etc.)
         // or multi-line text with indentations
         const langDetection = detectLanguage(plainText);
         const hasJavaCodeSignature =
           /\b(package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.(out|err)|private\s+|protected\s+|@Override|void\s+\w+\s*\(|int\s+\w+\s*=|public\s+static\s+final)\b/.test(plainText);
+        const hasCCodeSignature =
+          /\b(memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|int\s+main|sizeof\s*\()\b/.test(plainText);
+        const hasSqlSignature =
+          /\b(SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(plainText);
         const isMultilineWithIndentation =
           plainText.includes('\n') && (/^\s{2,}\S/m.test(plainText) || /^\t\S/m.test(plainText));
 
-        if (langDetection.isCode || hasJavaCodeSignature || (isMultilineWithIndentation && (plainText.includes('{') || plainText.includes(';') || plainText.includes('(')))) {
+        if (langDetection.isCode || hasJavaCodeSignature || hasCCodeSignature || hasSqlSignature || (isMultilineWithIndentation && (plainText.includes('{') || plainText.includes(';') || plainText.includes('(')))) {
           // It's source code! Insert as a dedicated codeBlock with auto/detected language attribute
           event.preventDefault();
           const language = langDetection.isCode
             ? langDetection.language
+            : hasCCodeSignature
+            ? 'c'
+            : hasSqlSignature
+            ? 'sql'
             : hasJavaCodeSignature
             ? 'java'
             : 'auto';
@@ -900,6 +953,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }
     },
   });
+
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
 
   // Loading state & stage progression for responsive large-data handling
   const [loadingState, setLoadingState] = useState<EditorLoadingState>({
@@ -1519,6 +1576,44 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     const md = htmlToMarkdown(html);
     navigator.clipboard.writeText(md);
     setToastMessage('✓ 현재 내용이 마크다운(.md)으로 복사되었습니다.');
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handlePasteMarkdownFromClipboard = async () => {
+    const ed = editorRef.current || editor;
+    if (!ed) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text && text.trim()) {
+        const html = markdownToHtml(text);
+        ed.chain().focus().insertContent(html).run();
+        setToastMessage('✓ 클립보드에 복사된 마크다운(.md)이 서식 및 코드 하이라이트와 함께 적용되었습니다!');
+        setTimeout(() => setToastMessage(null), 3000);
+        return;
+      }
+    } catch (err) {
+      console.warn('Direct clipboard read restricted or empty:', err);
+    }
+    // If clipboard is empty or permission requires UI interaction, open dedicated MD paste dialog
+    setMdPasteInputText('');
+    setMdPasteActiveTab('input');
+    setActiveTopDialog('md_paste');
+    setToastMessage('마크다운 붙여넣기 창이 열렸습니다. 텍스트를 붙여넣어(Ctrl+V) 바로 적용하세요.');
+    setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  const handleApplyPastedMarkdown = (text: string, mode: 'insert' | 'replace' = 'insert') => {
+    const ed = editorRef.current || editor;
+    if (!ed || !text.trim()) return;
+    const html = markdownToHtml(text);
+    if (mode === 'replace') {
+      ed.chain().focus().setContent(html).run();
+      setToastMessage('✓ 에디터 전체 내용이 마크다운(.md)으로 교체 적용되었습니다.');
+    } else {
+      ed.chain().focus().insertContent(html).run();
+      setToastMessage('✓ 마크다운(.md) 서식 및 코드 블록이 커서 위치에 적용되었습니다.');
+    }
+    setActiveTopDialog(null);
     setTimeout(() => setToastMessage(null), 3000);
   };
 
@@ -2364,18 +2459,41 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                     </div>
 
                     {/* Basic Markdown Import / Export Actions */}
-                    <div className="flex items-center gap-2">
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handlePasteMarkdownFromClipboard();
+                          setActiveTopDialog(null);
+                        }}
+                        className="py-1.5 px-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/80 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                        title="클립보드에 복사된 마크다운을 에디터에 즉시 하이라이트 서식으로 붙여넣어 적용합니다."
+                      >
+                        <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                        <span>클립보드 붙여넣기</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveTopDialog('md_paste');
+                        }}
+                        className="py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        title="마크다운 붙여넣기 및 실시간 하이라이트 미리보기 전용 대화상자를 엽니다."
+                      >
+                        <Edit3 className="w-3.5 h-3.5 text-amber-500" />
+                        <span>MD 붙여넣기 창</span>
+                      </button>
                       <button
                         type="button"
                         onClick={() => {
                           setActiveTopDialog(null);
                           mdFileInputRef.current?.click();
                         }}
-                        className="flex-1 py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        className="py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
                         title="마크다운 파일을 가져옵니다. C, SQL, Java 등 코드 블록의 언어가 자동으로 인식되어 하이라이팅이 적용됩니다."
                       >
-                        <FileDown className="w-3.5 h-3.5 text-amber-500" />
-                        <span>MD 가져오기</span>
+                        <FileDown className="w-3.5 h-3.5 text-sky-500" />
+                        <span>MD 파일 열기</span>
                       </button>
                       <button
                         type="button"
@@ -2383,23 +2501,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                           handleCopyAsMarkdown();
                           setActiveTopDialog(null);
                         }}
-                        className="flex-1 py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
+                        className="py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
                         title="현재 에디터의 내용을 주요 언어 코드 블록(```c, ```sql 등)이 보존된 마크다운으로 복사합니다."
                       >
-                        <Download className="w-3.5 h-3.5 text-sky-500" />
+                        <Download className="w-3.5 h-3.5 text-emerald-500" />
                         <span>MD 복사</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleDownloadMarkdown();
-                          setActiveTopDialog(null);
-                        }}
-                        className="flex-1 py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
-                        title="현재 에디터의 서식 및 코드 블록을 .md 파일로 내보냅니다."
-                      >
-                        <FileText className="w-3.5 h-3.5 text-emerald-500" />
-                        <span>.md 다운로드</span>
                       </button>
                     </div>
 
@@ -2466,6 +2572,227 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                     >
                       닫기
                     </button>
+                  </div>
+                </div>
+              )}
+
+              {/* DIALOG: 마크다운 파일 복사 붙여넣기 및 코드 하이라이트 적용 (Markdown Paste & Apply Dialog) */}
+              {activeTopDialog === 'md_paste' && (
+                <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
+                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                        <ClipboardPaste className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
+                          마크다운(.md) 복사 붙여넣기 및 코드 하이라이트 적용
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-medium">
+                            C · SQL · Java 자동 인식
+                          </span>
+                        </h3>
+                        <p className="text-xs text-stone-500 dark:text-stone-400">
+                          복사한 마크다운 파일 또는 텍스트를 붙여넣으면 제목, 표, 체크리스트, 코드 블록 하이라이트가 즉시 적용됩니다.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTopDialog(null)}
+                      className="p-1.5 rounded-lg text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  {/* Input vs Preview Tab Selector & Quick Action Bar */}
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800/80 p-1 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => setMdPasteActiveTab('input')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                          mdPasteActiveTab === 'input'
+                            ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
+                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>마크다운 입력/붙여넣기</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMdPasteActiveTab('preview')}
+                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                          mdPasteActiveTab === 'preview'
+                            ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
+                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                        }`}
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                        <span>서식 및 코드 하이라이트 미리보기</span>
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            const text = await navigator.clipboard.readText();
+                            if (text) {
+                              setMdPasteInputText(text);
+                              setToastMessage('✓ 클립보드 내용을 붙여넣기 창에 가져왔습니다.');
+                              setTimeout(() => setToastMessage(null), 2500);
+                            }
+                          } catch {
+                            setToastMessage('클립보드 읽기 권한이 필요합니다. 아래 입력창을 클릭 후 Ctrl+V를 누르세요.');
+                            setTimeout(() => setToastMessage(null), 3000);
+                          }
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors"
+                        title="운영체제 클립보드 내용 직접 가져오기"
+                      >
+                        <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
+                        <span>클립보드 가져오기</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => mdFileInputRef.current?.click()}
+                        className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors"
+                        title=".md 파일 선택하여 내용 불러오기"
+                      >
+                        <FileDown className="w-3.5 h-3.5 text-sky-500" />
+                        <span>.md 파일 열기</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Major Language Quick Insert Bar */}
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-[11px]">
+                    <span className="text-stone-400 shrink-0 font-medium">코드 템플릿:</span>
+                    {MARKDOWN_LANGUAGE_TEMPLATES.map((tpl) => (
+                      <button
+                        key={tpl.id}
+                        type="button"
+                        onClick={() => {
+                          setMdPasteInputText((prev) => (prev ? prev + '\n\n' + tpl.markdown : tpl.markdown));
+                          setToastMessage(`✓ ${tpl.name} 마크다운 템플릿이 추가되었습니다.`);
+                          setTimeout(() => setToastMessage(null), 2000);
+                        }}
+                        className="px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/60 hover:bg-amber-50 dark:hover:bg-amber-950/50 hover:border-amber-300 dark:hover:border-amber-700 text-stone-700 dark:text-stone-300 shrink-0 transition-colors"
+                      >
+                        {tpl.name}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Tab 1: Input Editor */}
+                  {mdPasteActiveTab === 'input' && (
+                    <div className="space-y-2">
+                      <div className="relative">
+                        <textarea
+                          value={mdPasteInputText}
+                          onChange={(e) => setMdPasteInputText(e.target.value)}
+                          placeholder={'마크다운(.md) 파일 내용 또는 텍스트를 여기에 붙여넣으세요 (Ctrl+V)\n\n예시:\n# 금융 결제원 모듈 수정 내역\n```c\nmemcpy(szXCH_DIS, "22", sizeof(szXCH_DIS)- 1);\nmemcpy(szPRC_PRG_DIS, "31", sizeof(szXCH_DIS)- 1);\n```'}
+                          className="w-full h-72 p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 focus:outline-hidden transition-all resize-y"
+                        />
+                        {mdPasteInputText && (
+                          <button
+                            type="button"
+                            onClick={() => setMdPasteInputText('')}
+                            className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] bg-stone-200 dark:bg-stone-700 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300 text-stone-600 dark:text-stone-300 transition-colors"
+                          >
+                            지우기
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-stone-500 dark:text-stone-400">
+                        <span>
+                          {mdPasteInputText.length.toLocaleString()} 글자 · 약 {mdPasteInputText.split('\n').length.toLocaleString()} 줄
+                        </span>
+                        <span className="text-amber-600 dark:text-amber-400 font-medium">
+                          Tip: ```c, ```sql, ```java 등 언어 표기 및 미완성 코드 블록도 자동 인식되어 하이라이팅됩니다.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Tab 2: HTML & Syntax Highlighting Live Preview (Renders parsed HTML without exposing raw tags) */}
+                  {mdPasteActiveTab === 'preview' && (
+                    <div className="space-y-2">
+                      <div className="w-full h-72 p-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#1e1e1e] overflow-y-auto prose dark:prose-invert max-w-none text-xs">
+                        {mdPasteInputText.trim() ? (
+                          <div
+                            dangerouslySetInnerHTML={{
+                              __html: markdownToHtml(mdPasteInputText),
+                            }}
+                          />
+                        ) : (
+                          <div className="h-full flex flex-col items-center justify-center text-stone-400">
+                            <FileText className="w-8 h-8 mb-2 opacity-40" />
+                            <p className="text-xs">입력창에 마크다운 텍스트를 입력하거나 붙여넣으면 실시간 서식과 코드 하이라이트가 미리보기에 표시됩니다.</p>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-stone-500 dark:text-stone-400 flex items-center justify-between">
+                        <span>미리보기는 에디터에 실제 삽입될 때와 동일한 스타일 및 코드 하이라이트로 렌더링됩니다.</span>
+                        <button
+                          type="button"
+                          onClick={() => setMdPasteActiveTab('input')}
+                          className="text-amber-600 dark:text-amber-400 hover:underline font-medium"
+                        >
+                          입력창으로 돌아가기
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Insertion Mode & Action Controls */}
+                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 text-xs">
+                      <span className="text-stone-500 font-medium">적용 방식:</span>
+                      <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300">
+                        <input
+                          type="radio"
+                          name="mdPasteMode"
+                          checked={mdPasteMode === 'insert'}
+                          onChange={() => setMdPasteMode('insert')}
+                          className="text-amber-600 focus:ring-amber-500"
+                        />
+                        <span>커서 위치에 삽입</span>
+                      </label>
+                      <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300">
+                        <input
+                          type="radio"
+                          name="mdPasteMode"
+                          checked={mdPasteMode === 'replace'}
+                          onChange={() => setMdPasteMode('replace')}
+                          className="text-amber-600 focus:ring-amber-500"
+                        />
+                        <span>전체 내용 교체</span>
+                      </label>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTopDialog(null)}
+                        className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
+                      >
+                        취소
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleApplyPastedMarkdown(mdPasteInputText, mdPasteMode)}
+                        disabled={!mdPasteInputText.trim()}
+                        className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm transition-colors"
+                      >
+                        <Check className="w-4 h-4" />
+                        <span>에디터에 적용하기</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
               )}
@@ -3314,8 +3641,20 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 </button>
               </div>
 
-              {/* Quick Action Buttons on Top Right (Undo, Redo) */}
-              <div className="flex items-center gap-1 pb-1">
+              {/* Quick Action Buttons on Top Right (Undo, Redo, Paste MD) */}
+              <div className="flex items-center gap-1.5 pb-1">
+                <button
+                  type="button"
+                  onClick={handlePasteMarkdownFromClipboard}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 hover:bg-amber-500/20 transition-colors shadow-2xs"
+                  title="클립보드에 복사된 마크다운(.md) 파일/텍스트를 에디터에 즉시 하이라이팅 서식으로 붙여넣어 적용합니다."
+                >
+                  <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                  <span>MD 붙여넣기</span>
+                </button>
+
+                <div className="w-[1px] h-3.5 bg-stone-200 dark:bg-stone-700 mx-0.5" />
+
                 <button
                   type="button"
                   onClick={() => editor.chain().focus().undo().run()}
@@ -3727,6 +4066,38 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                           : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-200 border-stone-200 dark:border-stone-700'
                       }`}
                       title="코드 & MD 상세 옵션 메뉴 열기"
+                    >
+                      <ChevronDown className="w-3 h-3" />
+                    </button>
+                  </div>
+
+                  {/* MD Paste & Apply Button */}
+                  <div className="relative inline-flex items-center">
+                    <button
+                      type="button"
+                      onClick={handlePasteMarkdownFromClipboard}
+                      className={`px-2.5 py-1.5 rounded-l-lg flex items-center gap-1.5 transition-colors border-y border-l ${
+                        activeTopDialog === 'md_paste'
+                          ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
+                          : 'bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-700/80'
+                      }`}
+                      title="클립보드에 복사된 마크다운(.md) 파일/텍스트를 에디터에 즉시 하이라이팅 서식으로 붙여넣어 적용합니다."
+                    >
+                      <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      <span className="font-semibold">MD 붙여넣기</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMdPasteActiveTab('input');
+                        setActiveTopDialog(activeTopDialog === 'md_paste' ? null : 'md_paste');
+                      }}
+                      className={`px-1.5 py-1.5 rounded-r-lg border-y border-r transition-colors flex items-center justify-center ${
+                        activeTopDialog === 'md_paste'
+                          ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
+                          : 'bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700/80'
+                      }`}
+                      title="마크다운(.md) 붙여넣기 및 미리보기 대화상자 열기"
                     >
                       <ChevronDown className="w-3 h-3" />
                     </button>
