@@ -26,9 +26,19 @@ export type SupportedLanguage =
   | 'c'
   | 'cpp'
   | 'markup'
+  | 'html'
+  | 'xml'
   | 'css'
   | 'yaml'
   | 'plaintext';
+
+// Register language aliases in Prism so html and xml highlight cleanly using markup grammar
+if (typeof Prism !== 'undefined' && Prism.languages) {
+  if (Prism.languages.markup) {
+    Prism.languages.html = Prism.languages.markup;
+    Prism.languages.xml = Prism.languages.markup;
+  }
+}
 
 /**
  * Detects if a given text is likely SQL or a programming language
@@ -59,7 +69,7 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
     if (['java'].includes(lang)) return { isCode: true, language: 'java' };
     if (['c', 'pc', 'h'].includes(lang)) return { isCode: true, language: 'c' };
     if (['cpp', 'cc', 'cxx', 'hpp'].includes(lang)) return { isCode: true, language: 'cpp' };
-    if (['xml', 'html'].includes(lang)) return { isCode: true, language: 'markup' };
+    if (['xml', 'html', 'htm'].includes(lang)) return { isCode: true, language: 'html' };
     if (['css'].includes(lang)) return { isCode: true, language: 'css' };
     if (['yaml', 'yml'].includes(lang)) return { isCode: true, language: 'yaml' };
     return { isCode: true, language: 'sql' }; // default fallback
@@ -99,24 +109,31 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
     }
   }
 
+  // Explicit XML / HTML document check (e.g. index.html, <!doctype html>, <?xml, full html tags)
+  const isExplicitHtmlDocument =
+    /^\s*<\?xml\b/i.test(sample) ||
+    /^\s*<!doctype\s+html\b/i.test(sample) ||
+    /^\s*<html\b/i.test(sample) ||
+    (sample.startsWith('<svg') && sample.endsWith('</svg>')) ||
+    (/<\s*(?:head|body|script|style|meta|link)\b/i.test(sample) && sample.includes('</'));
+
   // Ignore rich HTML tags like <img, <table, <p>, etc. from being classified as code
-  if (
+  // unless the text is explicitly an HTML/XML document or template (e.g. index.html)
+  if (!isExplicitHtmlDocument && (
     sample.includes('<img') ||
     sample.includes('<table') ||
     sample.includes('<sticker-node') ||
     (sample.startsWith('<p>') && sample.endsWith('</p>'))
-  ) {
+  )) {
     return { isCode: false, language: 'plaintext' };
   }
 
-  // 4. XML / HTML Code Heuristic Detection (explicit <?xml, <!DOCTYPE, <html> or pure XML structures)
+  // 4. XML / HTML Code Heuristic Detection
   if (
-    sample.startsWith('<?xml') ||
-    sample.startsWith('<!DOCTYPE') ||
-    (sample.startsWith('<html') && sample.endsWith('</html>')) ||
-    (sample.startsWith('<svg') && sample.endsWith('</svg>'))
+    isExplicitHtmlDocument ||
+    (/\bclass="[^"]*"\s*>/i.test(sample) && /<\/[a-z0-9]+>/i.test(sample))
   ) {
-    return { isCode: true, language: 'markup', reason: 'XML/HTML' };
+    return { isCode: true, language: 'html', reason: 'XML / HTML' };
   }
 
   // 5. Python Heuristic Detection
@@ -220,9 +237,10 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
  */
 export function highlightCode(code: string, language: SupportedLanguage): string {
   const cleanCode = extractRawCode(code);
-  const grammar = Prism.languages[language] || Prism.languages.sql || Prism.languages.plaintext;
+  const langKey = (language === 'html' || language === 'xml' || language === 'markup') ? 'markup' : language;
+  const grammar = Prism.languages[langKey] || Prism.languages[language] || Prism.languages.sql || Prism.languages.plaintext;
   try {
-    return Prism.highlight(cleanCode, grammar, language);
+    return Prism.highlight(cleanCode, grammar, langKey);
   } catch (err) {
     return escapeHtml(cleanCode);
   }
@@ -351,12 +369,14 @@ export function extractCodeBlockFromContent(content: any): {
     const langMatch = classAttr.match(/language-([a-zA-Z0-9_-]+)/);
     if (langMatch) {
       const rawL = langMatch[1].toLowerCase();
-      if (['sql', 'javascript', 'typescript', 'json', 'python', 'bash', 'java', 'markup', 'css', 'yaml'].includes(rawL)) {
-        lang = rawL as SupportedLanguage;
+      if (['sql', 'javascript', 'typescript', 'json', 'python', 'bash', 'java', 'markup', 'html', 'xml', 'css', 'yaml', 'c', 'cpp'].includes(rawL)) {
+        lang = (rawL === 'markup' || rawL === 'xml') ? 'html' : (rawL as SupportedLanguage);
       } else if (rawL === 'js') lang = 'javascript';
       else if (rawL === 'ts') lang = 'typescript';
       else if (rawL === 'sh' || rawL === 'shell') lang = 'bash';
       else if (rawL === 'py') lang = 'python';
+      else if (rawL === 'pc' || rawL === 'h') lang = 'c';
+      else if (rawL === 'cc' || rawL === 'cxx' || rawL === 'hpp') lang = 'cpp';
     }
     if (lang === 'plaintext') {
       const detected = detectLanguage(inner);

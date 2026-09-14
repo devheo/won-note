@@ -112,7 +112,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
   }, [isMarkdown, rawString]);
 
   const markdownCellPreview = useMemo(() => {
-    if (!isMarkdown) return null;
+    if (pureCodeInfo.isPureCode || hasSticker || hasTable) return null;
     const preview = extractMarkdownCellPreview(rawString);
     if (!preview) return null;
     const lang = preview.codeLanguage || detectLanguage(preview.codeSnippet).language || 'plaintext';
@@ -122,7 +122,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
       codeLanguage: lang,
       highlightedCodeHtml,
     };
-  }, [isMarkdown, rawString]);
+  }, [pureCodeInfo.isPureCode, hasSticker, hasTable, rawString]);
 
   const detectedCode = pureCodeInfo.isPureCode
     ? { isCode: true, language: pureCodeInfo.language }
@@ -332,36 +332,32 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                   )}
                 </span>
               </div>
-            ) : isMarkdown ? (
+            ) : (markdownCellPreview && markdownCellPreview.hasCodeBlock) ? (
               <div className="w-full min-w-0 flex flex-col gap-0.5">
-                {markdownCellPreview && markdownCellPreview.hasCodeBlock ? (
-                  <>
-                    {markdownCellPreview.introText && (
-                      <div className="text-xs text-stone-800 dark:text-stone-200 truncate font-medium">
-                        <HighlightText text={markdownCellPreview.introText} highlight={highlightQuery} />
-                      </div>
-                    )}
-                    <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded font-mono text-[11px] bg-stone-100 dark:bg-[#181a1f] text-stone-800 dark:text-stone-200 border border-stone-200/90 dark:border-[#2d3139] shadow-2xs overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
-                      <Code className="w-3 h-3 text-sky-500 shrink-0" />
-                      {markdownCellPreview.codeLanguage && (
-                        <span className="text-[10px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-tight shrink-0">
-                          {markdownCellPreview.codeLanguage}
-                        </span>
-                      )}
-                      <span
-                        className="truncate font-mono"
-                        dangerouslySetInnerHTML={{ __html: markdownCellPreview.highlightedCodeHtml }}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <div className={`${clampClass} text-xs text-stone-700 dark:text-stone-300`}>
-                    {displayPlainText.length > 0 ? (
-                      <HighlightText text={displayPlainText} highlight={highlightQuery} />
-                    ) : (
-                      <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
-                    )}
+                {markdownCellPreview.introText && (
+                  <div className="text-xs text-stone-800 dark:text-stone-200 truncate font-medium">
+                    <HighlightText text={markdownCellPreview.introText} highlight={highlightQuery} />
                   </div>
+                )}
+                <div className="flex items-center gap-1.5 px-1.5 py-0.5 rounded font-mono text-[11px] bg-stone-100 dark:bg-[#181a1f] text-stone-800 dark:text-stone-200 border border-stone-200/90 dark:border-[#2d3139] shadow-2xs overflow-hidden text-ellipsis whitespace-nowrap min-w-0">
+                  <Code className="w-3 h-3 text-sky-500 shrink-0" />
+                  {markdownCellPreview.codeLanguage && (
+                    <span className="text-[10px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-tight shrink-0">
+                      {markdownCellPreview.codeLanguage}
+                    </span>
+                  )}
+                  <span
+                    className="truncate font-mono"
+                    dangerouslySetInnerHTML={{ __html: markdownCellPreview.highlightedCodeHtml }}
+                  />
+                </div>
+              </div>
+            ) : isMarkdown ? (
+              <div className={`${clampClass} text-xs text-stone-700 dark:text-stone-300 w-full`}>
+                {displayPlainText.length > 0 ? (
+                  <HighlightText text={displayPlainText} highlight={highlightQuery} />
+                ) : (
+                  <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
                 )}
               </div>
             ) : (pureCodeInfo.isPureCode || detectedCode.isCode) ? (

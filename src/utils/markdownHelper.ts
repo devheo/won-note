@@ -72,13 +72,16 @@ export function markdownToHtml(markdown: string): string {
     });
   }
 
-  // 2. Wrap tables with wonbee-rich-table styling class and default all borders
+  // 2. Add wonbee-rich-table styling class and default all borders
   if (processedHtml.includes('<table>')) {
     processedHtml = processedHtml.replace(
       /<table>/g,
-      '<div class="wonbee-table-scroll-wrapper overflow-x-auto my-3"><table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all">'
-    ).replace(/<\/table>/g, '</table></div>');
+      '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all">'
+    );
   }
+
+  // 3. Normalize language class names for HTML / XML to language-html
+  processedHtml = processedHtml.replace(/class="language-(?:markup|xml)"/g, 'class="language-html"');
 
   return processedHtml;
 }
@@ -401,38 +404,86 @@ export function extractMarkdownCellPreview(text: string): MarkdownCellPreviewInf
   if (!text || typeof text !== 'string') return null;
 
   let cleanText = text;
-  if (cleanText.includes('```') && /<[a-z1-6]+/i.test(cleanText)) {
-    cleanText = cleanText
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
-      .replace(/<\/?(?:p|div|span)[^>]*>/gi, '\n')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&#039;/g, "'")
-      .replace(/&#39;/g, "'")
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&');
+
+  // Case 1: Markdown code fence ```lang ... ```
+  if (cleanText.includes('```')) {
+    if (/<[a-z1-6]+/i.test(cleanText)) {
+      cleanText = cleanText
+        .replace(/<br\s*\/?>/gi, '\n')
+        .replace(/<\/p>\s*<p[^>]*>/gi, '\n\n')
+        .replace(/<\/?(?:p|div|span)[^>]*>/gi, '\n')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'")
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&');
+    }
+
+    const fenceMatch = cleanText.match(/```([a-zA-Z0-9_-]+)?\s*([\s\S]*?)```/);
+    if (fenceMatch) {
+      const introRaw = cleanText.slice(0, fenceMatch.index).trim();
+      const introText = cleanMarkdownForPreview(introRaw);
+      const codeContent = fenceMatch[2].trim();
+
+      // Grab the first 1-2 non-empty lines for compact cell display
+      const lines = codeContent.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
+      const codeSnippet = lines.slice(0, 2).join('\n');
+      const explicitLang = (fenceMatch[1] || '').trim().toLowerCase();
+      const codeLanguage = explicitLang === 'auto' || !explicitLang
+        ? (detectLanguage(codeSnippet).language || 'plaintext')
+        : (explicitLang === 'markup' || explicitLang === 'xml' ? 'html' : explicitLang);
+
+      return {
+        hasCodeBlock: true,
+        introText,
+        codeSnippet,
+        codeLanguage,
+      };
+    }
   }
 
-  const fenceMatch = cleanText.match(/```([a-zA-Z0-9_-]+)?\s*([\s\S]*?)```/);
-  if (!fenceMatch) return null;
+  // Case 2: TipTap / HTML <pre><code ...>...</code></pre> block
+  if (cleanText.includes('<pre') && cleanText.includes('<code')) {
+    const preMatch = cleanText.match(/<pre(?:\s+[^>]*)?>\s*<code(?:\s+class="([^"]*)")?(?:\s+[^>]*)?>([\s\S]*?)<\/code>\s*<\/pre>/i);
+    if (preMatch) {
+      const introRaw = cleanText.slice(0, preMatch.index).trim();
+      const introText = cleanMarkdownForPreview(introRaw);
+      const classAttr = preMatch[1] || '';
+      const langMatch = classAttr.match(/language-([a-zA-Z0-9_-]+)/);
+      const rawCode = preMatch[2]
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&#039;/g, "'")
+        .replace(/&#39;/g, "'")
+        .replace(/&nbsp;/g, ' ')
+        .replace(/&amp;/g, '&')
+        .trim();
 
-  const introRaw = cleanText.slice(0, fenceMatch.index).trim();
-  const introText = cleanMarkdownForPreview(introRaw);
-  const codeContent = fenceMatch[2].trim();
+      const lines = rawCode.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
+      const codeSnippet = lines.slice(0, 2).join('\n');
+      const rawL = (langMatch ? langMatch[1] : '').toLowerCase();
+      let codeLanguage = rawL;
+      if (!codeLanguage || codeLanguage === 'plaintext' || codeLanguage === 'auto') {
+        const detected = detectLanguage(codeSnippet);
+        codeLanguage = detected.isCode ? detected.language : 'plaintext';
+      }
+      if (codeLanguage === 'markup' || codeLanguage === 'xml') {
+        codeLanguage = 'html';
+      }
 
-  // Grab the first 1-2 non-empty lines for compact cell display
-  const lines = codeContent.split('\n').map((l) => l.trimEnd()).filter((l) => l.trim().length > 0);
-  const codeSnippet = lines.slice(0, 2).join('\n');
-  const codeLanguage = fenceMatch[1] || '';
+      return {
+        hasCodeBlock: true,
+        introText,
+        codeSnippet,
+        codeLanguage,
+      };
+    }
+  }
 
-  return {
-    hasCodeBlock: true,
-    introText,
-    codeSnippet,
-    codeLanguage,
-  };
+  return null;
 }
 
 export interface MarkdownLanguageTemplate {

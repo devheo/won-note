@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { ReactNodeViewRenderer, useEditor, EditorContent } from '@tiptap/react';
+import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
 import StarterKit from '@tiptap/starter-kit';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { createLowlight, common } from 'lowlight';
@@ -101,6 +102,52 @@ import {
 // Initialize Lowlight with common languages (Java, SQL, JS, TS, Python, JSON, HTML, Bash, etc.)
 const baseLowlight = createLowlight(common);
 
+// Register critical language aliases for Lowlight
+try {
+  baseLowlight.registerAlias('xml', ['html', 'htm', 'markup', 'svg', 'xhtml']);
+  baseLowlight.registerAlias('javascript', ['js', 'jsx', 'mjs', 'cjs']);
+  baseLowlight.registerAlias('typescript', ['ts', 'tsx']);
+  baseLowlight.registerAlias('python', ['py']);
+  baseLowlight.registerAlias('bash', ['sh', 'zsh', 'shell']);
+  baseLowlight.registerAlias('c', ['pc', 'h']);
+  baseLowlight.registerAlias('cpp', ['cc', 'cxx', 'hpp']);
+} catch (e) {
+  console.warn('baseLowlight.registerAlias error:', e);
+}
+
+const resolveLowlightLang = (lang: string, value: string): string => {
+  const l = (lang || '').toLowerCase();
+  if (l === 'html' || l === 'markup' || l === 'htm') return 'xml';
+  if (l === 'js') return 'javascript';
+  if (l === 'ts') return 'typescript';
+  if (l === 'py') return 'python';
+  if (l === 'sh') return 'bash';
+  if (l === 'pc' || l === 'h') return 'c';
+  if (l && l !== 'auto' && baseLowlight.registered(l)) return l;
+
+  const detected = detectLanguage(value);
+  if (detected.isCode) {
+    const dLang = detected.language;
+    if (dLang === 'html' || dLang === 'markup' || dLang === 'xml') return 'xml';
+    if (baseLowlight.registered(dLang)) return dLang;
+  }
+
+  const sample = value.length > 16000 ? value.slice(0, 16000) : value;
+  if (/^\s*<!doctype\s+html\b/i.test(sample) || /^\s*<html\b/i.test(sample) || /<\s*(?:head|body|script|style)\b/i.test(sample)) {
+    return 'xml';
+  }
+  if (/\b(?:package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|private\s+|protected\s+|@Override|public\s+static\s+final)\b/.test(sample)) {
+    return 'java';
+  }
+  if (/\b(?:SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(sample)) {
+    return 'sql';
+  }
+  if (/\b(?:memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|sizeof\s*\()\b/.test(sample)) {
+    return 'c';
+  }
+  return 'c';
+};
+
 // Safe high-performance wrapper for lowlight
 // Accurately resolves languages (including 'auto' and language aliases) and highlights up to 3MB
 // without stripping syntax tokens or freezing the browser.
@@ -109,6 +156,8 @@ const lowlight = {
   registered: (aliasOrLanguage: string) => {
     if (!aliasOrLanguage) return false;
     if (aliasOrLanguage === 'auto') return true;
+    const l = aliasOrLanguage.toLowerCase();
+    if (l === 'html' || l === 'markup' || l === 'xml') return true;
     return Boolean(baseLowlight.registered(aliasOrLanguage));
   },
   highlight: (language: string, value: string, options?: any) => {
@@ -120,24 +169,7 @@ const lowlight = {
       return { type: 'root', children: [{ type: 'text', value }] };
     }
     try {
-      let targetLang = language;
-      if (!targetLang || targetLang === 'auto' || !baseLowlight.registered(targetLang)) {
-        const detected = detectLanguage(value);
-        if (detected.isCode && baseLowlight.registered(detected.language)) {
-          targetLang = detected.language;
-        } else {
-          const sample = value.length > 16000 ? value.slice(0, 16000) : value;
-          if (/\b(?:package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|private\s+|protected\s+|@Override|public\s+static\s+final)\b/.test(sample)) {
-            targetLang = 'java';
-          } else if (/\b(?:SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(sample)) {
-            targetLang = 'sql';
-          } else if (/\b(?:memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|sizeof\s*\()\b/.test(sample)) {
-            targetLang = 'c';
-          } else {
-            targetLang = 'c'; // Default to C/code when uncertain
-          }
-        }
-      }
+      const targetLang = resolveLowlightLang(language, value);
       return baseLowlight.highlight(targetLang, value, options);
     } catch (err) {
       console.warn('lowlight highlight error:', err);
@@ -156,21 +188,8 @@ const lowlight = {
       return { type: 'root', children: [{ type: 'text', value }] };
     }
     try {
-      const detected = detectLanguage(value);
-      if (detected.isCode && baseLowlight.registered(detected.language)) {
-        return baseLowlight.highlight(detected.language, value, options);
-      }
-      const sample = value.length > 16000 ? value.slice(0, 16000) : value;
-      if (/\b(?:package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|private\s+|protected\s+|@Override|public\s+static\s+final)\b/.test(sample)) {
-        return baseLowlight.highlight('java', value, options);
-      }
-      if (/\b(?:SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(sample)) {
-        return baseLowlight.highlight('sql', value, options);
-      }
-      if (/\b(?:memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|sizeof\s*\()\b/.test(sample)) {
-        return baseLowlight.highlight('c', value, options);
-      }
-      return baseLowlight.highlightAuto(value, options);
+      const targetLang = resolveLowlightLang('auto', value);
+      return baseLowlight.highlight(targetLang, value, options);
     } catch (err) {
       console.warn('lowlight highlightAuto error:', err);
       return { type: 'root', children: [{ type: 'text', value }] };
@@ -869,19 +888,38 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           return true;
         }
 
+        const insertHtmlSafely = (htmlContent: string) => {
+          const targetEd = editorRef.current || (view as any).editor;
+          if (targetEd && targetEd.commands && typeof targetEd.commands.insertContent === 'function') {
+            targetEd.chain().focus().insertContent(htmlContent).run();
+            return true;
+          }
+          try {
+            const parser = ProseMirrorDOMParser.fromSchema(state.schema);
+            const div = document.createElement('div');
+            div.innerHTML = htmlContent;
+            const slice = parser.parseSlice(div);
+            view.dispatch(state.tr.replaceSelection(slice).scrollIntoView());
+            return true;
+          } catch (err) {
+            console.warn('Fallback HTML insertion error:', err);
+            return false;
+          }
+        };
+
         // 4. Markdown content check: maintain full formatting (headings, tables, task lists, blockquotes, code blocks)
         if (isLikelyMarkdown(plainText)) {
           event.preventDefault();
           const html = markdownToHtml(plainText);
-          if (ed) {
-            ed.chain().focus().insertContent(html).run();
-            setToastMessage('✓ 복사한 마크다운(.md) 서식 및 코드 블록이 완벽하게 적용되었습니다.');
+          const inserted = insertHtmlSafely(html);
+          if (inserted) {
+            setToastMessage('✓ 마크다운(.md) 서식 및 코드 블록이 자동으로 인식되어 완벽하게 적용되었습니다.');
             setTimeout(() => setToastMessage(null), 3000);
             return true;
           }
         }
 
-        // 5. Source code check (C / Pro*C, SQL, Java, JS/TS, Python, Bash, etc.)
+        // 5. Source code check (HTML / XML, C / Pro*C, SQL, Java, JS/TS, Python, Bash, etc.)
         // or multi-line text with indentations
         const langDetection = detectLanguage(plainText);
         const hasJavaCodeSignature =
@@ -890,14 +928,18 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           /\b(memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|int\s+main|sizeof\s*\()\b/.test(plainText);
         const hasSqlSignature =
           /\b(SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(plainText);
+        const hasHtmlSignature =
+          /^\s*<!doctype\s+html\b/i.test(plainText) || /^\s*<html\b/i.test(plainText) || /<\s*(?:head|body|script|style)\b/i.test(plainText);
         const isMultilineWithIndentation =
           plainText.includes('\n') && (/^\s{2,}\S/m.test(plainText) || /^\t\S/m.test(plainText));
 
-        if (langDetection.isCode || hasJavaCodeSignature || hasCCodeSignature || hasSqlSignature || (isMultilineWithIndentation && (plainText.includes('{') || plainText.includes(';') || plainText.includes('(')))) {
+        if (langDetection.isCode || hasJavaCodeSignature || hasCCodeSignature || hasSqlSignature || hasHtmlSignature || (isMultilineWithIndentation && (plainText.includes('{') || plainText.includes(';') || plainText.includes('(')))) {
           // It's source code! Insert as a dedicated codeBlock with auto/detected language attribute
           event.preventDefault();
-          const language = langDetection.isCode
+          let language = langDetection.isCode
             ? langDetection.language
+            : hasHtmlSignature
+            ? 'html'
             : hasCCodeSignature
             ? 'c'
             : hasSqlSignature
@@ -906,7 +948,13 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             ? 'java'
             : 'auto';
 
-          const formattedCode = formatJavaOrGeneralCode(plainText);
+          if (language === 'markup' || language === 'xml') {
+            language = 'html';
+          }
+
+          // For multi-line code (especially HTML, SQL, etc.), preserve original linebreaks without destructive formatting
+          const lineCount = (plainText.match(/\n/g) || []).length;
+          const formattedCode = lineCount >= 2 ? plainText : formatJavaOrGeneralCode(plainText);
           const codeBlockType = state.schema.nodes.codeBlock;
           if (codeBlockType) {
             const codeBlockNode = codeBlockType.create(
@@ -914,6 +962,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               state.schema.text(formattedCode)
             );
             view.dispatch(state.tr.replaceSelectionWith(codeBlockNode));
+            setToastMessage(`✓ ${language.toUpperCase()} 소스 코드가 코드 블록으로 자동 인식되었습니다.`);
+            setTimeout(() => setToastMessage(null), 3000);
             return true;
           }
         }

@@ -95,7 +95,8 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
     } catch (_) {}
   };
 
-  const rawLang = (node?.attrs?.language as string) || 'auto';
+  const rawLangAttr = (node?.attrs?.language as string) || 'auto';
+  const rawLang = (rawLangAttr === 'markup' || rawLangAttr === 'xml') ? 'html' : rawLangAttr;
 
   // Automatically detect language from code content when in 'auto' mode
   const detectedInfo = useMemo(() => {
