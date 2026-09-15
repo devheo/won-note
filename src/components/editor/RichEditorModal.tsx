@@ -15,6 +15,9 @@ import { TableCell } from '@tiptap/extension-table-cell';
 import { TableHeader } from '@tiptap/extension-table-header';
 import { TextAlign } from '@tiptap/extension-text-align';
 import { TextStyle } from '@tiptap/extension-text-style';
+import FontFamily from '@tiptap/extension-font-family';
+import Link from '@tiptap/extension-link';
+import Youtube from '@tiptap/extension-youtube';
 import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
 import { StickerExtension } from './StickerExtension';
@@ -97,6 +100,10 @@ import {
   Zap,
   Cpu,
   Check,
+  AlignJustify,
+  Indent,
+  Outdent,
+  Video,
 } from 'lucide-react';
 
 // Initialize Lowlight with common languages (Java, SQL, JS, TS, Python, JSON, HTML, Bash, etc.)
@@ -204,7 +211,50 @@ const lowlight = {
   },
 };
 
-// Custom TableCell supporting background colors
+// Helper to compute combined inline styles for table cells/headers
+const formatCellStyles = (attributes: Record<string, any>) => {
+  const styles: string[] = [];
+  if (attributes.backgroundColor) {
+    styles.push(`background-color: ${attributes.backgroundColor}`);
+  }
+  if (attributes.cellBorder) {
+    const color = attributes.cellBorderColor || '#475569';
+    switch (attributes.cellBorder) {
+      case 'none':
+        styles.push('border: none !important');
+        break;
+      case 'thick':
+        styles.push(`border: 2.5px solid ${color} !important`);
+        break;
+      case 'dashed':
+        styles.push(`border: 1.5px dashed ${color} !important`);
+        break;
+      case 'bottom':
+        styles.push('border-top: none !important; border-left: none !important; border-right: none !important');
+        styles.push(`border-bottom: 2.5px solid ${color} !important`);
+        break;
+      case 'top':
+        styles.push('border-bottom: none !important; border-left: none !important; border-right: none !important');
+        styles.push(`border-top: 2.5px solid ${color} !important`);
+        break;
+      case 'left':
+        styles.push('border-top: none !important; border-right: none !important; border-bottom: none !important');
+        styles.push(`border-left: 2.5px solid ${color} !important`);
+        break;
+      case 'right':
+        styles.push('border-top: none !important; border-left: none !important; border-bottom: none !important');
+        styles.push(`border-right: 2.5px solid ${color} !important`);
+        break;
+      case 'all':
+      default:
+        styles.push(`border: 1.5px solid ${color} !important`);
+        break;
+    }
+  }
+  return styles.join('; ');
+};
+
+// Custom TableCell supporting background colors and individual cell borders
 const CustomTableCell = TableCell.extend({
   addAttributes() {
     return {
@@ -213,12 +263,75 @@ const CustomTableCell = TableCell.extend({
         default: null,
         parseHTML: (element) => element.style.backgroundColor || element.getAttribute('data-bg-color') || null,
         renderHTML: (attributes) => {
-          if (!attributes.backgroundColor) {
+          const style = formatCellStyles(attributes);
+          return {
+            ...(style ? { style } : {}),
+            ...(attributes.backgroundColor ? { 'data-bg-color': attributes.backgroundColor } : {}),
+            ...(attributes.cellBorder ? { 'data-cell-border': attributes.cellBorder } : {}),
+            ...(attributes.cellBorderColor ? { 'data-cell-border-color': attributes.cellBorderColor } : {}),
+          };
+        },
+      },
+      cellBorder: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-cell-border') || null,
+        renderHTML: () => ({}),
+      },
+      cellBorderColor: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-cell-border-color') || null,
+        renderHTML: () => ({}),
+      },
+    };
+  },
+});
+
+// Custom TableHeader supporting background colors and individual cell borders
+const CustomTableHeader = TableHeader.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      backgroundColor: {
+        default: null,
+        parseHTML: (element) => element.style.backgroundColor || element.getAttribute('data-bg-color') || null,
+        renderHTML: (attributes) => {
+          const style = formatCellStyles(attributes);
+          return {
+            ...(style ? { style } : {}),
+            ...(attributes.backgroundColor ? { 'data-bg-color': attributes.backgroundColor } : {}),
+            ...(attributes.cellBorder ? { 'data-cell-border': attributes.cellBorder } : {}),
+            ...(attributes.cellBorderColor ? { 'data-cell-border-color': attributes.cellBorderColor } : {}),
+          };
+        },
+      },
+      cellBorder: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-cell-border') || null,
+        renderHTML: () => ({}),
+      },
+      cellBorderColor: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-cell-border-color') || null,
+        renderHTML: () => ({}),
+      },
+    };
+  },
+});
+
+// Custom TextStyle supporting custom font sizes
+const CustomTextStyle = TextStyle.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      fontSize: {
+        default: null,
+        parseHTML: (element) => element.style.fontSize?.replace(/['"]+/g, '') || null,
+        renderHTML: (attributes) => {
+          if (!attributes.fontSize) {
             return {};
           }
           return {
-            style: `background-color: ${attributes.backgroundColor};`,
-            'data-bg-color': attributes.backgroundColor,
+            style: `font-size: ${attributes.fontSize};`,
           };
         },
       },
@@ -296,6 +409,52 @@ class CustomTableView extends TableView {
     const cells = this.table.querySelectorAll('td, th');
     cells.forEach((cellEl) => {
       const el = cellEl as HTMLElement;
+      // CRITICAL: If the cell has an individual cell border applied, apply cell-specific styling and do NOT wipe it with table default
+      const cellBorder = el.getAttribute('data-cell-border');
+      if (cellBorder) {
+        const cellColor = el.getAttribute('data-cell-border-color') || effectiveColor;
+        switch (cellBorder) {
+          case 'none':
+            el.style.border = 'none';
+            break;
+          case 'thick':
+            el.style.border = `2.5px solid ${cellColor}`;
+            break;
+          case 'dashed':
+            el.style.border = `1.5px dashed ${cellColor}`;
+            break;
+          case 'bottom':
+            el.style.borderTop = 'none';
+            el.style.borderLeft = 'none';
+            el.style.borderRight = 'none';
+            el.style.borderBottom = `2.5px solid ${cellColor}`;
+            break;
+          case 'top':
+            el.style.borderTop = `2.5px solid ${cellColor}`;
+            el.style.borderLeft = 'none';
+            el.style.borderRight = 'none';
+            el.style.borderBottom = 'none';
+            break;
+          case 'left':
+            el.style.borderTop = 'none';
+            el.style.borderRight = 'none';
+            el.style.borderBottom = 'none';
+            el.style.borderLeft = `2.5px solid ${cellColor}`;
+            break;
+          case 'right':
+            el.style.borderTop = 'none';
+            el.style.borderLeft = 'none';
+            el.style.borderBottom = 'none';
+            el.style.borderRight = `2.5px solid ${cellColor}`;
+            break;
+          case 'all':
+          default:
+            el.style.border = `1.5px solid ${cellColor}`;
+            break;
+        }
+        return;
+      }
+
       if (borderStyle === 'outer' || borderStyle === 'none') {
         el.style.border = 'none';
       } else if (borderStyle === 'horizontal') {
@@ -469,8 +628,17 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   
   // Top-level modal popup state (rendered at the very top of rich editor container, never clipped or constrained by toolbar overflow)
   const [activeTopDialog, setActiveTopDialog] = useState<
-    'table' | 'code' | 'image' | 'link' | 'border' | 'textColor' | 'highlight' | 'md_paste' | null
+    'table' | 'code' | 'image' | 'video' | 'link' | 'border' | 'textColor' | 'highlight' | 'md_paste' | null
   >(null);
+
+  // Video Dialog state
+  const [videoDialogUrl, setVideoDialogUrl] = useState('');
+
+  // Table Border Dialog scope ('cell' for selected cell(s), 'table' for entire table)
+  const [borderScope, setBorderScope] = useState<'cell' | 'table'>('cell');
+
+  // Code & Markdown Dialog Tab ('templates' | 'md_paste' | 'tools')
+  const [codeDialogTab, setCodeDialogTab] = useState<'templates' | 'md_paste' | 'tools'>('templates');
 
   // Markdown (.md) Paste & Apply Dialog states
   const [mdPasteInputText, setMdPasteInputText] = useState('');
@@ -724,15 +892,33 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         },
       }),
       TableRow,
-      TableHeader,
+      CustomTableHeader,
       CustomTableCell,
       TextAlign.configure({
         types: ['heading', 'paragraph', 'tableHeader', 'tableCell'],
       }),
-      TextStyle,
+      CustomTextStyle,
+      FontFamily,
       Color,
       Highlight.configure({
         multicolor: true,
+      }),
+      Link.configure({
+        openOnClick: false,
+        autolink: true,
+        HTMLAttributes: {
+          class: 'text-amber-600 dark:text-amber-400 underline hover:text-amber-700 dark:hover:text-amber-300 transition-colors cursor-pointer',
+          target: '_blank',
+          rel: 'noopener noreferrer',
+        },
+      }),
+      Youtube.configure({
+        inline: false,
+        width: 640,
+        height: 360,
+        HTMLAttributes: {
+          class: 'rounded-xl overflow-hidden my-3 max-w-full shadow-md border border-stone-200 dark:border-stone-800',
+        },
       }),
       CustomImage.configure({
         inline: true,
@@ -1935,6 +2121,9 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             const cells = tableEl.querySelectorAll('td, th');
             cells.forEach((cellEl) => {
               const el = cellEl as HTMLElement;
+              if (el.getAttribute('data-cell-border')) {
+                return;
+              }
               if (style === 'outer' || style === 'none') {
                 el.style.border = 'none';
               } else if (style === 'horizontal') {
@@ -2057,6 +2246,9 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             const cells = tableEl.querySelectorAll('td, th');
             cells.forEach((cellEl) => {
               const el = cellEl as HTMLElement;
+              if (el.getAttribute('data-cell-border')) {
+                return;
+              }
               if (style === 'outer' || style === 'none') {
                 el.style.border = 'none';
               } else if (style === 'horizontal') {
@@ -2081,6 +2273,127 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       setTimeout(() => setToastMessage(null), 2000);
     }
   }, [editor]);
+
+  // Inspect active cell/header attributes
+  const getActiveTableCellAttrs = useCallback(() => {
+    if (!editor) return { cellBorder: null, cellBorderColor: null, backgroundColor: null };
+    return {
+      cellBorder: editor.getAttributes('tableCell').cellBorder || editor.getAttributes('tableHeader').cellBorder || null,
+      cellBorderColor: editor.getAttributes('tableCell').cellBorderColor || editor.getAttributes('tableHeader').cellBorderColor || null,
+      backgroundColor: editor.getAttributes('tableCell').backgroundColor || editor.getAttributes('tableHeader').backgroundColor || null,
+    };
+  }, [editor]);
+
+  // Apply cell-specific border style
+  const applyCellBorder = useCallback((borderStyle: string | null, borderColor?: string) => {
+    if (!editor) return;
+    const currentCellAttrs = getActiveTableCellAttrs();
+    const targetColor = borderColor !== undefined ? borderColor : (currentCellAttrs.cellBorderColor || '#475569');
+
+    editor.chain().focus()
+      .setCellAttribute('cellBorder', borderStyle)
+      .setCellAttribute('cellBorderColor', borderStyle ? targetColor : null)
+      .run();
+
+    const labels: Record<string, string> = {
+      all: '모든 테두리',
+      thick: '굵은 테두리',
+      dashed: '점선 테두리',
+      bottom: '아래쪽 강조선',
+      top: '위쪽 강조선',
+      left: '왼쪽 테두리',
+      right: '오른쪽 테두리',
+      none: '테두리 없음',
+    };
+
+    setToastMessage(
+      borderStyle
+        ? `✓ 선택한 셀에 [${labels[borderStyle] || borderStyle}] 테두리가 적용되었습니다.`
+        : '✓ 선택한 셀의 테두리가 기본 표 스타일로 초기화되었습니다.'
+    );
+    setTimeout(() => setToastMessage(null), 2500);
+  }, [editor, getActiveTableCellAttrs]);
+
+  // Apply cell-specific border color
+  const applyCellBorderColor = useCallback((color: string) => {
+    if (!editor) return;
+    const currentCellAttrs = getActiveTableCellAttrs();
+    const currentBorderStyle = currentCellAttrs.cellBorder || 'all';
+    editor.chain().focus()
+      .setCellAttribute('cellBorder', currentBorderStyle)
+      .setCellAttribute('cellBorderColor', color)
+      .run();
+    setToastMessage(`✓ 선택한 셀의 테두리 색상이 변경되었습니다.`);
+    setTimeout(() => setToastMessage(null), 2500);
+  }, [editor, getActiveTableCellAttrs]);
+
+  // Custom Font Size Setter
+  const setFontSize = useCallback((size: string) => {
+    if (!editor) return;
+    if (!size || size === 'default') {
+      (editor.chain().focus() as any).setMark('textStyle', { fontSize: null }).removeEmptyTextStyle().run();
+    } else {
+      (editor.chain().focus() as any).setMark('textStyle', { fontSize: size }).run();
+    }
+  }, [editor]);
+
+  // Custom Font Family Setter
+  const setFontFamily = useCallback((family: string) => {
+    if (!editor) return;
+    if (!family || family === 'default') {
+      (editor.chain().focus() as any).unsetFontFamily().run();
+    } else {
+      (editor.chain().focus() as any).setFontFamily(family).run();
+    }
+  }, [editor]);
+
+  // Indent (Tab / Sink List)
+  const handleIndent = useCallback(() => {
+    if (!editor) return;
+    if (editor.isActive('listItem')) {
+      (editor.chain().focus() as any).sinkListItem('listItem').run();
+      return;
+    }
+    if (editor.isActive('taskItem')) {
+      (editor.chain().focus() as any).sinkListItem('taskItem').run();
+      return;
+    }
+    editor.chain().focus().insertContent('    ').run();
+  }, [editor]);
+
+  // Outdent (Shift+Tab / Lift List / Lift Quote)
+  const handleOutdent = useCallback(() => {
+    if (!editor) return;
+    if (editor.isActive('listItem')) {
+      (editor.chain().focus() as any).liftListItem('listItem').run();
+      return;
+    }
+    if (editor.isActive('taskItem')) {
+      (editor.chain().focus() as any).liftListItem('taskItem').run();
+      return;
+    }
+    editor.chain().focus().lift('blockquote').run();
+  }, [editor]);
+
+  // Video Insertion Dialog opener & handler
+  const openVideoDialog = useCallback(() => {
+    setVideoDialogUrl('');
+    setActiveTopDialog('video');
+  }, []);
+
+  const handleInsertVideo = useCallback(() => {
+    if (!editor || !videoDialogUrl.trim()) return;
+    const url = videoDialogUrl.trim();
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      (editor.commands as any).setYoutubeVideo({ src: url });
+    } else {
+      editor.chain().focus().insertContent(`<video controls src="${escapeHtml(url)}" class="rounded-xl max-w-full my-3 shadow-md"></video><p></p>`).run();
+    }
+    setActiveTopDialog(null);
+    setVideoDialogUrl('');
+    setToastMessage('✓ 동영상이 삽입되었습니다.');
+    setTimeout(() => setToastMessage(null), 2500);
+  }, [editor, videoDialogUrl]);
 
   const primaryColumn = columns.find((c) => c.isPrimaryKey) || columns[0];
   const primaryTitle = primaryColumn ? String(currentRowData[primaryColumn.id] || '새 데이터 항목') : '데이터 세부 정보';
@@ -2297,9 +2610,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 </div>
               )}
 
-              {/* DIALOG 2: 코드 & MD (Code & Markdown Dialog) */}
-              {activeTopDialog === 'code' && (
-                <div className="p-5 space-y-4">
+              {/* DIALOG 2: 코드 & MD 통합 대화상자 (Unified Code & Markdown Dialog) */}
+              {(activeTopDialog === 'code' || activeTopDialog === 'md_paste') && (() => {
+                const currentTab = activeTopDialog === 'md_paste' ? 'md_paste' : codeDialogTab;
+                return (
+                <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
                   <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
                     <div className="flex items-center gap-2.5">
                       <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
@@ -2307,11 +2622,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       </div>
                       <div>
                         <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                          코드 블록 & 마크다운
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 font-mono font-medium">Syntax Highlighting</span>
+                          코드 & 마크다운(MD) 통합 도구
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 font-mono font-medium">C · SQL · Java · MD</span>
                         </h3>
                         <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          선택 영역 자동 분석, 주요 언어 템플릿 및 마크다운 가져오기/내보내기
+                          언어별 코드 블록 삽입, 마크다운 붙여넣기/미리보기 및 파일 가져오기를 한곳에서 처리합니다
                         </p>
                       </div>
                     </div>
@@ -2323,6 +2638,59 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       <X className="w-4 h-4" />
                     </button>
                   </div>
+
+                  {/* Unified Navigation Tabs */}
+                  <div className="flex rounded-xl bg-stone-100 dark:bg-[#141414] p-1 gap-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCodeDialogTab('templates');
+                        if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
+                      }}
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                        currentTab === 'templates'
+                          ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
+                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                      }`}
+                    >
+                      <Code className="w-3.5 h-3.5" />
+                      <span>주요 언어 템플릿</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCodeDialogTab('md_paste');
+                        if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
+                      }}
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                        currentTab === 'md_paste'
+                          ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
+                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                      }`}
+                    >
+                      <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
+                      <span>MD 붙여넣기 & 미리보기</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCodeDialogTab('tools');
+                        if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
+                      }}
+                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                        currentTab === 'tools'
+                          ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
+                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                      }`}
+                    >
+                      <FileText className="w-3.5 h-3.5 text-sky-500" />
+                      <span>문서 & 파일 도구</span>
+                    </button>
+                  </div>
+
+                  {/* TAB 1: 주요 언어 템플릿 */}
+                  {currentTab === 'templates' && (
+                    <div className="space-y-4">
 
                   {/* Selected Text Highlight Banner */}
                   {editor && !editor.state.selection.empty && (
@@ -2463,8 +2831,26 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                         </div>
                       </button>
                     </div>
-                  </div>
 
+                    {/* Quick Shortcut to MD Paste */}
+                    <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-xs">
+                      <span className="text-stone-500 dark:text-stone-400 text-[11px]">마크다운 파일 전체를 붙여넣고 미리보기 하려면:</span>
+                      <button
+                        type="button"
+                        onClick={() => setCodeDialogTab('md_paste')}
+                        className="text-amber-600 dark:text-amber-400 font-semibold hover:underline flex items-center gap-1 text-[11px]"
+                      >
+                        <ClipboardPaste className="w-3.5 h-3.5" />
+                        <span>MD 붙여넣기 탭 열기 →</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+                {/* TAB 3: 문서 & 파일 도구 */}
+                {currentTab === 'tools' && (
+                  <div className="space-y-4">
                   {/* Utilities */}
                   <div className="pt-2 border-t border-stone-100 dark:border-stone-800">
                     <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-1.5">
@@ -2612,51 +2998,14 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       </div>
                     </div>
                   </div>
-
-                  {/* Footer */}
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="px-4 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      닫기
-                    </button>
-                  </div>
                 </div>
               )}
 
-              {/* DIALOG: 마크다운 파일 복사 붙여넣기 및 코드 하이라이트 적용 (Markdown Paste & Apply Dialog) */}
-              {activeTopDialog === 'md_paste' && (
-                <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                        <ClipboardPaste className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                          마크다운(.md) 복사 붙여넣기 및 코드 하이라이트 적용
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-medium">
-                            C · SQL · Java 자동 인식
-                          </span>
-                        </h3>
-                        <p className="text-xs text-stone-500 dark:text-stone-400">
-                          복사한 마크다운 파일 또는 텍스트를 붙여넣으면 제목, 표, 체크리스트, 코드 블록 하이라이트가 즉시 적용됩니다.
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg text-stone-400 hover:text-stone-600 dark:hover:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Input vs Preview Tab Selector & Quick Action Bar */}
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  {/* TAB 2: 마크다운(.md) 복사 붙여넣기 및 코드 하이라이트 적용 */}
+                  {currentTab === 'md_paste' && (
+                    <div className="space-y-4">
+                      {/* Input vs Preview Tab Selector & Quick Action Bar */}
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800/80 p-1 rounded-xl">
                       <button
                         type="button"
@@ -2843,6 +3192,94 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                         <span>에디터에 적용하기</span>
                       </button>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Common Footer */}
+              {currentTab !== 'md_paste' && (
+                <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex justify-end">
+                  <button
+                    type="button"
+                    onClick={() => setActiveTopDialog(null)}
+                    className="px-4 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
+                  >
+                    닫기
+                  </button>
+                </div>
+              )}
+            </div>
+            );
+          })()}
+
+              {/* DIALOG: 동영상 삽입 (Video Dialog) */}
+              {activeTopDialog === 'video' && (
+                <div className="p-5 space-y-4">
+                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-2 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400">
+                        <Video className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
+                          동영상 삽입
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 font-medium">YouTube / MP4</span>
+                        </h3>
+                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                          YouTube 영상 링크 또는 웹 동영상(MP4/WebM) 주소를 입력하세요
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTopDialog(null)}
+                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
+                        동영상 웹 주소 (URL)
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="예: https://www.youtube.com/watch?v=... 또는 https://example.com/video.mp4"
+                        value={videoDialogUrl}
+                        onChange={(e) => setVideoDialogUrl(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleInsertVideo();
+                          }
+                        }}
+                        className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-xs focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
+                      />
+                    </div>
+                    <div className="text-[11px] text-stone-500 dark:text-stone-400 bg-stone-50 dark:bg-stone-800/50 p-2.5 rounded-xl border border-stone-200/50 dark:border-stone-700/50">
+                      💡 <strong>팁</strong>: YouTube 영상 주소를 입력하면 반응형 플레이어로 자동 임베드되며, 직접 MP4 링크를 입력하면 HTML5 비디오 플레이어로 삽입됩니다.
+                    </div>
+                  </div>
+
+                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTopDialog(null)}
+                      className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
+                    >
+                      취소
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleInsertVideo}
+                      disabled={!videoDialogUrl.trim()}
+                      className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
+                    >
+                      <Video className="w-3.5 h-3.5" />
+                      <span>동영상 삽입</span>
+                    </button>
                   </div>
                 </div>
               )}
@@ -3731,6 +4168,44 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               {/* TAB 1: 홈 (Home) - Typography, Colors, Alignment, Lists */}
               {activeRibbonTab === 'home' && (
                 <div className="flex items-center gap-1 shrink-0 flex-nowrap text-xs">
+                  {/* Font Family Selector */}
+                  <select
+                    value={editor.getAttributes('textStyle').fontFamily || 'default'}
+                    onChange={(e) => setFontFamily(e.target.value)}
+                    className="h-7 px-2 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 focus:outline-hidden focus:ring-1 focus:ring-amber-500 max-w-[105px]"
+                    title="글꼴 (Font Family)"
+                  >
+                    <option value="default">기본 글꼴</option>
+                    <option value="Pretendard, -apple-system, sans-serif">Pretendard</option>
+                    <option value="'Malgun Gothic', '맑은 고딕', sans-serif">맑은 고딕</option>
+                    <option value="'Nanum Gothic', '나눔고딕', sans-serif">나눔고딕</option>
+                    <option value="'Nanum Myeongjo', '나눔명조', serif">나눔명조</option>
+                    <option value="'Noto Sans KR', sans-serif">Noto Sans</option>
+                    <option value="sans-serif">고딕 (Sans)</option>
+                    <option value="serif">명조 (Serif)</option>
+                    <option value="ui-monospace, monospace">코딩 (Monospace)</option>
+                  </select>
+
+                  {/* Font Size Selector */}
+                  <select
+                    value={editor.getAttributes('textStyle').fontSize || 'default'}
+                    onChange={(e) => setFontSize(e.target.value)}
+                    className="h-7 px-1.5 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 focus:outline-hidden focus:ring-1 focus:ring-amber-500 w-[68px]"
+                    title="글자 크기 (Font Size)"
+                  >
+                    <option value="default">크기</option>
+                    <option value="12px">12px</option>
+                    <option value="14px">14px</option>
+                    <option value="16px">16px</option>
+                    <option value="18px">18px</option>
+                    <option value="20px">20px</option>
+                    <option value="24px">24px</option>
+                    <option value="28px">28px</option>
+                    <option value="32px">32px</option>
+                  </select>
+
+                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-0.5" />
+
                   {/* Font Styling: Bold, Italic, Underline, Strikethrough */}
                   <div className="flex items-center gap-0.5">
                     <button
@@ -3946,12 +4421,41 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                     >
                       <AlignRight className="w-3.5 h-3.5" />
                     </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => editor.chain().focus().setTextAlign('justify').run()}
+                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
+                        editor.isActive({ textAlign: 'justify' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
+                      }`}
+                      title="양쪽 정렬"
+                    >
+                      <AlignJustify className="w-3.5 h-3.5" />
+                    </button>
                   </div>
 
                   <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
 
-                  {/* Lists & Quotes */}
+                  {/* Lists & Quotes & Indent */}
                   <div className="flex items-center gap-0.5">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleOutdent}
+                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
+                      title="내어쓰기 (Shift+Tab)"
+                    >
+                      <Outdent className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={handleIndent}
+                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
+                      title="들여쓰기 (Tab)"
+                    >
+                      <Indent className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       type="button"
                       onMouseDown={(e) => e.preventDefault()}
@@ -4084,9 +4588,24 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                     onChange={handleImageUpload}
                   />
 
+                  {/* Video Insert */}
+                  <button
+                    type="button"
+                    onClick={openVideoDialog}
+                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-colors ${
+                      activeTopDialog === 'video'
+                        ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-700 font-semibold'
+                        : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
+                    }`}
+                    title="동영상 삽입 (YouTube 링크 또는 웹 동영상 URL)"
+                  >
+                    <Video className="w-3.5 h-3.5 text-rose-500" />
+                    <span className="font-medium">동영상</span>
+                  </button>
+
                   <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
 
-                  {/* Code & Markdown Integrated Dropdown (With Direct Auto-Highlight on Selection) */}
+                  {/* Code & Markdown Integrated Dropdown (Unified with MD Paste) */}
                   <div className="relative inline-flex items-center">
                     <button
                       type="button"
@@ -4094,6 +4613,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                         if (editor && !editor.state.selection.empty) {
                           handleAutoHighlightSelection();
                         } else {
+                          setCodeDialogTab('templates');
                           setActiveTopDialog(activeTopDialog === 'code' ? null : 'code');
                         }
                       }}
@@ -4102,52 +4622,23 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                           ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
                           : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
                       }`}
-                      title={editor && !editor.state.selection.empty ? '선택 영역 자동 감지 코드 블록으로 변환' : '코드 블록 및 MD 대화상자 열기'}
+                      title={editor && !editor.state.selection.empty ? '선택 영역 자동 감지 코드 블록으로 변환' : '코드 템플릿 & MD 붙여넣기 통합 대화상자 열기'}
                     >
                       <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                       <span className="font-medium">코드 & MD</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => setActiveTopDialog(activeTopDialog === 'code' ? null : 'code')}
+                      onClick={() => {
+                        setCodeDialogTab('md_paste');
+                        setActiveTopDialog(activeTopDialog === 'code' && codeDialogTab === 'md_paste' ? null : 'code');
+                      }}
                       className={`px-1.5 py-1.5 rounded-r-lg border-y border-r transition-colors flex items-center justify-center ${
-                        editor.isActive('codeBlock') || activeTopDialog === 'code'
+                        activeTopDialog === 'code' && codeDialogTab === 'md_paste'
                           ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
                           : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-200 border-stone-200 dark:border-stone-700'
                       }`}
-                      title="코드 & MD 상세 옵션 메뉴 열기"
-                    >
-                      <ChevronDown className="w-3 h-3" />
-                    </button>
-                  </div>
-
-                  {/* MD Paste & Apply Button */}
-                  <div className="relative inline-flex items-center">
-                    <button
-                      type="button"
-                      onClick={handlePasteMarkdownFromClipboard}
-                      className={`px-2.5 py-1.5 rounded-l-lg flex items-center gap-1.5 transition-colors border-y border-l ${
-                        activeTopDialog === 'md_paste'
-                          ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
-                          : 'bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-700/80'
-                      }`}
-                      title="클립보드에 복사된 마크다운(.md) 파일/텍스트를 에디터에 즉시 하이라이팅 서식으로 붙여넣어 적용합니다."
-                    >
-                      <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                      <span className="font-semibold">MD 붙여넣기</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setMdPasteActiveTab('input');
-                        setActiveTopDialog(activeTopDialog === 'md_paste' ? null : 'md_paste');
-                      }}
-                      className={`px-1.5 py-1.5 rounded-r-lg border-y border-r transition-colors flex items-center justify-center ${
-                        activeTopDialog === 'md_paste'
-                          ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
-                          : 'bg-amber-50 dark:bg-amber-950/30 hover:bg-amber-100 dark:hover:bg-amber-900/50 text-amber-700 dark:text-amber-300 border-amber-300 dark:border-amber-700/80'
-                      }`}
-                      title="마크다운(.md) 붙여넣기 및 미리보기 대화상자 열기"
+                      title="마크다운(.md) 붙여넣기 탭으로 즉시 열기"
                     >
                       <ChevronDown className="w-3 h-3" />
                     </button>

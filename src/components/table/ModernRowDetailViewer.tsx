@@ -29,6 +29,9 @@ import {
   ChevronDown,
   Image as ImageIcon,
   StickyNote,
+  ArrowUpDown,
+  UnfoldVertical,
+  FoldVertical,
 } from 'lucide-react';
 import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
@@ -94,6 +97,24 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
   const handleSetWidthMode = (mode: WidthMode) => {
     setWidthMode(mode);
     localStorage.setItem('wonbee_popup_width_mode', mode);
+  };
+
+  type CellHeightMode = 'compact' | 'tall' | 'full';
+  const [cellHeightMode, setCellHeightMode] = useState<CellHeightMode>(() => {
+    return (localStorage.getItem('wonbee_popup_cell_height_mode') as CellHeightMode) || 'tall';
+  });
+  const handleSetCellHeightMode = (mode: CellHeightMode) => {
+    setCellHeightMode(mode);
+    localStorage.setItem('wonbee_popup_cell_height_mode', mode);
+  };
+  const [expandedColIds, setExpandedColIds] = useState<Record<string, boolean>>({});
+
+  const toggleColumnExpand = (colId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    setExpandedColIds((prev) => ({
+      ...prev,
+      [colId]: !prev[colId],
+    }));
   };
   const [lightboxImg, setLightboxImg] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -428,8 +449,53 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                   </span>
                 </div>
 
-                {/* Compact Export & Copy Dropdown Menu */}
-                <div className="relative" ref={exportMenuRef}>
+                <div className="flex items-center gap-2">
+                  {/* Column/Cell Height Mode Selector */}
+                  <div className="flex items-center gap-0.5 bg-white dark:bg-[#1a1a1a] p-0.5 rounded-lg border border-stone-200 dark:border-[#383838] text-[11px]">
+                    <span className="text-stone-400 dark:text-[#777777] px-1.5 flex items-center gap-1">
+                      <ArrowUpDown className="w-3 h-3" />
+                      <span className="hidden sm:inline">열 높이:</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => handleSetCellHeightMode('compact')}
+                      className={`px-2 py-0.5 rounded-md font-medium transition-colors ${
+                        cellHeightMode === 'compact'
+                          ? 'bg-amber-500 text-stone-950 font-bold shadow-xs'
+                          : 'text-stone-600 dark:text-[#cccccc] hover:bg-stone-100 dark:hover:bg-[#2e2e2e]'
+                      }`}
+                      title="컴팩트 높이 (기본 스크롤)"
+                    >
+                      컴팩트
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetCellHeightMode('tall')}
+                      className={`px-2 py-0.5 rounded-md font-medium transition-colors ${
+                        cellHeightMode === 'tall'
+                          ? 'bg-amber-500 text-stone-950 font-bold shadow-xs'
+                          : 'text-stone-600 dark:text-[#cccccc] hover:bg-stone-100 dark:hover:bg-[#2e2e2e]'
+                      }`}
+                      title="넓게 (긴 내용도 시원하게 표시)"
+                    >
+                      넓게
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetCellHeightMode('full')}
+                      className={`px-2 py-0.5 rounded-md font-medium transition-colors ${
+                        cellHeightMode === 'full'
+                          ? 'bg-amber-500 text-stone-950 font-bold shadow-xs'
+                          : 'text-stone-600 dark:text-[#cccccc] hover:bg-stone-100 dark:hover:bg-[#2e2e2e]'
+                      }`}
+                      title="전체 펼치기 (스크롤 없이 모든 내용 노출)"
+                    >
+                      전체 펼치기
+                    </button>
+                  </div>
+
+                  {/* Compact Export & Copy Dropdown Menu */}
+                  <div className="relative" ref={exportMenuRef}>
                   <button
                     onClick={() => setIsExportMenuOpen((prev) => !prev)}
                     className={`px-2.5 py-1 rounded-lg border text-[11px] font-medium flex items-center gap-1.5 transition-all ${
@@ -526,8 +592,9 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                   )}
                 </div>
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {columns.map((col) => {
                   const val = row.data[col.id];
                   const isEditing = editingColId === col.id;
@@ -542,6 +609,12 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                     rawString.length > 80 ||
                     rawString.includes('<table') ||
                     rawString.includes('<img');
+                  const isExpanded = cellHeightMode === 'full' || !!expandedColIds[col.id];
+                  const heightLimitClass = isExpanded
+                    ? 'max-h-none'
+                    : cellHeightMode === 'tall'
+                    ? 'max-h-[650px]'
+                    : 'max-h-72';
 
                   return (
                     <div
@@ -560,7 +633,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                       }}
                       title={isSelectOrStatus ? "더블 클릭하여 상태/선택값 텍스트 수정" : "더블 클릭하면 리치에디터에서 전체 내용을 편리하게 수정할 수 있습니다"}
                       className={`p-3 rounded-xl bg-white dark:bg-[#1b1b1b] border border-stone-200 dark:border-[#333333] group/field transition-all cursor-pointer hover:border-amber-400 dark:hover:border-amber-600/70 ${
-                        isRichOrLong ? 'col-span-1 md:col-span-2' : ''
+                        isRichOrLong || isExpanded ? 'col-span-1 md:col-span-2' : ''
                       }`}
                     >
                       {/* Field Header */}
@@ -589,6 +662,20 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                         </div>
 
                         <div className="flex items-center gap-1 opacity-0 group-hover/field:opacity-100 transition-opacity">
+                          {isRichOrLong && (
+                            <button
+                              type="button"
+                              onClick={(e) => toggleColumnExpand(col.id, e)}
+                              className="p-1 rounded text-stone-400 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-stone-200/50 dark:hover:bg-[#333333] transition-colors"
+                              title={isExpanded ? "열 높이 축소 (접기)" : "열 높이 전체 펼치기 (스크롤 없이 전체 보기)"}
+                            >
+                              {isExpanded ? (
+                                <FoldVertical className="w-3 h-3 text-amber-500" />
+                              ) : (
+                                <UnfoldVertical className="w-3 h-3" />
+                              )}
+                            </button>
+                          )}
                           {imgUrl && (
                             <button
                               onClick={() => setLightboxImg(imgUrl)}
@@ -771,7 +858,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                           ) : col.type === 'code' ? (
                             <CodeBlockViewer
                               code={String(val ?? '')}
-                              maxHeight="max-h-72"
+                              maxHeight={heightLimitClass}
                             />
                           ) : (() => {
                             const strVal = String(val ?? '');
@@ -786,7 +873,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                 <CodeBlockViewer
                                   code={pureCodeInfo.code}
                                   language={pureCodeInfo.language}
-                                  maxHeight="max-h-80"
+                                  maxHeight={heightLimitClass}
                                 />
                               );
                             }
@@ -806,7 +893,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               const highlightedHtml = highlightHtmlCodeBlocks(parsedHtml);
                               return (
                                 <div
-                                  className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table wonbee-markdown-content cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed"
+                                  className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table wonbee-markdown-content cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed overflow-y-auto ${heightLimitClass}`}
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
                                     if (target.tagName === 'IMG') {
@@ -834,7 +921,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               const highlightedHtml = highlightHtmlCodeBlocks(strVal);
                               return (
                                 <div
-                                  className="prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed"
+                                  className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed overflow-y-auto ${heightLimitClass}`}
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
                                     if (target.tagName === 'IMG') {
@@ -855,12 +942,12 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                 <CodeBlockViewer
                                   code={cleanedString}
                                   language={detected.language}
-                                  maxHeight="max-h-80"
+                                  maxHeight={heightLimitClass}
                                 />
                               );
                             }
                             return (
-                              <div className="whitespace-pre-wrap break-words leading-relaxed text-xs text-stone-800 dark:text-[#f0f0f0] font-sans">
+                              <div className={`whitespace-pre-wrap break-words leading-relaxed text-xs text-stone-800 dark:text-[#f0f0f0] font-sans overflow-y-auto ${heightLimitClass}`}>
                                 {cleanedString}
                               </div>
                             );
