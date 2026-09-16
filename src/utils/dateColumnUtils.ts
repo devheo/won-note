@@ -22,6 +22,20 @@ export function formatDateTime(date: Date | number = new Date()): string {
 }
 
 /**
+ * Formats a Date or timestamp to YYYY-MM-DD (년-월-일) in local timezone.
+ * Avoids timezone date jumps caused by Date.toISOString().
+ * Example: 2026-09-30
+ */
+export function formatLocalDate(date: Date | number = new Date()): string {
+  const d = typeof date === 'number' ? new Date(date) : date;
+  if (isNaN(d.getTime())) return '';
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+/**
  * Checks if a column is an auto-updating date/time column
  * Matches explicit autoUpdateDate flag or names like "수정일", "수정 일", "수정일시", "업데이트 일", "updatedAt", etc.
  */

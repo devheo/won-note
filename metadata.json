@@ -1,6 +1,6 @@
 {
   "name": "WonBee",
-  "description": "Minimalist High-Performance Workspace & Hybrid Grid with Kanban Board, TipTap Editor, and Command Palette",
+  "description": "Minimalist High-Performance Workspace & Hybrid Grid with Kanban Board, Offline Calendar with Macros, TipTap Editor, and Command Palette",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -39,6 +39,8 @@ import {
   savePerformanceOptions,
 } from './types/performance';
 import { envService } from './services/storage/envService';
+import { useCalendarReminders } from './hooks/useCalendarReminders';
+import { CalendarNotificationToast } from './components/calendar/CalendarNotificationToast';
 import {
   Sparkles,
   Plus,
@@ -119,15 +121,22 @@ export default function App() {
     savePerformanceOptions(newOpts);
   };
 
-  // View Mode: 'table' vs 'kanban' (Persisted in localStorage)
-  const [viewMode, setViewMode] = useState<'table' | 'kanban'>(() => {
-    return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban') || 'table';
+  // View Mode: 'table' vs 'kanban' vs 'calendar' (Persisted in localStorage)
+  const [viewMode, setViewMode] = useState<'table' | 'kanban' | 'calendar'>(() => {
+    return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban' | 'calendar') || 'table';
   });
 
-  const handleViewModeChange = (mode: 'table' | 'kanban') => {
+  const handleViewModeChange = (mode: 'table' | 'kanban' | 'calendar') => {
     setViewMode(mode);
     localStorage.setItem('wonbee_view_mode', mode);
   };
+
+  // Calendar Reminders & Background Notification Monitor
+  const {
+    activeAlarmEvent,
+    dismissAlarm,
+    snoozeAlarm,
+  } = useCalendarReminders({ workspace, activeTableId });
 
   // Global Keyboard Listener for Cmd+K / Ctrl+K Command Palette
   useEffect(() => {
@@ -484,6 +493,142 @@ export default function App() {
     await syncToLocalFileIfConnected(updatedWs);
   };
 
+  // Add new Calendar Table (일정 캘린더 보드)
+  const handleAddCalendarBoard = async (parentId: string | null = null, title = '일정 & 스케줄 캘린더') => {
+    const newTableId = `table-${Date.now().toString(36)}`;
+    const newTableTitle = `📅 ${title}`;
+    const today = new Date();
+    const pad = (n: number) => String(n).padStart(2, '0');
+    const todayStr = `${today.getFullYear()}-${pad(today.getMonth() + 1)}-${pad(today.getDate())}`;
+
+    const tomorrow = new Date(today);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = `${tomorrow.getFullYear()}-${pad(tomorrow.getMonth() + 1)}-${pad(tomorrow.getDate())}`;
+
+    const nextWeek = new Date(today);
+    nextWeek.setDate(nextWeek.getDate() + 5);
+    const nextWeekStr = `${nextWeek.getFullYear()}-${pad(nextWeek.getMonth() + 1)}-${pad(nextWeek.getDate())}`;
+
+    const newTable: TableDocument = {
+      id: newTableId,
+      title: newTableTitle,
+      description: '월간/주간/일간 캘린더 및 매크로와 연동되는 오프라인 일정 관리 테이블입니다.',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      columns: [
+        { id: 'col-cal-title', name: '일정명', type: 'text', width: 220, isPrimaryKey: true },
+        { id: 'col-cal-date', name: '일정 일시', type: 'date', width: 160 },
+        {
+          id: 'col-cal-category',
+          name: '구분/카테고리',
+          type: 'select',
+          width: 130,
+          options: [
+            { id: 'work', label: '업무', color: '#3B82F6' },
+            { id: 'meeting', label: '회의/미팅', color: '#8B5CF6' },
+            { id: 'personal', label: '개인/일상', color: '#10B981' },
+            { id: 'deadline', label: '마감/중요', color: '#F59E0B' },
+            { id: 'urgent', label: '긴급', color: '#EF4444' },
+          ],
+        },
+        { id: 'col-cal-loc', name: '장소/링크', type: 'text', width: 140 },
+        { id: 'col-cal-desc', name: '상세 내용 및 비고', type: 'richText', width: 260 },
+        {
+          id: 'col-cal-status',
+          name: '완료 상태',
+          type: 'status',
+          width: 120,
+          options: [
+            { id: 'scheduled', label: '예정', color: '#3B82F6' },
+            { id: 'done', label: '완료', color: '#10B981' },
+          ],
+        },
+        {
+          id: 'col-updated-at',
+          name: '수정일',
+          type: 'date',
+          width: 155,
+          autoUpdateDate: true,
+        },
+      ],
+      rows: [
+        {
+          id: 'row-cal-1',
+          data: {
+            'col-cal-title': '팀 주간 정기 스프린트 회의',
+            'col-cal-date': `${todayStr} 10:00`,
+            'col-cal-category': 'meeting',
+            'col-cal-loc': '대회의실 / 오프라인',
+            'col-cal-desc': '금주 주요 개발 마일스톤 점검 및 캘린더 매크로 기능 시연',
+            'col-cal-status': 'scheduled',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '',
+          stickers: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'row-cal-2',
+          data: {
+            'col-cal-title': '오프라인 캘린더 매크로 릴리즈 마감',
+            'col-cal-date': `${tomorrowStr} 18:00`,
+            'col-cal-category': 'deadline',
+            'col-cal-loc': '사내 릴리즈',
+            'col-cal-desc': 'ICS 연동 및 한국 공휴일 자동 계산 테스트 완료',
+            'col-cal-status': 'scheduled',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '',
+          stickers: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+        {
+          id: 'row-cal-3',
+          data: {
+            'col-cal-title': '분기 데이터 백업 및 저장 무결성 검증',
+            'col-cal-date': `${nextWeekStr} 14:00`,
+            'col-cal-category': 'work',
+            'col-cal-loc': '전산실',
+            'col-cal-desc': '로컬 파일 시스템 및 수동 저장 점검',
+            'col-cal-status': 'scheduled',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          richContent: '',
+          stickers: [],
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+    };
+
+    const newTreeItem: TreeItem = {
+      id: newTableId,
+      parentId,
+      title: newTableTitle,
+      type: 'table',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const updatedWs: WorkspaceData = {
+      ...workspace,
+      tree: [...workspace.tree, newTreeItem],
+      tables: {
+        ...workspace.tables,
+        [newTableId]: newTable,
+      },
+      exportedAt: Date.now(),
+    };
+
+    setWorkspace(updatedWs);
+    setActiveTableId(newTableId);
+    handleViewModeChange('calendar'); // 바로 캘린더 뷰로 보여주기
+    await repository.saveWorkspace(updatedWs);
+    await syncToLocalFileIfConnected(updatedWs);
+  };
+
   // Add new Folder
   const handleAddFolder = async (parentId: string | null = null, title = '새 폴더') => {
     const newFolderId = `folder-${Date.now().toString(36)}`;
@@ -739,6 +884,7 @@ export default function App() {
         onUpdateTree={handleUpdateTree}
         onAddTable={handleAddTable}
         onAddTodoBoard={handleAddTodoBoard}
+        onAddCalendarTable={handleAddCalendarBoard}
         onAddFolder={handleAddFolder}
         onDeleteTreeItem={handleDeleteTreeItem}
         onDuplicateTable={handleDuplicateTable}
@@ -1029,6 +1175,7 @@ export default function App() {
           }
         }}
         onToggleViewMode={() => handleViewModeChange(viewMode === 'table' ? 'kanban' : 'table')}
+        onChangeViewMode={handleViewModeChange}
         currentViewMode={viewMode}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => {
@@ -1043,6 +1190,7 @@ export default function App() {
         onOpenUniversalImport={() => setIsUniversalImportOpen(true)}
         onAddNewTable={() => handleAddTable(null)}
         onAddTodoBoard={() => handleAddTodoBoard(null)}
+        onAddCalendarBoard={() => handleAddCalendarBoard(null)}
         onResetZoom={() => handleZoomChange(100)}
         onOpenRowDetail={(row, idx) => {
           setSelectedDetailRow(row);
@@ -1054,6 +1202,19 @@ export default function App() {
           setEditingTargetColId(null);
         }}
       />
+
+      {/* 12. Calendar Notification Alarm Toast */}
+      {activeAlarmEvent && (
+        <CalendarNotificationToast
+          event={activeAlarmEvent}
+          onDismiss={dismissAlarm}
+          onSnooze={(mins) => snoozeAlarm(activeAlarmEvent, mins)}
+          onOpenEvent={() => {
+            handleViewModeChange('calendar');
+            dismissAlarm();
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -61,6 +61,54 @@ export interface StickerData {
   completed?: boolean;
 }
 
+export type CalendarCategory = 'work' | 'meeting' | 'personal' | 'deadline' | 'urgent' | 'etc';
+
+export type ReminderOffset =
+  | 'none'
+  | 'on_time'
+  | '5m'
+  | '10m'
+  | '15m'
+  | '30m'
+  | '1h'
+  | '2h'
+  | '1d';
+
+export interface CalendarReminder {
+  enabled: boolean;
+  offset: ReminderOffset;
+  sound?: boolean;
+  snoozeUntil?: number; // timestamp in ms if snoozed
+}
+
+export interface CalendarEvent {
+  id: string;
+  tableRowId?: string; // Linkage to parent table row if generated from or synced to table
+  title: string;
+  startDate: string; // YYYY-MM-DD
+  endDate: string; // YYYY-MM-DD
+  startTime?: string; // HH:mm (e.g. "09:30")
+  endTime?: string; // HH:mm (e.g. "11:00")
+  isAllDay: boolean;
+  category: CalendarCategory;
+  color?: string; // Custom color override (hex or tailwind)
+  location?: string;
+  description?: string;
+  priority?: 'low' | 'normal' | 'high' | 'urgent';
+  completed?: boolean;
+  reminder?: CalendarReminder;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type CalendarMacroType =
+  | 'recurring'
+  | 'shift'
+  | 'date_shift'
+  | 'bulk_text'
+  | 'ics_sync'
+  | 'cleanup';
+
 export interface TableDocument {
   id: string;
   title: string;

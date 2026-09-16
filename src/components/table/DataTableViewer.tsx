@@ -68,6 +68,7 @@ import {
   Table as TableIcon,
 } from 'lucide-react';
 import { KanbanBoardViewer } from '../kanban/KanbanBoardViewer';
+import { CalendarViewer } from '../calendar/CalendarViewer';
 import {
   isUpdateDateColumn,
   findUpdateDateColumn,
@@ -82,8 +83,8 @@ interface DataTableViewerProps {
   onOpenRowEditor: (row: TableRow, targetColId?: string) => void;
   onOpenRowDetail: (row: TableRow, index: number, targetColId?: string) => void;
   onImportCsvToNewTable?: (fileName: string, columns: TableColumn[], rows: TableRow[]) => void;
-  viewMode?: 'table' | 'kanban';
-  onViewModeChange?: (mode: 'table' | 'kanban') => void;
+  viewMode?: 'table' | 'kanban' | 'calendar';
+  onViewModeChange?: (mode: 'table' | 'kanban' | 'calendar') => void;
   perfOptions?: PerformanceOptions;
   onUpdatePerfOptions?: (newOpts: PerformanceOptions) => void;
   onOpenPerfModal?: () => void;
@@ -100,10 +101,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   onUpdatePerfOptions,
   onOpenPerfModal,
 }) => {
-  // View Mode: Table (Grid) vs Kanban (Board)
-  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban'>('table');
+  // View Mode: Table (Grid) vs Kanban (Board) vs Calendar
+  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban' | 'calendar'>('table');
   const activeViewMode = viewMode ?? internalViewMode;
-  const setViewMode = (mode: 'table' | 'kanban') => {
+  const setViewMode = (mode: 'table' | 'kanban' | 'calendar') => {
     setInternalViewMode(mode);
     onViewModeChange?.(mode);
   };
@@ -1173,7 +1174,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       <div className="px-4 sm:px-6 py-2.5 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/70 dark:bg-[#1e1e1e]/60 flex items-center justify-between gap-2.5 sm:gap-3.5 flex-wrap">
         {/* Search Input, View Mode Switcher & Active Sort Notification */}
         <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap flex-1 min-w-0">
-          {/* View Mode Switcher Pill (Table vs Kanban) */}
+          {/* View Mode Switcher Pill (Table vs Kanban vs Calendar) */}
           <div className="flex items-center bg-stone-200/70 dark:bg-[#252525] p-0.5 rounded-xl border border-stone-200/80 dark:border-[#383838] shadow-2xs shrink-0 whitespace-nowrap">
             <button
               type="button"
@@ -1200,6 +1201,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             >
               <Layers className={`w-3.5 h-3.5 ${activeViewMode === 'kanban' ? 'text-amber-500' : ''}`} />
               <span>칸반 보드</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('calendar')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                activeViewMode === 'calendar'
+                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
+                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
+              }`}
+              title="월간/주간/일간 캘린더 및 일정 매크로 보기"
+            >
+              <Calendar className={`w-3.5 h-3.5 ${activeViewMode === 'calendar' ? 'text-amber-500' : ''}`} />
+              <span>캘린더</span>
             </button>
           </div>
 
@@ -1734,7 +1748,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         </div>
       )}
 
-      {/* View Content: Kanban Board vs Virtualized Table Grid */}
+      {/* View Content: Kanban Board vs Calendar View vs Virtualized Table Grid */}
       {activeViewMode === 'kanban' ? (
         <KanbanBoardViewer
           table={table}
@@ -1743,6 +1757,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           onOpenRowDetail={onOpenRowDetail}
           onOpenRowEditor={onOpenRowEditor}
           onDeleteRow={handleDeleteSingleRow}
+        />
+      ) : activeViewMode === 'calendar' ? (
+        <CalendarViewer
+          table={table}
+          rows={processedRows}
+          onUpdateTable={onUpdateTable}
+          onOpenRowDetail={onOpenRowDetail}
+          onOpenRowEditor={onOpenRowEditor}
         />
       ) : (
         <>

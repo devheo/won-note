@@ -24,8 +24,7 @@ import { StickerExtension } from './StickerExtension';
 import { CodeBlockComponent } from './CodeBlockComponent';
 import { ImageComponent } from './ImageComponent';
 import { TableGridPicker } from './TableGridPicker';
-import { TableRow as TableRowType, TableColumn, AutoSaveStatus } from '../../types';
-import { useAutoSave } from '../../hooks/useAutoSave';
+import { TableRow as TableRowType, TableColumn } from '../../types';
 import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer';
 import { detectLanguage, escapeHtml, formatJavaOrGeneralCode } from '../../utils/codeHighlighter';
 import { delimitedTextToHtmlTable } from '../../utils/csvParser';
@@ -104,6 +103,8 @@ import {
   Indent,
   Outdent,
   Video,
+  Save,
+  AlertTriangle,
 } from 'lucide-react';
 
 // Initialize Lowlight with common languages (Java, SQL, JS, TS, Python, JSON, HTML, Bash, etc.)
@@ -806,6 +807,13 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     return escapeHtml(rawContent);
   }, []);
 
+  // Manual Save & Unsaved Changes State
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(row?.updatedAt || null);
+  const [showExitConfirm, setShowExitConfirm] = useState<boolean>(false);
+  const lastSavedSnapshotRef = useRef<string>('');
+
   // Sync state when modal opens or row/initialTargetId changes
   useEffect(() => {
     if (row && isOpen) {
@@ -816,55 +824,131 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       const targetId = resolveTargetId(initialTargetId);
       setSelectedTargetId(targetId);
       selectedTargetIdRef.current = targetId;
+
+      lastSavedSnapshotRef.current = JSON.stringify({
+        data: sanitized,
+        richContent: row.richContent || '',
+      });
+      setHasUnsavedChanges(false);
+      setLastSavedAt(row.updatedAt || null);
+      setShowExitConfirm(false);
     }
   }, [row?.id, isOpen, initialTargetId, columns, sanitizeRowData, resolveTargetId]);
 
-  // Combined state object for auto-save hook - memoized to prevent infinite re-render loops
-  const combinedRowState: TableRowType | null = useMemo(() => {
-    if (!row) return null;
-    return {
-      ...row,
-      data: currentRowData,
-      richContent: richContent,
-      updatedAt: row.updatedAt,
-    };
-  }, [row, currentRowData, richContent]);
+  // TipTap Editor instance reference
+  const editorRef = useRef<any>(null);
 
-  // Auto-save hook with 400ms debounce
-  const { status, lastSavedAt, forceSave } = useAutoSave<TableRowType | null>({
-    data: combinedRowState,
-    onSave: async (dataToSave) => {
-      if (dataToSave) {
-        await onSaveRow({
-          ...dataToSave,
-          updatedAt: Date.now(),
-        });
+  // Explicit Save Handler - Only saves when the user clicks save or uses Ctrl+S
+  const handleSave = useCallback(async (): Promise<boolean> => {
+    if (!row) return false;
+    setIsSaving(true);
+    try {
+      let latestData = { ...currentRowDataRef.current };
+      let latestRichContent = richContentRef.current;
+
+      const ed = editorRef.current;
+      if (ed) {
+        const html = ed.getHTML();
+        const currentTarget = selectedTargetIdRef.current;
+        if (currentTarget === '__richContent__') {
+          latestRichContent = html;
+          setRichContent(html);
+          richContentRef.current = html;
+        } else {
+          const targetCol = columns.find((c) => c.id === currentTarget);
+          const hasRichFormatting =
+            targetCol?.type === 'richText' ||
+            /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|h[1-6]|ul|ol|li|blockquote|pre|code|strong|b|em|i|u|s|del|mark|span|a|hr)\b/i.test(html) ||
+            /style\s*=\s*["']/i.test(html) ||
+            /data-color\s*=/i.test(html) ||
+            html.includes('data-type=') ||
+            html.includes('sticker');
+          const valToStore = hasRichFormatting ? html : cleanHtmlToPlainText(html);
+          latestData[currentTarget] = valToStore;
+          setCurrentRowData((prev) => ({ ...prev, [currentTarget]: valToStore }));
+          currentRowDataRef.current = latestData;
+        }
       }
-    },
-    debounceMs: 400,
-    enabled: isOpen && !!row,
-  });
 
-  // Close top dialog when pressing Escape, or close modal if no dialog is open
+      const saveTime = Date.now();
+      const updatedRow: TableRowType = {
+        ...row,
+        data: latestData,
+        richContent: latestRichContent,
+        updatedAt: saveTime,
+      };
+
+      await onSaveRow(updatedRow);
+      setHasUnsavedChanges(false);
+      lastSavedSnapshotRef.current = JSON.stringify({
+        data: latestData,
+        richContent: latestRichContent,
+      });
+      setLastSavedAt(saveTime);
+      setToastMessage('✓ 저장되었습니다.');
+      setTimeout(() => setToastMessage(null), 2500);
+      return true;
+    } catch (err) {
+      console.error('Save failed:', err);
+      setToastMessage('⚠ 저장 중 오류가 발생했습니다.');
+      setTimeout(() => setToastMessage(null), 3000);
+      return false;
+    } finally {
+      setIsSaving(false);
+    }
+  }, [row, columns, onSaveRow]);
+
+  // Request close: show confirmation dialog if modified, otherwise close immediately
+  const handleRequestClose = useCallback(() => {
+    if (hasUnsavedChanges) {
+      setShowExitConfirm(true);
+    } else {
+      onClose();
+    }
+  }, [hasUnsavedChanges, onClose]);
+
+  // Keyboard shortcuts: Ctrl+S to save, Escape to close/confirm
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        e.stopPropagation();
+        handleSave();
+        return;
+      }
+
       if (e.key === 'Escape') {
-        if (activeTopDialog) {
+        if (showExitConfirm) {
+          e.preventDefault();
+          e.stopPropagation();
+          setShowExitConfirm(false);
+        } else if (activeTopDialog) {
           e.preventDefault();
           e.stopPropagation();
           setActiveTopDialog(null);
         } else {
-          forceSave();
-          onClose();
+          e.preventDefault();
+          handleRequestClose();
         }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTopDialog, forceSave, onClose]);
+  }, [activeTopDialog, showExitConfirm, handleSave, handleRequestClose]);
+
+  // Warn on browser tab close/reload if there are unsaved changes
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges && isOpen) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges, isOpen]);
 
   // TipTap Editor instance
-  const editorRef = useRef<any>(null);
   const editor = useEditor({
     extensions: [
       StarterKit.configure({
@@ -1158,6 +1242,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       },
     },
     onUpdate: ({ editor }) => {
+      setHasUnsavedChanges(true);
       const html = editor.getHTML();
       const currentTarget = selectedTargetIdRef.current;
       if (currentTarget === '__richContent__') {
@@ -1437,6 +1522,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   if (!isOpen || !row) return null;
 
   const handleCellChange = (columnId: string, val: any) => {
+    setHasUnsavedChanges(true);
     const targetCol = columns.find((c) => c.id === columnId);
     const cleaned = typeof val === 'string' && targetCol?.type !== 'richText' ? cleanTextValue(val) : val;
 
@@ -2403,10 +2489,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     <div
       id="rich-editor-modal-backdrop"
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/60 backdrop-blur-sm animate-in fade-in duration-150"
-      onClick={() => {
-        forceSave();
-        onClose();
-      }}
+      onClick={handleRequestClose}
     >
       <div
         id="rich-editor-modal-container"
@@ -3939,28 +4022,49 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            {/* Auto Save Status Indicator */}
-            <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-stone-100 dark:bg-stone-800/80 text-stone-600 dark:text-stone-300">
-              {status === 'saving' ? (
-                <>
-                  <Loader2 className="w-3 h-3 text-amber-500 animate-spin" />
-                  <span className="text-amber-600 dark:text-amber-400 font-medium">자동 저장 중...</span>
-                </>
-              ) : status === 'saved' || status === 'idle' ? (
-                <>
-                  <CheckCircle className="w-3 h-3 text-emerald-500" />
-                  <span className="text-stone-500 dark:text-stone-400">
-                    {lastSavedAt ? `저장됨 (${new Date(lastSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})` : '저장됨'}
-                  </span>
-                </>
-              ) : (
-                <span className="text-rose-500 font-medium">저장 실패</span>
-              )}
-            </div>
+          <div className="flex items-center gap-2 sm:gap-3">
+            {/* Save Status Indicator */}
+            {isSaving ? (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-amber-500/10 text-amber-700 dark:text-amber-400 font-medium">
+                <Loader2 className="w-3.5 h-3.5 text-amber-500 animate-spin" />
+                <span>저장 중...</span>
+              </div>
+            ) : hasUnsavedChanges ? (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-amber-500/15 border border-amber-500/30 text-amber-800 dark:text-amber-300 font-semibold shadow-xs">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                <span>수정됨 (저장 안 됨)</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs bg-stone-100 dark:bg-stone-800/80 text-stone-600 dark:text-stone-300">
+                <CheckCircle className="w-3.5 h-3.5 text-emerald-500" />
+                <span className="text-stone-500 dark:text-stone-400 font-medium">
+                  {lastSavedAt ? `저장 완료 (${new Date(lastSavedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})` : '저장 완료'}
+                </span>
+              </div>
+            )}
+
+            {/* Manual Save Button */}
+            <button
+              type="button"
+              onClick={() => handleSave()}
+              disabled={isSaving}
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
+                hasUnsavedChanges
+                  ? 'bg-amber-500 hover:bg-amber-400 text-stone-950 ring-2 ring-amber-400/40 font-extrabold cursor-pointer'
+                  : 'bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300'
+              }`}
+              title="저장하기 (단축키: Ctrl+S)"
+            >
+              {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              <span>저장</span>
+              <kbd className="hidden md:inline-block px-1 py-0.5 rounded text-[10px] bg-black/10 dark:bg-white/10 text-current font-mono">
+                Ctrl+S
+              </kbd>
+            </button>
 
             {/* Fullscreen Toggle */}
             <button
+              type="button"
               onClick={toggleFullscreen}
               className="p-1.5 rounded-lg text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
               title={isFullscreen ? '창 크기 복원' : '전체 화면'}
@@ -3970,10 +4074,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
             {/* Close Button */}
             <button
-              onClick={() => {
-                forceSave();
-                onClose();
-              }}
+              type="button"
+              onClick={handleRequestClose}
               className="p-1.5 rounded-lg text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
               title="닫기 (ESC)"
             >
@@ -5036,7 +5138,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                   </span>
                   <button
                     type="button"
-                    onClick={onClose}
+                    onClick={handleRequestClose}
                     className="px-3 py-1.5 rounded-lg border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 text-xs transition-colors"
                   >
                     취소 및 닫기
@@ -5060,16 +5162,111 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               </span>
             )}
           </div>
-          <button
-            onClick={() => {
-              forceSave();
-              onClose();
-            }}
-            className="px-5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg transition-colors shadow-sm"
-          >
-            완료 및 닫기
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRequestClose}
+              className="px-4 py-1.5 border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 font-medium rounded-lg transition-colors cursor-pointer"
+            >
+              닫기
+            </button>
+            <button
+              type="button"
+              onClick={() => handleSave()}
+              disabled={isSaving}
+              className={`px-4 py-1.5 border rounded-lg font-bold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer ${
+                hasUnsavedChanges
+                  ? 'border-amber-500 bg-amber-500/15 hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 ring-2 ring-amber-400/30'
+                  : 'border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
+              }`}
+            >
+              {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+              <span>저장 (Ctrl+S)</span>
+            </button>
+            <button
+              type="button"
+              onClick={async () => {
+                if (hasUnsavedChanges) {
+                  const ok = await handleSave();
+                  if (ok) onClose();
+                } else {
+                  onClose();
+                }
+              }}
+              disabled={isSaving}
+              className="px-5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg transition-colors shadow-sm flex items-center gap-1.5 cursor-pointer"
+            >
+              <Check className="w-4 h-4" />
+              <span>{hasUnsavedChanges ? '저장 후 닫기' : '완료 및 닫기'}</span>
+            </button>
+          </div>
         </div>
+
+        {/* Unsaved Changes Exit Confirmation Dialog */}
+        {showExitConfirm && (
+          <div
+            id="unsaved-changes-dialog-backdrop"
+            className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+            onClick={(e) => {
+              e.stopPropagation();
+            }}
+          >
+            <div
+              id="unsaved-changes-dialog"
+              className="w-full max-w-md bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-2xl shadow-2xl p-6 space-y-4 animate-in zoom-in-95 duration-150"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start gap-3.5">
+                <div className="p-3 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 shrink-0">
+                  <AlertTriangle className="w-6 h-6" />
+                </div>
+                <div className="space-y-1.5">
+                  <h3 className="text-base font-bold text-stone-900 dark:text-stone-100">
+                    저장되지 않은 변경사항이 있습니다
+                  </h3>
+                  <p className="text-xs text-stone-600 dark:text-stone-400 leading-relaxed">
+                    수정된 서식과 텍스트가 아직 저장되지 않았습니다. 저장하지 않고 나가면 현재 변경된 내용이 모두 취소됩니다. 저장하시겠습니까?
+                  </p>
+                </div>
+              </div>
+
+              <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex flex-col sm:flex-row items-center justify-end gap-2 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setShowExitConfirm(false)}
+                  className="w-full sm:w-auto px-3.5 py-2 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 font-medium transition-colors cursor-pointer"
+                >
+                  취소 (계속 편집)
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowExitConfirm(false);
+                    setHasUnsavedChanges(false);
+                    onClose();
+                  }}
+                  className="w-full sm:w-auto px-3.5 py-2 rounded-xl border border-rose-200 dark:border-rose-900/60 bg-rose-50 dark:bg-rose-950/40 hover:bg-rose-100 dark:hover:bg-rose-900/60 text-rose-700 dark:text-rose-300 font-medium transition-colors cursor-pointer"
+                >
+                  저장하지 않고 닫기
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const ok = await handleSave();
+                    if (ok) {
+                      setShowExitConfirm(false);
+                      onClose();
+                    }
+                  }}
+                  className="w-full sm:w-auto px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold transition-colors shadow-sm flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Save className="w-4 h-4" />
+                  <span>저장하고 닫기</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

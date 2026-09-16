@@ -6,6 +6,7 @@ import {
   Moon,
   Sun,
   Layers,
+  Calendar,
   FileSpreadsheet,
   ClipboardPaste,
   Download,
@@ -29,7 +30,8 @@ interface CommandPaletteModalProps {
   onSelectTable: (tableId: string) => void;
   onOpenAddRowModal: () => void;
   onToggleViewMode?: () => void;
-  currentViewMode?: 'table' | 'kanban';
+  onChangeViewMode?: (mode: 'table' | 'kanban' | 'calendar') => void;
+  currentViewMode?: 'table' | 'kanban' | 'calendar';
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenDataPortability: () => void;
@@ -37,6 +39,7 @@ interface CommandPaletteModalProps {
   onOpenUniversalImport: () => void;
   onAddNewTable: () => void;
   onAddTodoBoard?: () => void;
+  onAddCalendarBoard?: () => void;
   onResetZoom: () => void;
   onOpenRowDetail: (row: TableRow, index: number) => void;
   onOpenRowEditor: (row: TableRow) => void;
@@ -61,6 +64,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onSelectTable,
   onOpenAddRowModal,
   onToggleViewMode,
+  onChangeViewMode,
   currentViewMode = 'table',
   isDarkMode,
   onToggleDarkMode,
@@ -69,6 +73,7 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
   onOpenUniversalImport,
   onAddNewTable,
   onAddTodoBoard,
+  onAddCalendarBoard,
   onResetZoom,
   onOpenRowDetail,
   onOpenRowEditor,
@@ -109,7 +114,49 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
           onClose();
         },
       },
-      ...(onToggleViewMode
+      ...(onChangeViewMode
+        ? [
+            {
+              id: 'act_view_calendar',
+              category: 'action' as const,
+              categoryLabel: '빠른 작업',
+              title: '캘린더 및 일정 매크로 뷰로 전환',
+              subtitle: '월간/주간/일간 캘린더, 일정 반복 및 교대근무 매크로',
+              icon: <Calendar className="w-4 h-4 text-amber-500" />,
+              badge: '캘린더',
+              onSelect: () => {
+                onChangeViewMode('calendar');
+                onClose();
+              },
+            },
+            {
+              id: 'act_view_table',
+              category: 'action' as const,
+              categoryLabel: '빠른 작업',
+              title: '스프레드시트 표(그리드) 뷰로 전환',
+              subtitle: '행과 열 데이터 그리드 편집기',
+              icon: <TableIcon className="w-4 h-4 text-amber-500" />,
+              badge: '표',
+              onSelect: () => {
+                onChangeViewMode('table');
+                onClose();
+              },
+            },
+            {
+              id: 'act_view_kanban',
+              category: 'action' as const,
+              categoryLabel: '빠른 작업',
+              title: '칸반 보드 뷰로 전환',
+              subtitle: '상태별 카드 드래그 앤 드롭 보드 보기',
+              icon: <Layers className="w-4 h-4 text-amber-500" />,
+              badge: '칸반',
+              onSelect: () => {
+                onChangeViewMode('kanban');
+                onClose();
+              },
+            },
+          ]
+        : onToggleViewMode
         ? [
             {
               id: 'act_toggle_view',
@@ -170,6 +217,23 @@ export const CommandPaletteModal: React.FC<CommandPaletteModalProps> = ({
               badge: 'TO-DO',
               onSelect: () => {
                 onAddTodoBoard();
+                onClose();
+              },
+            },
+          ]
+        : []),
+      ...(onAddCalendarBoard
+        ? [
+            {
+              id: 'act_new_calendar_board',
+              category: 'action' as const,
+              categoryLabel: '빠른 작업',
+              title: '새 일정 캘린더 보드 만들기',
+              subtitle: '월간/주간/일간 캘린더 및 일정 매크로가 연동되는 일정 관리 테이블 생성',
+              icon: <Calendar className="w-4 h-4 text-amber-500" />,
+              badge: '캘린더',
+              onSelect: () => {
+                onAddCalendarBoard();
                 onClose();
               },
             },

@@ -16,6 +16,7 @@ import {
   GripVertical,
   Sparkles,
   Layers,
+  Calendar,
 } from 'lucide-react';
 
 interface InfiniteTreeSidebarProps {
@@ -25,6 +26,7 @@ interface InfiniteTreeSidebarProps {
   onUpdateTree: (updatedTree: TreeItem[]) => void;
   onAddTable: (parentId: string | null, title?: string) => void;
   onAddTodoBoard?: (parentId: string | null, title?: string) => void;
+  onAddCalendarTable?: (parentId: string | null, title?: string) => void;
   onAddFolder: (parentId: string | null, title?: string) => void;
   onDeleteTreeItem: (itemId: string) => void;
   onDuplicateTable: (tableId: string) => void;
@@ -40,6 +42,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   onUpdateTree,
   onAddTable,
   onAddTodoBoard,
+  onAddCalendarTable,
   onAddFolder,
   onDeleteTreeItem,
   onDuplicateTable,
@@ -507,17 +510,30 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
             <Folder className="w-3.5 h-3.5" />
           </button>
         </div>
-        {onAddTodoBoard && (
-          <button
-            id="btn-add-todo-board"
-            onClick={() => onAddTodoBoard(null)}
-            className="w-full py-1.5 px-2.5 bg-white dark:bg-[#222222] hover:bg-amber-50 dark:hover:bg-[#2a261a] text-amber-700 dark:text-amber-400 border border-amber-300/80 dark:border-amber-600/40 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all hover:border-amber-400 active:scale-98"
-            title="드래그 앤 드롭으로 관리하는 TO-DO 칸반보드 생성"
-          >
-            <Layers className="w-3.5 h-3.5 text-amber-500" />
-            <span>📋 새 TO-DO 칸반보드</span>
-          </button>
-        )}
+        <div className="flex flex-col gap-1.5">
+          {onAddTodoBoard && (
+            <button
+              id="btn-add-todo-board"
+              onClick={() => onAddTodoBoard(null)}
+              className="w-full py-1.5 px-2.5 bg-white dark:bg-[#222222] hover:bg-amber-50 dark:hover:bg-[#2a261a] text-amber-700 dark:text-amber-400 border border-amber-300/80 dark:border-amber-600/40 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all hover:border-amber-400 active:scale-98"
+              title="드래그 앤 드롭으로 관리하는 TO-DO 칸반보드 생성"
+            >
+              <Layers className="w-3.5 h-3.5 text-amber-500" />
+              <span>📋 새 TO-DO 칸반보드</span>
+            </button>
+          )}
+          {onAddCalendarTable && (
+            <button
+              id="btn-add-calendar-board"
+              onClick={() => onAddCalendarTable(null)}
+              className="w-full py-1.5 px-2.5 bg-white dark:bg-[#222222] hover:bg-amber-50 dark:hover:bg-[#2a261a] text-amber-700 dark:text-amber-400 border border-amber-300/80 dark:border-amber-600/40 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all hover:border-amber-400 active:scale-98"
+              title="오프라인 월간/주간/일간 캘린더 및 일정 매크로 보드 생성"
+            >
+              <Calendar className="w-3.5 h-3.5 text-amber-500" />
+              <span>📅 새 일정 캘린더</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Infinite Depth Tree Container */}
