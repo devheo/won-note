@@ -328,7 +328,7 @@ function inferColumnType(colName: string, values: string[], colIndex: number): C
   return 'text';
 }
 
-function escapeHtmlForTable(str: string): string {
+export function escapeHtmlForTable(str: string): string {
   return str
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
@@ -341,7 +341,14 @@ function escapeHtmlForTable(str: string): string {
  * Converts clipboard text (Excel TSV, Markdown Pipe Table, or CSV)
  * into an HTML <table> string for embedding inside rich-text editors.
  */
-export function delimitedTextToHtmlTable(rawText: string): string | null {
+export function delimitedTextToHtmlTable(
+  rawText: string,
+  options: {
+    delimiter?: 'auto' | 'tab' | 'comma' | 'pipe' | 'semicolon' | 'space';
+    hasHeader?: boolean;
+    tableWidth?: string;
+  } = {}
+): string | null {
   const text = (rawText || '').trim();
   if (!text) return null;
 
@@ -351,13 +358,18 @@ export function delimitedTextToHtmlTable(rawText: string): string | null {
 
   const hasTabs = text.includes('\t');
   const hasPipes = text.includes('|');
-  const isMultiLineCsv = lines.length > 1 && text.includes(',');
+  const isMultiLineCsv = lines.length > 1 && (text.includes(',') || text.includes(';'));
 
-  if (!hasTabs && !hasPipes && !isMultiLineCsv) {
+  if (!hasTabs && !hasPipes && !isMultiLineCsv && options.delimiter === 'auto') {
     return null;
   }
 
-  const parsed = parseDelimitedText(text, { hasHeader: true });
+  const hasHeader = options.hasHeader ?? true;
+  const parsed = parseDelimitedText(text, {
+    forcedDelimiter: options.delimiter || 'auto',
+    hasHeader,
+  });
+
   if (!parsed.columns || parsed.columns.length === 0) {
     return null;
   }
@@ -367,12 +379,21 @@ export function delimitedTextToHtmlTable(rawText: string): string | null {
     return null;
   }
 
-  let html = '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"><thead><tr>';
-  for (const col of parsed.columns) {
-    html += `<th>${escapeHtmlForTable(col.name)}</th>`;
-  }
-  html += '</tr></thead><tbody>';
+  const tableWidth = options.tableWidth || 'auto';
+  const widthAttr = ` data-table-width="${tableWidth}"`;
+  const styleAttr = tableWidth && tableWidth !== 'auto' ? ` style="width: ${tableWidth}; max-width: 100%;"` : ' style="width: auto; max-width: 100%;"';
 
+  let html = `<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"${widthAttr}${styleAttr}>`;
+  
+  if (hasHeader) {
+    html += '<thead><tr>';
+    for (const col of parsed.columns) {
+      html += `<th>${escapeHtmlForTable(col.name)}</th>`;
+    }
+    html += '</tr></thead>';
+  }
+
+  html += '<tbody>';
   for (const row of parsed.rows) {
     html += '<tr>';
     for (const col of parsed.columns) {
@@ -385,3 +406,223 @@ export function delimitedTextToHtmlTable(rawText: string): string | null {
 
   return html;
 }
+
+/**
+ * Converts delimited text to a GitHub Flavored Markdown table string
+ */
+export function delimitedTextToMarkdownTable(
+  rawText: string,
+  options: {
+    delimiter?: 'auto' | 'tab' | 'comma' | 'pipe' | 'semicolon' | 'space';
+    hasHeader?: boolean;
+  } = {}
+): string {
+  const text = (rawText || '').trim();
+  if (!text) return '';
+
+  const hasHeader = options.hasHeader ?? true;
+  const parsed = parseDelimitedText(text, {
+    forcedDelimiter: options.delimiter || 'auto',
+    hasHeader,
+  });
+
+  if (!parsed.columns || parsed.columns.length === 0) {
+    return text;
+  }
+
+  let md = '| ' + parsed.columns.map((c) => c.name.replace(/\|/g, '\\|')).join(' | ') + ' |\n';
+  md += '| ' + parsed.columns.map(() => '---').join(' | ') + ' |\n';
+
+  for (const row of parsed.rows) {
+    md += '| ' + parsed.columns.map((c) => {
+      const val = row.data[c.id] !== undefined && row.data[c.id] !== null ? String(row.data[c.id]) : '';
+      return val.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+    }).join(' | ') + ' |\n';
+  }
+
+  return md;
+}
+
+export interface ConvertTextDataResult {
+  html: string;
+  markdownEquivalent?: string;
+  detectedFormat: 'md' | 'csv' | 'txt';
+  detectedDelimiterName: string;
+  rowCount: number;
+  colCount: number;
+  columnNames: string[];
+}
+
+/**
+ * Converts clipboard / file raw data (Markdown, Excel TSV, CSV, or TXT)
+ * into rich HTML or structured content for the rich editor.
+ */
+export function convertTextDataToEditorContent(
+  rawText: string,
+  options: {
+    format?: 'auto' | 'md' | 'csv' | 'txt';
+    delimiter?: 'auto' | 'tab' | 'comma' | 'pipe' | 'semicolon' | 'space';
+    hasHeader?: boolean;
+    outputType?: 'table' | 'md_table' | 'code_block' | 'plain';
+    tableWidth?: string;
+  } = {}
+): ConvertTextDataResult {
+  const text = (rawText || '').trim();
+  const formatChoice = options.format || 'auto';
+  const hasHeader = options.hasHeader ?? true;
+  const outputType = options.outputType || 'table';
+  const tableWidth = options.tableWidth || 'auto';
+
+  // Format detection
+  let detectedFormat: 'md' | 'csv' | 'txt' = 'txt';
+  const hasTabs = text.includes('\t');
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0);
+  const hasMultipleLinesWithCommas = lines.length > 1 && text.includes(',');
+  const hasMultipleLinesWithSemicolons = lines.length > 1 && text.includes(';');
+  const hasMarkdownPipeTable = /\|.+\|/.test(text) && /\|[-:\s]+\|/.test(text);
+  const hasMarkdownMarkers =
+    /(^#{1,6}\s+|```|^\s*[-*+]\s+\[[ xX]\]|^\s*[-*+]\s+|\b!\[.+\]\(.+\)|\b\[.+\]\(.+\))/m.test(text);
+
+  if (formatChoice === 'auto') {
+    if (hasTabs || hasMultipleLinesWithCommas || hasMultipleLinesWithSemicolons || hasMarkdownPipeTable) {
+      detectedFormat = 'csv';
+    } else if (hasMarkdownMarkers) {
+      detectedFormat = 'md';
+    } else {
+      detectedFormat = 'txt';
+    }
+  } else {
+    detectedFormat = formatChoice;
+  }
+
+  // If CSV / Excel format
+  if (detectedFormat === 'csv') {
+    const parsed = parseDelimitedText(text, {
+      forcedDelimiter: options.delimiter || 'auto',
+      hasHeader,
+    });
+
+    const colCount = parsed.columns.length;
+    const rowCount = parsed.rows.length;
+    const columnNames = parsed.columns.map((c) => c.name);
+
+    if (outputType === 'code_block') {
+      const escaped = escapeHtmlForTable(text);
+      return {
+        html: `<pre><code class="language-csv">${escaped}</code></pre><p></p>`,
+        detectedFormat: 'csv',
+        detectedDelimiterName: parsed.delimiterName,
+        rowCount,
+        colCount,
+        columnNames,
+      };
+    }
+
+    if (outputType === 'plain') {
+      const p = lines.map((l) => `<p>${escapeHtmlForTable(l)}</p>`).join('');
+      return {
+        html: p,
+        detectedFormat: 'csv',
+        detectedDelimiterName: parsed.delimiterName,
+        rowCount,
+        colCount,
+        columnNames,
+      };
+    }
+
+    // Default: 'table' or 'md_table'
+    const tableHtml = delimitedTextToHtmlTable(text, {
+      delimiter: options.delimiter || 'auto',
+      hasHeader,
+      tableWidth,
+    });
+
+    const mdEquivalent = delimitedTextToMarkdownTable(text, {
+      delimiter: options.delimiter || 'auto',
+      hasHeader,
+    });
+
+    return {
+      html: tableHtml || `<p>${escapeHtmlForTable(text)}</p>`,
+      markdownEquivalent: mdEquivalent,
+      detectedFormat: 'csv',
+      detectedDelimiterName: parsed.delimiterName,
+      rowCount,
+      colCount,
+      columnNames,
+    };
+  }
+
+  // If TXT format
+  if (detectedFormat === 'txt') {
+    // If outputType is table and has some columns/rows
+    if (outputType === 'table' && (hasTabs || text.includes(',') || text.includes(';'))) {
+      const parsed = parseDelimitedText(text, {
+        forcedDelimiter: options.delimiter || 'auto',
+        hasHeader,
+      });
+      if (parsed.columns.length >= 2 || parsed.rows.length >= 2) {
+        const tableHtml = delimitedTextToHtmlTable(text, {
+          delimiter: options.delimiter || 'auto',
+          hasHeader,
+          tableWidth,
+        });
+        if (tableHtml) {
+          return {
+            html: tableHtml,
+            detectedFormat: 'txt',
+            detectedDelimiterName: parsed.delimiterName,
+            rowCount: parsed.rows.length,
+            colCount: parsed.columns.length,
+            columnNames: parsed.columns.map((c) => c.name),
+          };
+        }
+      }
+    }
+
+    if (outputType === 'code_block') {
+      const escaped = escapeHtmlForTable(text);
+      return {
+        html: `<pre><code class="language-plaintext">${escaped}</code></pre><p></p>`,
+        detectedFormat: 'txt',
+        detectedDelimiterName: '일반 텍스트',
+        rowCount: lines.length,
+        colCount: 1,
+        columnNames: ['내용'],
+      };
+    }
+
+    // Output formatted paragraphs with line breaks
+    const paragraphs = text
+      .split(/\r?\n\r?\n/)
+      .map((p) => {
+        const withBreaks = p
+          .split(/\r?\n/)
+          .map((line) => escapeHtmlForTable(line))
+          .join('<br/>');
+        return `<p>${withBreaks}</p>`;
+      })
+      .join('');
+
+    return {
+      html: paragraphs || '<p></p>',
+      detectedFormat: 'txt',
+      detectedDelimiterName: '일반 텍스트',
+      rowCount: lines.length,
+      colCount: 1,
+      columnNames: ['텍스트'],
+    };
+  }
+
+  // If MD format
+  return {
+    html: '', // Will be processed via markdownToHtml in caller
+    markdownEquivalent: text,
+    detectedFormat: 'md',
+    detectedDelimiterName: '마크다운 (GFM)',
+    rowCount: lines.length,
+    colCount: 1,
+    columnNames: ['Markdown'],
+  };
+}
+

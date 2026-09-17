@@ -129,6 +129,33 @@
   outline: 2px solid #f59e0b;
 }
 
+/* ProseMirror Gapcursor: enables cursor navigation & clicking between adjacent tables, code blocks, and block boundaries */
+.ProseMirror-gapcursor {
+  display: none;
+  pointer-events: none;
+  position: absolute;
+}
+
+.ProseMirror-gapcursor:after {
+  content: "";
+  display: block;
+  position: absolute;
+  top: -2px;
+  width: 28px;
+  border-top: 2.5px solid #f59e0b;
+  animation: ProseMirror-cursor-blink 1.1s steps(2, start) infinite;
+}
+
+@keyframes ProseMirror-cursor-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+
 .ProseMirror pre {
   white-space: pre !important;
   tab-size: 4 !important;
@@ -147,7 +174,7 @@
 .wonbee-rendered-table table,
 .prose table {
   border-collapse: collapse;
-  width: 100%;
+  max-width: 100%;
   border: 1px solid #d6d3d1;
   margin: 0.75rem 0;
   font-size: 0.85rem;
@@ -327,11 +354,58 @@
 .wonbee-rendered-table table,
 .wonbee-rich-table {
   border-collapse: collapse !important;
-  table-layout: fixed;
-  width: 100%;
+  table-layout: auto;
+  max-width: 100%;
   margin: 1.25rem 0;
-  overflow: hidden;
   border-radius: 4px;
+  position: relative;
+}
+
+/* Explicit Table Width Controls */
+.tiptap table[data-table-width="100%"],
+.wonbee-rendered-table table[data-table-width="100%"],
+.wonbee-rich-table[data-table-width="100%"] {
+  width: 100% !important;
+}
+
+.tiptap table[data-table-width="75%"],
+.wonbee-rendered-table table[data-table-width="75%"],
+.wonbee-rich-table[data-table-width="75%"] {
+  width: 75% !important;
+}
+
+.tiptap table[data-table-width="50%"],
+.wonbee-rendered-table table[data-table-width="50%"],
+.wonbee-rich-table[data-table-width="50%"] {
+  width: 50% !important;
+}
+
+.tiptap table[data-table-width="auto"],
+.wonbee-rendered-table table[data-table-width="auto"],
+.wonbee-rich-table[data-table-width="auto"] {
+  width: auto !important;
+}
+
+/* Explicit Table Alignment */
+.tiptap table[data-table-align="center"],
+.wonbee-rendered-table table[data-table-align="center"],
+.wonbee-rich-table[data-table-align="center"] {
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.tiptap table[data-table-align="right"],
+.wonbee-rendered-table table[data-table-align="right"],
+.wonbee-rich-table[data-table-align="right"] {
+  margin-left: auto !important;
+  margin-right: 0 !important;
+}
+
+.tiptap table[data-table-align="left"],
+.wonbee-rendered-table table[data-table-align="left"],
+.wonbee-rich-table[data-table-align="left"] {
+  margin-left: 0 !important;
+  margin-right: auto !important;
 }
 
 /* Default border variables */
@@ -575,6 +649,107 @@ table[data-border-style="none"] th,
 .tiptap .tableWrapper {
   padding: 0.5rem 0;
   overflow-x: auto;
+  position: relative;
+}
+
+/* Interactive Table Resize Handle */
+.wonbee-table-resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background-color: #f59e0b;
+  color: #0f172a;
+  border-radius: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+  z-index: 20;
+  user-select: none;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+}
+
+.tiptap .tableWrapper:hover .wonbee-table-resize-handle,
+.wonbee-table-resize-handle:hover {
+  opacity: 0.85;
+}
+
+.wonbee-table-resize-handle:hover {
+  opacity: 1;
+  transform: scale(1.15);
+  background-color: #d97706;
+}
+
+/* Quick hover lines before & after tables to insert blank paragraphs */
+.wonbee-table-insert-bar {
+  width: 100%;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease-in-out;
+  user-select: none;
+  z-index: 15;
+  margin: 0;
+  padding: 2px 0;
+}
+
+.tiptap .tableWrapper:hover .wonbee-table-insert-bar,
+.wonbee-table-insert-bar:hover {
+  opacity: 1;
+}
+
+.wonbee-table-insert-before {
+  margin-bottom: -10px;
+  position: relative;
+  top: -4px;
+}
+
+.wonbee-table-insert-after {
+  margin-top: -10px;
+  position: relative;
+  bottom: -4px;
+}
+
+.wonbee-table-insert-line {
+  width: 100%;
+  height: 2px;
+  background-color: rgba(245, 158, 11, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color 0.15s ease;
+}
+
+.wonbee-table-insert-bar:hover .wonbee-table-insert-line {
+  background-color: rgba(245, 158, 11, 0.9);
+}
+
+.wonbee-table-insert-pill {
+  background-color: #f59e0b;
+  color: #0c0a09;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 9px;
+  border-radius: 9999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  transform: scale(0.95);
+  transition: transform 0.15s ease, background-color 0.15s ease;
+}
+
+.wonbee-table-insert-bar:hover .wonbee-table-insert-pill {
+  transform: scale(1.05);
+  background-color: #d97706;
+  color: #ffffff;
 }
 
 .tiptap .resize-cursor {

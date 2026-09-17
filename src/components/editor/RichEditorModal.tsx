@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { ReactNodeViewRenderer, useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
+import { TextSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { createLowlight, common } from 'lowlight';
@@ -18,6 +19,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import FontFamily from '@tiptap/extension-font-family';
 import Link from '@tiptap/extension-link';
 import Youtube from '@tiptap/extension-youtube';
+import Gapcursor from '@tiptap/extension-gapcursor';
 import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
 import { StickerExtension } from './StickerExtension';
@@ -27,7 +29,7 @@ import { TableGridPicker } from './TableGridPicker';
 import { TableRow as TableRowType, TableColumn } from '../../types';
 import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer';
 import { detectLanguage, escapeHtml, formatJavaOrGeneralCode } from '../../utils/codeHighlighter';
-import { delimitedTextToHtmlTable } from '../../utils/csvParser';
+import { delimitedTextToHtmlTable, convertTextDataToEditorContent } from '../../utils/csvParser';
 import { compressAndResizeImage } from '../../utils/imageOptimizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
@@ -105,6 +107,8 @@ import {
   Video,
   Save,
   AlertTriangle,
+  ArrowUp,
+  ArrowDown,
 } from 'lucide-react';
 
 // Initialize Lowlight with common languages (Java, SQL, JS, TS, Python, JSON, HTML, Bash, etc.)
@@ -340,25 +344,182 @@ const CustomTextStyle = TextStyle.extend({
   },
 });
 
-// Custom Table View with dynamic border style & border color reactivity
+// Custom Table View with dynamic border style, border color, width, and drag resizing
 class CustomTableView extends TableView {
+  private customView?: any;
+  private resizeHandle: HTMLDivElement | null = null;
+  private insertBeforeBtn: HTMLDivElement | null = null;
+  private insertAfterBtn: HTMLDivElement | null = null;
+  private isResizing = false;
+
   constructor(node: any, cellMinWidth: number, view?: any, HTMLAttributes: Record<string, any> = {}) {
     super(node, cellMinWidth, view, HTMLAttributes);
+    this.customView = view;
     this.syncTableAttributes(node);
+    this.initResizeHandle();
+    this.initInsertButtons();
   }
 
   update(node: any) {
     const updated = super.update(node);
     if (updated) {
       this.syncTableAttributes(node);
+      this.initInsertButtons();
     }
     return updated;
+  }
+
+  private initInsertButtons() {
+    if (typeof document === 'undefined' || !this.dom) return;
+    if (this.insertBeforeBtn && this.insertAfterBtn) return;
+
+    const createInsertBtn = (position: 'before' | 'after') => {
+      const bar = document.createElement('div');
+      bar.className = `wonbee-table-insert-bar wonbee-table-insert-${position}`;
+      bar.setAttribute('contenteditable', 'false');
+      bar.setAttribute('role', 'button');
+      bar.setAttribute(
+        'title',
+        position === 'before'
+          ? '표 위에 빈 본문 줄(단락) 삽입하여 텍스트/데이터 입력 (단축키: Ctrl+Shift+Enter)'
+          : '표 아래에 빈 본문 줄(단락) 삽입하여 텍스트/데이터 입력 (단축키: Ctrl+Enter)'
+      );
+      bar.innerHTML = `
+        <div class="wonbee-table-insert-line">
+          <span class="wonbee-table-insert-pill">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+            <span>${position === 'before' ? '표 위에 빈 줄 삽입' : '표 아래에 빈 줄 삽입'}</span>
+          </span>
+        </div>
+      `;
+
+      bar.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!this.customView || typeof (this as any).getPos !== 'function') return;
+        try {
+          const pos = (this as any).getPos();
+          if (typeof pos !== 'number') return;
+          const { state, dispatch } = this.customView;
+          const targetPos = position === 'before' ? pos : pos + this.node.nodeSize;
+          const tr = state.tr.insert(targetPos, state.schema.nodes.paragraph.create());
+          const resolved = tr.doc.resolve(targetPos + 1);
+          tr.setSelection(TextSelection.near(resolved));
+          dispatch(tr.scrollIntoView());
+          this.customView.focus();
+        } catch (err) {
+          console.error('Table insert paragraph error:', err);
+        }
+      });
+
+      return bar;
+    };
+
+    if (!this.insertBeforeBtn) {
+      const beforeBar = createInsertBtn('before');
+      this.dom.insertBefore(beforeBar, this.dom.firstChild);
+      this.insertBeforeBtn = beforeBar;
+    }
+
+    if (!this.insertAfterBtn) {
+      const afterBar = createInsertBtn('after');
+      this.dom.appendChild(afterBar);
+      this.insertAfterBtn = afterBar;
+    }
+  }
+
+  private initResizeHandle() {
+    if (typeof document === 'undefined') return;
+    if (this.resizeHandle) return;
+
+    const handle = document.createElement('div');
+    handle.className = 'wonbee-table-resize-handle';
+    handle.setAttribute('contenteditable', 'false');
+    handle.setAttribute('title', '드래그하여 표 전체 너비 조절 (최대 크기 방지)');
+
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!this.table) return;
+
+      this.isResizing = true;
+      const startX = e.clientX;
+      const tableRect = this.table.getBoundingClientRect();
+      const parentRect = this.dom?.parentElement?.getBoundingClientRect() || this.dom.getBoundingClientRect();
+      const startWidth = tableRect.width;
+      const parentWidth = parentRect.width || 800;
+
+      const onMouseMove = (ev: MouseEvent) => {
+        if (!this.isResizing) return;
+        const deltaX = ev.clientX - startX;
+        const newWidthPx = Math.max(160, Math.min(parentWidth, startWidth + deltaX));
+        const pct = Math.round((newWidthPx / parentWidth) * 100);
+        const widthVal = `${pct}%`;
+        this.table.style.width = widthVal;
+        this.table.setAttribute('data-table-width', widthVal);
+      };
+
+      const onMouseUp = () => {
+        if (!this.isResizing) return;
+        this.isResizing = false;
+        window.removeEventListener('mousemove', onMouseMove);
+        window.removeEventListener('mouseup', onMouseUp);
+
+        const finalWidth = this.table.getAttribute('data-table-width') || 'auto';
+        if (this.customView && typeof (this as any).getPos === 'function') {
+          try {
+            const pos = (this as any).getPos();
+            if (typeof pos === 'number') {
+              this.customView.dispatch(
+                this.customView.state.tr.setNodeMarkup(pos, null, {
+                  ...this.node.attrs,
+                  tableWidth: finalWidth,
+                })
+              );
+            }
+          } catch (_) {}
+        }
+      };
+
+      window.addEventListener('mousemove', onMouseMove);
+      window.addEventListener('mouseup', onMouseUp);
+    });
+
+    if (this.dom) {
+      this.dom.appendChild(handle);
+      this.resizeHandle = handle;
+    }
   }
 
   private syncTableAttributes(node: any) {
     if (!this.table) return;
     const borderStyle = node.attrs?.borderStyle || 'all';
     const borderColor = node.attrs?.borderColor || '';
+    const tableWidth = node.attrs?.tableWidth || 'auto';
+    const tableAlign = node.attrs?.tableAlign || 'left';
+
+    // Set width & max-width (preventing forced 100% max-size)
+    this.table.setAttribute('data-table-width', tableWidth);
+    this.table.setAttribute('data-table-align', tableAlign);
+
+    if (tableWidth === 'auto') {
+      this.table.style.width = 'auto';
+    } else {
+      this.table.style.width = tableWidth;
+    }
+    this.table.style.maxWidth = '100%';
+
+    // Set table alignment
+    if (tableAlign === 'center') {
+      this.table.style.marginLeft = 'auto';
+      this.table.style.marginRight = 'auto';
+    } else if (tableAlign === 'right') {
+      this.table.style.marginLeft = 'auto';
+      this.table.style.marginRight = '0';
+    } else {
+      this.table.style.marginLeft = '0';
+      this.table.style.marginRight = 'auto';
+    }
 
     // Remove any prior border style classes
     this.table.classList.remove(
@@ -479,9 +640,66 @@ const CustomTable = Table.extend({
       View: CustomTableView,
     };
   },
+  addKeyboardShortcuts() {
+    return {
+      ...this.parent?.(),
+      'Mod-Enter': () => {
+        const { state, dispatch } = this.editor.view;
+        const { $from } = state.selection;
+        for (let d = $from.depth; d > 0; d--) {
+          const node = $from.node(d);
+          if (node.type.name === 'table') {
+            const targetPos = $from.after(d);
+            const tr = state.tr.insert(targetPos, state.schema.nodes.paragraph.create());
+            const resolved = tr.doc.resolve(targetPos + 1);
+            tr.setSelection(TextSelection.near(resolved));
+            dispatch(tr.scrollIntoView());
+            this.editor.view.focus();
+            return true;
+          }
+        }
+        return false;
+      },
+      'Shift-Mod-Enter': () => {
+        const { state, dispatch } = this.editor.view;
+        const { $from } = state.selection;
+        for (let d = $from.depth; d > 0; d--) {
+          const node = $from.node(d);
+          if (node.type.name === 'table') {
+            const targetPos = $from.before(d);
+            const tr = state.tr.insert(targetPos, state.schema.nodes.paragraph.create());
+            const resolved = tr.doc.resolve(targetPos + 1);
+            tr.setSelection(TextSelection.near(resolved));
+            dispatch(tr.scrollIntoView());
+            this.editor.view.focus();
+            return true;
+          }
+        }
+        return false;
+      },
+    };
+  },
   addAttributes() {
     return {
       ...this.parent?.(),
+      tableWidth: {
+        default: 'auto',
+        parseHTML: (element) => element.getAttribute('data-table-width') || (element.style.width && element.style.width !== '100%' ? element.style.width : 'auto'),
+        renderHTML: (attributes) => {
+          const w = attributes.tableWidth || 'auto';
+          return {
+            'data-table-width': w,
+            style: w !== 'auto' ? `width: ${w}; max-width: 100%;` : 'width: auto; max-width: 100%;',
+          };
+        },
+      },
+      tableAlign: {
+        default: 'left',
+        parseHTML: (element) => element.getAttribute('data-table-align') || 'left',
+        renderHTML: (attributes) => ({
+          'data-table-align': attributes.tableAlign || 'left',
+        }),
+      },
       borderStyle: {
         default: 'all',
         parseHTML: (element) => element.getAttribute('data-border-style') || 'all',
@@ -641,10 +859,15 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   // Code & Markdown Dialog Tab ('templates' | 'md_paste' | 'tools')
   const [codeDialogTab, setCodeDialogTab] = useState<'templates' | 'md_paste' | 'tools'>('templates');
 
-  // Markdown (.md) Paste & Apply Dialog states
+  // Markdown & Data (Excel/CSV/TSV/TXT) Paste & Apply Dialog states
   const [mdPasteInputText, setMdPasteInputText] = useState('');
   const [mdPasteMode, setMdPasteMode] = useState<'insert' | 'replace'>('insert');
   const [mdPasteActiveTab, setMdPasteActiveTab] = useState<'input' | 'preview'>('input');
+  const [dataPasteFormat, setDataPasteFormat] = useState<'auto' | 'csv' | 'md' | 'txt'>('auto');
+  const [dataPasteDelimiter, setDataPasteDelimiter] = useState<'auto' | 'tab' | 'comma' | 'pipe' | 'semicolon' | 'space'>('auto');
+  const [dataPasteHasHeader, setDataPasteHasHeader] = useState<boolean>(true);
+  const [dataPasteOutputType, setDataPasteOutputType] = useState<'table' | 'md_table' | 'code_block' | 'plain'>('table');
+  const [dataPasteTableWidth, setDataPasteTableWidth] = useState<string>('auto');
 
   // Table Dialog states
   const [tableDialogRows, setTableDialogRows] = useState(3);
@@ -956,6 +1179,43 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         codeBlock: false,
       }),
       CodeBlockLowlight.extend({
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            width: {
+              default: '100%',
+              parseHTML: (element) => element.getAttribute('data-code-width') || element.style.width || '100%',
+              renderHTML: (attributes) => {
+                if (!attributes.width) return {};
+                return {
+                  'data-code-width': attributes.width,
+                  style: attributes.width !== '100%' ? `width: ${attributes.width}; max-width: 100%;` : undefined,
+                };
+              },
+            },
+            height: {
+              default: null,
+              parseHTML: (element) => element.getAttribute('data-code-height') || element.style.height || null,
+              renderHTML: (attributes) => {
+                if (!attributes.height) return {};
+                return {
+                  'data-code-height': attributes.height,
+                  style: `height: ${attributes.height}; max-height: ${attributes.height};`,
+                };
+              },
+            },
+            align: {
+              default: 'left',
+              parseHTML: (element) => element.getAttribute('data-code-align') || 'left',
+              renderHTML: (attributes) => {
+                if (!attributes.align) return {};
+                return {
+                  'data-code-align': attributes.align,
+                };
+              },
+            },
+          };
+        },
         addNodeView() {
           return ReactNodeViewRenderer(CodeBlockComponent);
         },
@@ -964,6 +1224,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         defaultLanguage: 'auto',
       }),
       Underline,
+      Gapcursor,
       TaskList,
       TaskItem.configure({
         nested: true,
@@ -1882,9 +2143,21 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       const reader = new FileReader();
       reader.onload = (uploadEvent) => {
         const text = (uploadEvent.target?.result as string) || '';
-        const html = markdownToHtml(text);
-        editor.chain().focus().insertContent(html).run();
-        setToastMessage(`✓ 마크다운 파일 (${file.name}) 불러오기 완료!`);
+        if (activeTopDialog === 'code' || activeTopDialog === 'md_paste') {
+          setMdPasteInputText(text);
+          setCodeDialogTab('md_paste');
+          setMdPasteActiveTab('input');
+          setToastMessage(`✓ 파일 (${file.name}) 내용을 데이터 붙여넣기 창에 불러왔습니다.`);
+        } else {
+          const converted = convertTextDataToEditorContent(text, {
+            tableWidth: dataPasteTableWidth,
+          });
+          const content = converted.detectedFormat === 'md'
+            ? markdownToHtml(converted.markdownEquivalent || text)
+            : converted.html;
+          editor.chain().focus().insertContent(content).run();
+          setToastMessage(`✓ 파일 (${file.name}) 데이터 불러오기 완료!`);
+        }
         setTimeout(() => setToastMessage(null), 3000);
       };
       reader.readAsText(file);
@@ -1907,36 +2180,92 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     try {
       const text = await navigator.clipboard.readText();
       if (text && text.trim()) {
-        const html = markdownToHtml(text);
-        ed.chain().focus().insertContent(html).run();
-        setToastMessage('✓ 클립보드에 복사된 마크다운(.md)이 서식 및 코드 하이라이트와 함께 적용되었습니다!');
+        const converted = convertTextDataToEditorContent(text, {
+          format: dataPasteFormat,
+          delimiter: dataPasteDelimiter,
+          hasHeader: dataPasteHasHeader,
+          outputType: dataPasteOutputType,
+          tableWidth: dataPasteTableWidth,
+        });
+        const content = converted.detectedFormat === 'md'
+          ? markdownToHtml(converted.markdownEquivalent || text)
+          : converted.html;
+        ed.chain().focus().insertContent(content).run();
+        setToastMessage(`✓ 클립보드 데이터(${converted.detectedFormat.toUpperCase()})가 서식과 함께 적용되었습니다!`);
         setTimeout(() => setToastMessage(null), 3000);
         return;
       }
     } catch (err) {
       console.warn('Direct clipboard read restricted or empty:', err);
     }
-    // If clipboard is empty or permission requires UI interaction, open dedicated MD paste dialog
+    // If clipboard is empty or permission requires UI interaction, open dedicated paste dialog
     setMdPasteInputText('');
     setMdPasteActiveTab('input');
     setActiveTopDialog('md_paste');
-    setToastMessage('마크다운 붙여넣기 창이 열렸습니다. 텍스트를 붙여넣어(Ctrl+V) 바로 적용하세요.');
+    setToastMessage('데이터 붙여넣기 창이 열렸습니다. 엑셀, CSV, TXT, MD 텍스트를 붙여넣으세요.');
     setTimeout(() => setToastMessage(null), 3000);
   };
 
-  const handleApplyPastedMarkdown = (text: string, mode: 'insert' | 'replace' = 'insert') => {
+  const handleApplyPastedData = (text: string, mode: 'insert' | 'replace' = mdPasteMode) => {
     const ed = editorRef.current || editor;
     if (!ed || !text.trim()) return;
-    const html = markdownToHtml(text);
-    if (mode === 'replace') {
-      ed.chain().focus().setContent(html).run();
-      setToastMessage('✓ 에디터 전체 내용이 마크다운(.md)으로 교체 적용되었습니다.');
+
+    const converted = convertTextDataToEditorContent(text, {
+      format: dataPasteFormat,
+      delimiter: dataPasteDelimiter,
+      hasHeader: dataPasteHasHeader,
+      outputType: dataPasteOutputType,
+      tableWidth: dataPasteTableWidth,
+    });
+
+    let contentToInsert = converted.html;
+    let successMsg = '';
+
+    if (converted.detectedFormat === 'md') {
+      contentToInsert = markdownToHtml(converted.markdownEquivalent || text);
+      successMsg = '✓ 마크다운(.md) 서식 및 코드 블록이 적용되었습니다.';
+    } else if (converted.detectedFormat === 'csv') {
+      if (dataPasteOutputType === 'md_table' && converted.markdownEquivalent) {
+        contentToInsert = markdownToHtml(converted.markdownEquivalent);
+      }
+      successMsg = `✓ 엑셀/CSV 데이터 (${converted.colCount}열 × ${converted.rowCount}행)가 표로 변환되어 적용되었습니다!`;
     } else {
-      ed.chain().focus().insertContent(html).run();
-      setToastMessage('✓ 마크다운(.md) 서식 및 코드 블록이 커서 위치에 적용되었습니다.');
+      successMsg = '✓ 텍스트 데이터가 성공적으로 적용되었습니다.';
+    }
+
+    if (mode === 'replace') {
+      ed.chain().focus().setContent(contentToInsert).run();
+      setToastMessage(`${successMsg} (전체 교체)`);
+    } else {
+      ed.chain().focus().insertContent(contentToInsert).run();
+      setToastMessage(successMsg);
     }
     setActiveTopDialog(null);
-    setTimeout(() => setToastMessage(null), 3000);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const handleApplyPastedMarkdown = (text: string, mode: 'insert' | 'replace' = 'insert') => {
+    handleApplyPastedData(text, mode);
+  };
+
+  // Helper to adjust active table attributes (tableWidth, tableAlign, borderStyle, borderColor)
+  const setTableAttributes = (attrs: { tableWidth?: string; tableAlign?: string; borderStyle?: string; borderColor?: string }) => {
+    if (!editor) return;
+    const { state, dispatch } = editor.view;
+    const { $from } = state.selection;
+    for (let depth = $from.depth; depth > 0; depth--) {
+      const node = $from.node(depth);
+      if (node.type.name === 'table') {
+        const pos = $from.before(depth);
+        dispatch(
+          state.tr.setNodeMarkup(pos, null, {
+            ...node.attrs,
+            ...attrs,
+          })
+        );
+        return;
+      }
+    }
   };
 
   const handleDownloadMarkdown = () => {
@@ -2360,6 +2689,107 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     }
   }, [editor]);
 
+  // Insert a new paragraph before the currently focused/active table
+  const handleInsertParagraphBeforeTable = useCallback(() => {
+    if (!editor) return;
+    const { state, dispatch } = editor.view;
+    const { $from } = state.selection;
+
+    let foundTablePos: number | null = null;
+    for (let d = $from.depth; d > 0; d--) {
+      const node = $from.node(d);
+      if (node.type.name === 'table') {
+        foundTablePos = $from.before(d);
+        break;
+      }
+    }
+
+    if (foundTablePos === null && lastTablePosRef.current !== null) {
+      try {
+        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
+        if (nodeAtLast && nodeAtLast.type.name === 'table') {
+          foundTablePos = lastTablePosRef.current;
+        }
+      } catch (_) {}
+    }
+
+    if (foundTablePos === null) {
+      state.doc.descendants((node, pos) => {
+        if (node.type.name === 'table' && foundTablePos === null) {
+          foundTablePos = pos;
+          return false;
+        }
+        return true;
+      });
+    }
+
+    if (foundTablePos !== null) {
+      const tr = state.tr.insert(foundTablePos, state.schema.nodes.paragraph.create());
+      const resolved = tr.doc.resolve(foundTablePos + 1);
+      tr.setSelection(TextSelection.near(resolved));
+      dispatch(tr.scrollIntoView());
+      editor.view.focus();
+      setToastMessage('✓ 표 위에 새 본문 줄(단락)이 삽입되었습니다.');
+      setTimeout(() => setToastMessage(null), 2000);
+    } else {
+      setToastMessage('표를 먼저 클릭하거나 선택해주세요.');
+      setTimeout(() => setToastMessage(null), 2000);
+    }
+  }, [editor]);
+
+  // Insert a new paragraph after the currently focused/active table
+  const handleInsertParagraphAfterTable = useCallback(() => {
+    if (!editor) return;
+    const { state, dispatch } = editor.view;
+    const { $from } = state.selection;
+
+    let foundTablePos: number | null = null;
+    let tableSize = 0;
+    for (let d = $from.depth; d > 0; d--) {
+      const node = $from.node(d);
+      if (node.type.name === 'table') {
+        foundTablePos = $from.before(d);
+        tableSize = node.nodeSize;
+        break;
+      }
+    }
+
+    if (foundTablePos === null && lastTablePosRef.current !== null) {
+      try {
+        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
+        if (nodeAtLast && nodeAtLast.type.name === 'table') {
+          foundTablePos = lastTablePosRef.current;
+          tableSize = nodeAtLast.nodeSize;
+        }
+      } catch (_) {}
+    }
+
+    if (foundTablePos === null) {
+      state.doc.descendants((node, pos) => {
+        if (node.type.name === 'table' && foundTablePos === null) {
+          foundTablePos = pos;
+          tableSize = node.nodeSize;
+          return false;
+        }
+        return true;
+      });
+    }
+
+    if (foundTablePos !== null) {
+      const targetPos = foundTablePos + tableSize;
+      const tr = state.tr.insert(targetPos, state.schema.nodes.paragraph.create());
+      const resolved = tr.doc.resolve(targetPos + 1);
+      tr.setSelection(TextSelection.near(resolved));
+      dispatch(tr.scrollIntoView());
+      editor.view.focus();
+      setToastMessage('✓ 표 아래에 새 본문 줄(단락)이 삽입되었습니다.');
+      setTimeout(() => setToastMessage(null), 2000);
+    } else {
+      setToastMessage('표를 먼저 클릭하거나 선택해주세요.');
+      setTimeout(() => setToastMessage(null), 2000);
+    }
+  }, [editor]);
+
   // Inspect active cell/header attributes
   const getActiveTableCellAttrs = useCallback(() => {
     if (!editor) return { cellBorder: null, cellBorderColor: null, backgroundColor: null };
@@ -2752,7 +3182,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       }`}
                     >
                       <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
-                      <span>MD 붙여넣기 & 미리보기</span>
+                      <span>MD · 엑셀(CSV) · TXT 붙여넣기</span>
                     </button>
                     <button
                       type="button"
@@ -3084,200 +3514,410 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 </div>
               )}
 
-                  {/* TAB 2: 마크다운(.md) 복사 붙여넣기 및 코드 하이라이트 적용 */}
-                  {currentTab === 'md_paste' && (
-                    <div className="space-y-4">
-                      {/* Input vs Preview Tab Selector & Quick Action Bar */}
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800/80 p-1 rounded-xl">
-                      <button
-                        type="button"
-                        onClick={() => setMdPasteActiveTab('input')}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                          mdPasteActiveTab === 'input'
-                            ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
-                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                        }`}
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                        <span>마크다운 입력/붙여넣기</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setMdPasteActiveTab('preview')}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                          mdPasteActiveTab === 'preview'
-                            ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
-                            : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                        }`}
-                      >
-                        <Eye className="w-3.5 h-3.5" />
-                        <span>서식 및 코드 하이라이트 미리보기</span>
-                      </button>
-                    </div>
+                  {/* TAB 2: 마크다운(.md), 엑셀/CSV, TXT 복사 붙여넣기 및 크기 조절 통합 도구 */}
+                  {currentTab === 'md_paste' && (() => {
+                    const parsedData = mdPasteInputText.trim()
+                      ? convertTextDataToEditorContent(mdPasteInputText, {
+                          format: dataPasteFormat,
+                          delimiter: dataPasteDelimiter,
+                          hasHeader: dataPasteHasHeader,
+                          outputType: dataPasteOutputType,
+                          tableWidth: dataPasteTableWidth,
+                        })
+                      : null;
 
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            const text = await navigator.clipboard.readText();
-                            if (text) {
-                              setMdPasteInputText(text);
-                              setToastMessage('✓ 클립보드 내용을 붙여넣기 창에 가져왔습니다.');
-                              setTimeout(() => setToastMessage(null), 2500);
-                            }
-                          } catch {
-                            setToastMessage('클립보드 읽기 권한이 필요합니다. 아래 입력창을 클릭 후 Ctrl+V를 누르세요.');
-                            setTimeout(() => setToastMessage(null), 3000);
-                          }
-                        }}
-                        className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors"
-                        title="운영체제 클립보드 내용 직접 가져오기"
-                      >
-                        <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
-                        <span>클립보드 가져오기</span>
-                      </button>
+                    return (
+                      <div className="space-y-3.5">
+                        {/* 1. Mode Switcher & Top Action Buttons */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800/80 p-1 rounded-xl">
+                            <button
+                              type="button"
+                              onClick={() => setMdPasteActiveTab('input')}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                                mdPasteActiveTab === 'input'
+                                  ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
+                                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                              }`}
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                              <span>데이터 입력 / 붙여넣기</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setMdPasteActiveTab('preview')}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
+                                mdPasteActiveTab === 'preview'
+                                  ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
+                                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+                              }`}
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>실시간 서식 & 표 미리보기</span>
+                              {parsedData && (
+                                <span className="ml-1 px-1.5 py-0.2 rounded text-[10px] bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 font-mono">
+                                  {parsedData.detectedFormat.toUpperCase()}
+                                </span>
+                              )}
+                            </button>
+                          </div>
 
-                      <button
-                        type="button"
-                        onClick={() => mdFileInputRef.current?.click()}
-                        className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors"
-                        title=".md 파일 선택하여 내용 불러오기"
-                      >
-                        <FileDown className="w-3.5 h-3.5 text-sky-500" />
-                        <span>.md 파일 열기</span>
-                      </button>
-                    </div>
-                  </div>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const text = await navigator.clipboard.readText();
+                                  if (text) {
+                                    setMdPasteInputText(text);
+                                    setToastMessage('✓ 클립보드 내용을 붙여넣기 창에 가져왔습니다.');
+                                    setTimeout(() => setToastMessage(null), 2500);
+                                  }
+                                } catch {
+                                  setToastMessage('클립보드 읽기 권한이 필요합니다. 아래 입력창을 클릭 후 Ctrl+V를 누르세요.');
+                                  setTimeout(() => setToastMessage(null), 3000);
+                                }
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors font-medium shadow-2xs"
+                              title="운영체제 클립보드 내용 직접 가져오기"
+                            >
+                              <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
+                              <span>클립보드 가져오기</span>
+                            </button>
 
-                  {/* Major Language Quick Insert Bar */}
-                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-[11px]">
-                    <span className="text-stone-400 shrink-0 font-medium">코드 템플릿:</span>
-                    {MARKDOWN_LANGUAGE_TEMPLATES.map((tpl) => (
-                      <button
-                        key={tpl.id}
-                        type="button"
-                        onClick={() => {
-                          setMdPasteInputText((prev) => (prev ? prev + '\n\n' + tpl.markdown : tpl.markdown));
-                          setToastMessage(`✓ ${tpl.name} 마크다운 템플릿이 추가되었습니다.`);
-                          setTimeout(() => setToastMessage(null), 2000);
-                        }}
-                        className="px-2 py-1 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/60 hover:bg-amber-50 dark:hover:bg-amber-950/50 hover:border-amber-300 dark:hover:border-amber-700 text-stone-700 dark:text-stone-300 shrink-0 transition-colors"
-                      >
-                        {tpl.name}
-                      </button>
-                    ))}
-                  </div>
+                            <button
+                              type="button"
+                              onClick={() => mdFileInputRef.current?.click()}
+                              className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors font-medium shadow-2xs"
+                              title="파일 열기 (.md, .csv, .tsv, .txt, .log)"
+                            >
+                              <FileDown className="w-3.5 h-3.5 text-sky-500" />
+                              <span>파일 열기 (.md/.csv/.txt)</span>
+                            </button>
+                          </div>
+                        </div>
 
-                  {/* Tab 1: Input Editor */}
-                  {mdPasteActiveTab === 'input' && (
-                    <div className="space-y-2">
-                      <div className="relative">
-                        <textarea
-                          value={mdPasteInputText}
-                          onChange={(e) => setMdPasteInputText(e.target.value)}
-                          placeholder={'마크다운(.md) 파일 내용 또는 텍스트를 여기에 붙여넣으세요 (Ctrl+V)\n\n예시:\n# 금융 결제원 모듈 수정 내역\n```c\nmemcpy(szXCH_DIS, "22", sizeof(szXCH_DIS)- 1);\nmemcpy(szPRC_PRG_DIS, "31", sizeof(szXCH_DIS)- 1);\n```'}
-                          className="w-full h-72 p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 focus:outline-hidden transition-all resize-y"
-                        />
-                        {mdPasteInputText && (
+                        {/* 2. Format & Layout Controls Bar (CSV, TXT, MD, Table Width, Delimiters) */}
+                        <div className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50/70 dark:bg-[#181818] space-y-2 text-xs">
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+                            {/* Format selector */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">데이터 형식:</span>
+                              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] p-0.5">
+                                {[
+                                  { val: 'auto', label: '⚡ 자동 감지' },
+                                  { val: 'csv', label: '📊 엑셀/CSV' },
+                                  { val: 'md', label: '📝 마크다운(.md)' },
+                                  { val: 'txt', label: '📄 텍스트(.txt)' },
+                                ].map((fmt) => (
+                                  <button
+                                    key={fmt.val}
+                                    type="button"
+                                    onClick={() => setDataPasteFormat(fmt.val as any)}
+                                    className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                                      dataPasteFormat === fmt.val
+                                        ? 'bg-amber-500 text-white font-semibold shadow-2xs'
+                                        : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#2c2c2c]'
+                                    }`}
+                                  >
+                                    {fmt.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Delimiter selector (for Excel / CSV) */}
+                            {(dataPasteFormat === 'auto' || dataPasteFormat === 'csv') && (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">구분자:</span>
+                                <select
+                                  value={dataPasteDelimiter}
+                                  onChange={(e) => setDataPasteDelimiter(e.target.value as any)}
+                                  className="px-2 py-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] text-stone-800 dark:text-stone-200 text-[11px] focus:outline-none focus:border-amber-500"
+                                >
+                                  <option value="auto">자동 구분 감지</option>
+                                  <option value="tab">탭 (\t, 엑셀 기본 복사)</option>
+                                  <option value="comma">쉼표 (, CSV 표준)</option>
+                                  <option value="pipe">파이프 (|)</option>
+                                  <option value="semicolon">세미콜론 (;)</option>
+                                  <option value="space">공백 (Space)</option>
+                                </select>
+                              </div>
+                            )}
+
+                            {/* Header checkbox */}
+                            {(dataPasteFormat === 'auto' || dataPasteFormat === 'csv') && (
+                              <label className="flex items-center gap-1.5 text-[11px] text-stone-700 dark:text-stone-300 cursor-pointer select-none">
+                                <input
+                                  type="checkbox"
+                                  checked={dataPasteHasHeader}
+                                  onChange={(e) => setDataPasteHasHeader(e.target.checked)}
+                                  className="rounded border-stone-300 text-amber-600 focus:ring-amber-500"
+                                />
+                                <span>첫 행을 표 제목(헤더)으로 지정</span>
+                              </label>
+                            )}
+                          </div>
+
+                          {/* Row 2: Table Width & Output Type */}
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 border-t border-stone-200/60 dark:border-stone-700/60">
+                            {/* Table & Code Block Width (Directly addressing: 테이블, 코드 블럭 크기 조절 가능하게 해줘 최대크기로 하지말고) */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">표/블록 크기:</span>
+                              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] p-0.5">
+                                {[
+                                  { val: 'auto', label: '자동 (내용 맞춤)', title: '최대 크기 강제 방지: 내용 너비에 맞춰 유연하게 조절' },
+                                  { val: '50%', label: '50% 너비', title: '에디터 본문의 50% 크기' },
+                                  { val: '75%', label: '75% 너비', title: '에디터 본문의 75% 크기' },
+                                  { val: '100%', label: '100% (최대)', title: '에디터 전체 너비 (100%)' },
+                                ].map((w) => (
+                                  <button
+                                    key={w.val}
+                                    type="button"
+                                    onClick={() => setDataPasteTableWidth(w.val)}
+                                    className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                                      dataPasteTableWidth === w.val
+                                        ? 'bg-amber-500 text-white font-semibold shadow-2xs'
+                                        : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#2c2c2c]'
+                                    }`}
+                                    title={w.title}
+                                  >
+                                    {w.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Output representation */}
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">출력 형태:</span>
+                              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] p-0.5">
+                                {[
+                                  { val: 'table', label: '리치 테이블(표)' },
+                                  { val: 'md_table', label: '마크다운 표' },
+                                  { val: 'code_block', label: '코드 블록' },
+                                  { val: 'plain', label: '일반 텍스트' },
+                                ].map((ot) => (
+                                  <button
+                                    key={ot.val}
+                                    type="button"
+                                    onClick={() => setDataPasteOutputType(ot.val as any)}
+                                    className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
+                                      dataPasteOutputType === ot.val
+                                        ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 font-semibold'
+                                        : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#2c2c2c]'
+                                    }`}
+                                  >
+                                    {ot.label}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Quick Presets / Samples Bar */}
+                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-[11px]">
+                          <span className="text-stone-400 shrink-0 font-medium">빠른 예시:</span>
                           <button
                             type="button"
-                            onClick={() => setMdPasteInputText('')}
-                            className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] bg-stone-200 dark:bg-stone-700 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300 text-stone-600 dark:text-stone-300 transition-colors"
-                          >
-                            지우기
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-stone-500 dark:text-stone-400">
-                        <span>
-                          {mdPasteInputText.length.toLocaleString()} 글자 · 약 {mdPasteInputText.split('\n').length.toLocaleString()} 줄
-                        </span>
-                        <span className="text-amber-600 dark:text-amber-400 font-medium">
-                          Tip: ```c, ```sql, ```java 등 언어 표기 및 미완성 코드 블록도 자동 인식되어 하이라이팅됩니다.
-                        </span>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Tab 2: HTML & Syntax Highlighting Live Preview (Renders parsed HTML without exposing raw tags) */}
-                  {mdPasteActiveTab === 'preview' && (
-                    <div className="space-y-2">
-                      <div className="w-full h-72 p-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#1e1e1e] overflow-y-auto prose dark:prose-invert max-w-none text-xs">
-                        {mdPasteInputText.trim() ? (
-                          <div
-                            dangerouslySetInnerHTML={{
-                              __html: markdownToHtml(mdPasteInputText),
+                            onClick={() => {
+                              const excelSample = "거래일자\t거래구분\t계좌번호\t예금주\t금액\t처리상태\n2025-01-10\t급여이체\t1002-123-456789\t홍길동\t3,500,000\t정상\n2025-01-11\t타행송금\t020-987-654321\t이우리\t1,200,000\t정상\n2025-01-12\t공과금자동이체\t1002-555-888888\t한국전력\t84,200\t정상";
+                              setMdPasteInputText(excelSample);
+                              setDataPasteFormat('csv');
+                              setDataPasteDelimiter('tab');
+                              setToastMessage('✓ 엑셀 탭 구분 표 예시를 입력창에 불러왔습니다.');
+                              setTimeout(() => setToastMessage(null), 2500);
                             }}
-                          />
-                        ) : (
-                          <div className="h-full flex flex-col items-center justify-center text-stone-400">
-                            <FileText className="w-8 h-8 mb-2 opacity-40" />
-                            <p className="text-xs">입력창에 마크다운 텍스트를 입력하거나 붙여넣으면 실시간 서식과 코드 하이라이트가 미리보기에 표시됩니다.</p>
+                            className="px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 text-emerald-800 dark:text-emerald-300 shrink-0 transition-colors font-medium"
+                          >
+                            + 엑셀 복사 예시
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const csvSample = "코드,금융상품명,분류,기본금리,최고우대금리,가입대상\nWON-01,WON플러스 예금,정기예금,연 3.45%,연 3.85%,개인/법인\nWON-02,우리 비상금 대출,신용대출,연 4.12%,연 4.60%,직장인\nWON-03,주택청약종합저축,청약통장,연 2.80%,연 3.00%,국민누구나";
+                              setMdPasteInputText(csvSample);
+                              setDataPasteFormat('csv');
+                              setDataPasteDelimiter('comma');
+                              setToastMessage('✓ CSV 파일 형식 표 예시를 불러왔습니다.');
+                              setTimeout(() => setToastMessage(null), 2500);
+                            }}
+                            className="px-2 py-1 rounded-md border border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 hover:bg-sky-100 text-sky-800 dark:text-sky-300 shrink-0 transition-colors font-medium"
+                          >
+                            + CSV 데이터 예시
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const mdSample = `# 우리금융 시스템 연동 가이드\n\n대외 기관 결제 모듈 호출 시 다음과 같은 구조체를 정의하여 전달합니다.\n\n\`\`\`c\ntypedef struct {\n    char szBankCode[4];    /* 은행코드: 020 */\n    char szAcctNo[16];     /* 계좌번호 */\n    long lTransAmount;     /* 거래금액 */\n} ST_TRANS_BODY;\n\`\`\`\n\n> **안내**: 결제 타임아웃은 기본 30초로 설정되어 있습니다.`;
+                              setMdPasteInputText(mdSample);
+                              setDataPasteFormat('md');
+                              setToastMessage('✓ 마크다운 문서 & 코드 블록 예시를 불러왔습니다.');
+                              setTimeout(() => setToastMessage(null), 2500);
+                            }}
+                            className="px-2 py-1 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 text-amber-800 dark:text-amber-300 shrink-0 transition-colors font-medium"
+                          >
+                            + 마크다운 문서 예시
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const txtSample = `[2025-01-15 09:00:01] INFO  대외연계 시스템 연결 성공 (Session ID: WON-7821)\n[2025-01-15 09:00:15] INFO  실시간 타행이체 1,420건 정상 처리 완료 (평균응답 32ms)\n[2025-01-15 09:01:40] WARN  타행망 네트워크 지연 감지 (응답시간 480ms 소요)\n[2025-01-15 09:02:10] INFO  일괄 배치 마감 작업 완료`;
+                              setMdPasteInputText(txtSample);
+                              setDataPasteFormat('txt');
+                              setToastMessage('✓ 텍스트 로그(.txt) 예시를 불러왔습니다.');
+                              setTimeout(() => setToastMessage(null), 2500);
+                            }}
+                            className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 text-stone-700 dark:text-stone-300 shrink-0 transition-colors font-medium"
+                          >
+                            + 텍스트 로그 예시
+                          </button>
+                        </div>
+
+                        {/* Tab 1: Input Editor */}
+                        {mdPasteActiveTab === 'input' && (
+                          <div className="space-y-2">
+                            <div className="relative">
+                              <textarea
+                                value={mdPasteInputText}
+                                onChange={(e) => setMdPasteInputText(e.target.value)}
+                                placeholder={`엑셀에서 복사한 데이터(Ctrl+C), CSV/TXT 텍스트, 또는 마크다운(.md) 내용을 여기에 붙여넣으세요 (Ctrl+V)\n\n[예시 1: 엑셀 복사 데이터]\n일자\t거래유형\t금액\t상태\n2025-01-10\t급여이체\t3,500,000\t완료\n\n[예시 2: CSV 데이터]\n이름,직급,부서,연락처\n홍길동,과장,IT개발부,010-1234-5678\n\n[예시 3: 마크다운 & 코드 블록]\n# 제목 및 가이드\n\`\`\`c\nmemcpy(szXCH_DIS, "22", sizeof(szXCH_DIS)- 1);\n\`\`\``}
+                                className="w-full h-64 p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 focus:outline-hidden transition-all resize-y"
+                              />
+                              {mdPasteInputText && (
+                                <button
+                                  type="button"
+                                  onClick={() => setMdPasteInputText('')}
+                                  className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] bg-stone-200 dark:bg-stone-700 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300 text-stone-600 dark:text-stone-300 transition-colors"
+                                >
+                                  지우기
+                                </button>
+                              )}
+                            </div>
+
+                            {/* Live Detection Info Banner */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-500 dark:text-stone-400">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span>
+                                  {mdPasteInputText.length.toLocaleString()} 글자 · 약 {mdPasteInputText.split('\n').length.toLocaleString()} 줄
+                                </span>
+                                {parsedData && (
+                                  <>
+                                    <span className="text-stone-300 dark:text-stone-700">•</span>
+                                    {parsedData.detectedFormat === 'csv' && (
+                                      <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 font-semibold flex items-center gap-1">
+                                        <TableIcon className="w-3.5 h-3.5" />
+                                        엑셀/CSV 표 감지: {parsedData.colCount}열 × {parsedData.rowCount}행 (구분자: {parsedData.detectedDelimiterName})
+                                      </span>
+                                    )}
+                                    {parsedData.detectedFormat === 'md' && (
+                                      <span className="px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1">
+                                        <FileCode className="w-3.5 h-3.5" />
+                                        마크다운 서식 및 코드 블록 감지
+                                      </span>
+                                    )}
+                                    {parsedData.detectedFormat === 'txt' && (
+                                      <span className="px-2 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-700 dark:text-stone-300 font-semibold flex items-center gap-1">
+                                        <FileText className="w-3.5 h-3.5" />
+                                        일반 텍스트(.txt) 감지
+                                      </span>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                              <span className="text-amber-600 dark:text-amber-400 font-medium">
+                                💡 너비 조절: 표와 코드 블록은 상단 너비 옵션으로 자동/50%/75%/100% 지정 가능
+                              </span>
+                            </div>
                           </div>
                         )}
-                      </div>
-                      <div className="text-[11px] text-stone-500 dark:text-stone-400 flex items-center justify-between">
-                        <span>미리보기는 에디터에 실제 삽입될 때와 동일한 스타일 및 코드 하이라이트로 렌더링됩니다.</span>
-                        <button
-                          type="button"
-                          onClick={() => setMdPasteActiveTab('input')}
-                          className="text-amber-600 dark:text-amber-400 hover:underline font-medium"
-                        >
-                          입력창으로 돌아가기
-                        </button>
-                      </div>
-                    </div>
-                  )}
 
-                  {/* Insertion Mode & Action Controls */}
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-3 text-xs">
-                      <span className="text-stone-500 font-medium">적용 방식:</span>
-                      <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300">
-                        <input
-                          type="radio"
-                          name="mdPasteMode"
-                          checked={mdPasteMode === 'insert'}
-                          onChange={() => setMdPasteMode('insert')}
-                          className="text-amber-600 focus:ring-amber-500"
-                        />
-                        <span>커서 위치에 삽입</span>
-                      </label>
-                      <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300">
-                        <input
-                          type="radio"
-                          name="mdPasteMode"
-                          checked={mdPasteMode === 'replace'}
-                          onChange={() => setMdPasteMode('replace')}
-                          className="text-amber-600 focus:ring-amber-500"
-                        />
-                        <span>전체 내용 교체</span>
-                      </label>
-                    </div>
+                        {/* Tab 2: HTML & Syntax Highlighting Live Preview */}
+                        {mdPasteActiveTab === 'preview' && (
+                          <div className="space-y-2">
+                            <div className="w-full h-64 p-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#1e1e1e] overflow-y-auto prose dark:prose-invert max-w-none text-xs">
+                              {parsedData ? (
+                                <div
+                                  style={{
+                                    width: dataPasteTableWidth !== 'auto' ? dataPasteTableWidth : 'auto',
+                                    maxWidth: '100%',
+                                  }}
+                                  dangerouslySetInnerHTML={{
+                                    __html:
+                                      parsedData.detectedFormat === 'md'
+                                        ? markdownToHtml(parsedData.markdownEquivalent || mdPasteInputText)
+                                        : parsedData.html,
+                                  }}
+                                />
+                              ) : (
+                                <div className="h-full flex flex-col items-center justify-center text-stone-400">
+                                  <FileText className="w-8 h-8 mb-2 opacity-40" />
+                                  <p className="text-xs">입력창에 엑셀, CSV, TXT, 또는 마크다운 텍스트를 입력하면 실시간 변환 결과가 미리보기에 표시됩니다.</p>
+                                </div>
+                              )}
+                            </div>
+                            <div className="text-[11px] text-stone-500 dark:text-stone-400 flex items-center justify-between">
+                              <span>미리보기는 에디터에 실제 삽입될 때의 표 너비({dataPasteTableWidth}) 및 코드 하이라이트와 동일하게 렌더링됩니다.</span>
+                              <button
+                                type="button"
+                                onClick={() => setMdPasteActiveTab('input')}
+                                className="text-amber-600 dark:text-amber-400 hover:underline font-medium"
+                              >
+                                입력창으로 돌아가기
+                              </button>
+                            </div>
+                          </div>
+                        )}
 
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTopDialog(null)}
-                        className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                      >
-                        취소
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleApplyPastedMarkdown(mdPasteInputText, mdPasteMode)}
-                        disabled={!mdPasteInputText.trim()}
-                        className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm transition-colors"
-                      >
-                        <Check className="w-4 h-4" />
-                        <span>에디터에 적용하기</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
+                        {/* 3. Insertion Mode & Action Controls */}
+                        <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex flex-wrap items-center justify-between gap-3">
+                          <div className="flex items-center gap-3 text-xs">
+                            <span className="text-stone-500 font-medium">적용 방식:</span>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300 font-medium">
+                              <input
+                                type="radio"
+                                name="mdPasteMode"
+                                checked={mdPasteMode === 'insert'}
+                                onChange={() => setMdPasteMode('insert')}
+                                className="text-amber-600 focus:ring-amber-500"
+                              />
+                              <span>커서 위치에 삽입</span>
+                            </label>
+                            <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300 font-medium">
+                              <input
+                                type="radio"
+                                name="mdPasteMode"
+                                checked={mdPasteMode === 'replace'}
+                                onChange={() => setMdPasteMode('replace')}
+                                className="text-amber-600 focus:ring-amber-500"
+                              />
+                              <span>전체 내용 교체</span>
+                            </label>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setActiveTopDialog(null)}
+                              className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
+                            >
+                              취소
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleApplyPastedData(mdPasteInputText, mdPasteMode)}
+                              disabled={!mdPasteInputText.trim()}
+                              className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
+                            >
+                              <Check className="w-4 h-4" />
+                              <span>에디터에 적용하기</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
 
               {/* Common Footer */}
               {currentTab !== 'md_paste' && (
@@ -4748,7 +5388,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                   <input
                     ref={mdFileInputRef}
                     type="file"
-                    accept=".md,.markdown,.txt"
+                    accept=".md,.markdown,.csv,.tsv,.txt,.log"
                     className="hidden"
                     onChange={handleMdFileUpload}
                   />
@@ -5051,6 +5691,75 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                   </button>
                 ))}
               </div>
+              <div className="w-[1px] h-3.5 bg-amber-300 dark:bg-amber-800 mx-0.5" />
+              <div className="flex items-center gap-1">
+                <span className="text-[10px] text-stone-500 font-medium">표 너비:</span>
+                {[
+                  { label: '자동', val: 'auto', title: '내용에 맞춰 자동 조절 (최대 크기 강제 방지)' },
+                  { label: '50%', val: '50%', title: '에디터 너비의 50%' },
+                  { label: '75%', val: '75%', title: '에디터 너비의 75%' },
+                  { label: '100%', val: '100%', title: '에디터 너비의 100%' },
+                ].map((w) => (
+                  <button
+                    key={w.val}
+                    type="button"
+                    onClick={() => setTableAttributes({ tableWidth: w.val })}
+                    className="px-1.5 py-0.5 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-[10px] font-medium transition-colors"
+                    title={w.title}
+                  >
+                    {w.label}
+                  </button>
+                ))}
+              </div>
+              <div className="w-[1px] h-3.5 bg-amber-300 dark:bg-amber-800 mx-0.5" />
+              <div className="flex items-center gap-0.5" title="표 정렬 위치">
+                <button
+                  type="button"
+                  onClick={() => setTableAttributes({ tableAlign: 'left' })}
+                  className="p-1 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-stone-700 dark:text-stone-300 transition-colors"
+                  title="표 왼쪽 정렬"
+                >
+                  <AlignLeft className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTableAttributes({ tableAlign: 'center' })}
+                  className="p-1 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-stone-700 dark:text-stone-300 transition-colors"
+                  title="표 가운데 정렬"
+                >
+                  <AlignCenter className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTableAttributes({ tableAlign: 'right' })}
+                  className="p-1 rounded bg-white dark:bg-[#252525] border border-amber-300 dark:border-amber-700 hover:bg-amber-50 dark:hover:bg-[#303030] text-stone-700 dark:text-stone-300 transition-colors"
+                  title="표 오른쪽 정렬"
+                >
+                  <AlignRight className="w-3 h-3" />
+                </button>
+              </div>
+              <div className="w-[1px] h-3.5 bg-amber-300 dark:bg-amber-800 mx-0.5" />
+              {/* Insert paragraph before & after table */}
+              <div className="flex items-center gap-1" title="표 앞뒤에 빈 본문 줄(단락)을 삽입하여 텍스트나 데이터를 입력합니다">
+                <button
+                  type="button"
+                  onClick={handleInsertParagraphBeforeTable}
+                  className="px-2 py-0.5 rounded bg-amber-500/10 dark:bg-amber-500/20 border border-amber-400 dark:border-amber-600 hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-2xs"
+                  title="표 위쪽에 새 본문 줄(단락) 삽입 (단축키: Ctrl+Shift+Enter)"
+                >
+                  <ArrowUp className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                  <span>표 위에 줄 삽입</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleInsertParagraphAfterTable}
+                  className="px-2 py-0.5 rounded bg-amber-500/10 dark:bg-amber-500/20 border border-amber-400 dark:border-amber-600 hover:bg-amber-500/30 text-amber-900 dark:text-amber-200 text-[11px] font-semibold transition-colors flex items-center gap-1 shadow-2xs"
+                  title="표 아래쪽에 새 본문 줄(단락) 삽입 (단축키: Ctrl+Enter)"
+                >
+                  <ArrowDown className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                  <span>표 아래에 줄 삽입</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -5066,7 +5775,25 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         )}
 
         {/* Scrollable Body Area */}
-        <div className="flex-1 p-6 overflow-y-auto min-h-[350px] relative">
+        <div
+          className="flex-1 p-6 overflow-y-auto min-h-[350px] relative cursor-text"
+          onClick={(e) => {
+            if (e.target === e.currentTarget && editor) {
+              const { state, dispatch } = editor.view;
+              const lastNode = state.doc.lastChild;
+              if (lastNode && (lastNode.type.name === 'table' || lastNode.type.name === 'codeBlock')) {
+                const endPos = state.doc.content.size;
+                const tr = state.tr.insert(endPos, state.schema.nodes.paragraph.create());
+                const resolved = tr.doc.resolve(endPos + 1);
+                tr.setSelection(TextSelection.near(resolved));
+                dispatch(tr.scrollIntoView());
+                editor.view.focus();
+              } else {
+                editor.chain().focus('end').run();
+              }
+            }
+          }}
+        >
           {loadingState.isLoading ? (
             <div className="h-full min-h-[340px] flex flex-col items-center justify-center py-8 px-4 select-none">
               <div className="w-full max-w-md bg-white dark:bg-[#1e1e1e] rounded-2xl border border-stone-200/90 dark:border-[#333333] shadow-2xl p-6 md:p-8 text-center transition-all animate-in fade-in zoom-in-95 duration-200">

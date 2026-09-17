@@ -271,7 +271,27 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
   };
 
   const handleDeleteEvent = (eventId: string) => {
-    const updated = storedEvents.filter((e) => e.id !== eventId);
+    // Check if event is linked to a table row
+    let targetRowId: string | undefined;
+    if (eventId.startsWith('row_evt_')) {
+      targetRowId = eventId.replace('row_evt_', '');
+    } else {
+      const foundInStored = storedEvents.find((e) => e.id === eventId);
+      if (foundInStored?.tableRowId) {
+        targetRowId = foundInStored.tableRowId;
+      }
+    }
+
+    if (targetRowId) {
+      const updatedRows = table.rows.filter((r) => r.id !== targetRowId);
+      onUpdateTable({
+        ...table,
+        rows: updatedRows,
+        updatedAt: Date.now(),
+      });
+    }
+
+    const updated = storedEvents.filter((e) => e.id !== eventId && e.tableRowId !== targetRowId);
     saveStoredEvents(updated);
   };
 
@@ -289,7 +309,29 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
 
   const handleDeleteMacroEvents = (eventIds: string[]) => {
     const set = new Set(eventIds);
-    const updated = storedEvents.filter((e) => !set.has(e.id));
+    // Find all table row IDs to delete from macro bulk actions
+    const tableRowIdsToDelete = new Set<string>();
+    eventIds.forEach((id) => {
+      if (id.startsWith('row_evt_')) {
+        tableRowIdsToDelete.add(id.replace('row_evt_', ''));
+      }
+    });
+    storedEvents.forEach((e) => {
+      if (set.has(e.id) && e.tableRowId) {
+        tableRowIdsToDelete.add(e.tableRowId);
+      }
+    });
+
+    if (tableRowIdsToDelete.size > 0) {
+      const updatedRows = table.rows.filter((r) => !tableRowIdsToDelete.has(r.id));
+      onUpdateTable({
+        ...table,
+        rows: updatedRows,
+        updatedAt: Date.now(),
+      });
+    }
+
+    const updated = storedEvents.filter((e) => !set.has(e.id) && (!e.tableRowId || !tableRowIdsToDelete.has(e.tableRowId)));
     saveStoredEvents(updated);
   };
 
