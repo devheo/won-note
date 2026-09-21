@@ -46,9 +46,11 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
   const [reminderEnabled, setReminderEnabled] = useState(false);
   const [reminderOffset, setReminderOffset] = useState<ReminderOffset>('10m');
   const [reminderSound, setReminderSound] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
+      setConfirmDelete(false);
       const todayStr = formatLocalDate(new Date());
       if (event && event.id) {
         // Edit existing
@@ -426,19 +428,38 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
           {/* Buttons */}
           <div className="pt-3 border-t border-stone-100 dark:border-[#2a2a2a] flex items-center justify-between gap-2">
             {isEditing && onDelete ? (
-              <button
-                type="button"
-                onClick={() => {
-                  if (confirm('이 일정을 캘린더에서 삭제하시겠습니까?')) {
-                    onDelete(event.id!);
-                    onClose();
-                  }
-                }}
-                className="px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-semibold flex items-center gap-1.5 transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>삭제</span>
-              </button>
+              confirmDelete ? (
+                <div className="flex items-center gap-1.5 bg-rose-50 dark:bg-rose-950/40 p-1 px-2.5 rounded-xl border border-rose-200 dark:border-rose-900/50">
+                  <span className="text-xs font-bold text-rose-700 dark:text-rose-300">정말 삭제할까요?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      console.log('[CalendarEventModal] Confirmed delete for event:', event.id);
+                      onDelete(event.id!);
+                      onClose();
+                    }}
+                    className="px-2.5 py-1 text-xs rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold transition-colors shadow-sm"
+                  >
+                    삭제 확인
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    className="px-2 py-1 text-xs rounded-lg text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-800 font-medium"
+                  >
+                    취소
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setConfirmDelete(true)}
+                  className="px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 font-semibold flex items-center gap-1.5 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>삭제</span>
+                </button>
+              )
             ) : (
               <div />
             )}

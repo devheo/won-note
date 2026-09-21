@@ -8,6 +8,7 @@ import {
   TableDocument,
   TreeItem,
   StorageConfig,
+  CalendarEvent,
 } from '../../types';
 import { wonbeeDB } from './indexedDb';
 
@@ -205,6 +206,42 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     return merged;
   }
 
+  async getEvents(tableId?: string): Promise<CalendarEvent[]> {
+    try {
+      const url = tableId ? `${this.serverUrl}/events?tableId=${encodeURIComponent(tableId)}` : `${this.serverUrl}/events`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch {
+      return [];
+    }
+  }
+
+  async saveEvent(event: CalendarEvent, tableId: string): Promise<void> {
+    try {
+      await fetch(`${this.serverUrl}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, tableId }),
+      });
+    } catch (err) {
+      console.warn('Server saveEvent failed:', err);
+    }
+  }
+
+  async deleteEvent(eventId: string): Promise<void> {
+    try {
+      console.log(`[Repository] Requesting server delete for event: ${eventId}`);
+      const res = await fetch(`${this.serverUrl}/events/${encodeURIComponent(eventId)}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      console.log(`[Repository] Server successfully deleted event: ${eventId}`);
+    } catch (err) {
+      console.warn('Server deleteEvent failed:', err);
+    }
+  }
+
   async getStorageInfo() {
     return {
       type: 'server' as const,
@@ -224,7 +261,7 @@ export class WorkspaceRepositoryFactory {
   public static getRepository(config: StorageConfig): IWorkspaceRepository {
     if (config.useServer) {
       if (!this.serverRepo || (config.serverUrl && (this.serverRepo as any).serverUrl !== config.serverUrl)) {
-        this.serverRepo = new ServerApiWorkspaceRepository(config.serverUrl || 'https://api.wonbee.com/v1');
+        this.serverRepo = new ServerApiWorkspaceRepository(config.serverUrl || '/api');
       }
       return this.serverRepo;
     }

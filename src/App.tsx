@@ -41,6 +41,7 @@ import {
 import { envService } from './services/storage/envService';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
 import { CalendarNotificationToast } from './components/calendar/CalendarNotificationToast';
+import { AiAgentDrawer } from './components/agent/AiAgentDrawer';
 import {
   Sparkles,
   Plus,
@@ -97,9 +98,9 @@ export default function App() {
     }
   };
 
-  // Server vs Serverless (USE_SERVER) State
-  const [useServer, setUseServer] = useState<boolean>(false);
-  const [serverUrl, setServerUrl] = useState<string>('https://api.wonbee.com/v1');
+  // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend
+  const [useServer, setUseServer] = useState<boolean>(true);
+  const [serverUrl, setServerUrl] = useState<string>('/api');
 
   // Modals state
   const [editingRow, setEditingRow] = useState<TableRow | null>(null);
@@ -111,6 +112,9 @@ export default function App() {
   const [isUniversalImportOpen, setIsUniversalImportOpen] = useState(false);
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isAiAgentOpen, setIsAiAgentOpen] = useState(false);
+  const [aiAgentInitialTab, setAiAgentInitialTab] = useState<'data' | 'editor' | 'rag' | 'diagram' | 'action'>('data');
+  const [aiAgentActiveRow, setAiAgentActiveRow] = useState<TableRow | null>(null);
 
   // Performance Optimization Options State
   const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
@@ -951,6 +955,16 @@ export default function App() {
 
           {/* Top Right Action Items */}
           <div className="flex items-center gap-2">
+            {/* AI Multi-Agent Trigger Button */}
+            <button
+              onClick={() => setIsAiAgentOpen(true)}
+              className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
+              title="WonBee AI 에이전트 열기 (Qwen 2.5 로컬 AI & RAG)"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              <span>AI 어시스턴트</span>
+            </button>
+
             {/* Command Palette Trigger Button (Ctrl+K) */}
             <button
               onClick={() => setIsCommandPaletteOpen(true)}
@@ -996,6 +1010,16 @@ export default function App() {
                 perfOptions={perfOptions}
                 onUpdatePerfOptions={handleUpdatePerfOptions}
                 onOpenPerfModal={() => setIsPerfModalOpen(true)}
+                onOpenAiDataAssistant={() => {
+                  setAiAgentInitialTab('data');
+                  setAiAgentActiveRow(null);
+                  setIsAiAgentOpen(true);
+                }}
+                onOpenAiRowAssistant={(row) => {
+                  setAiAgentInitialTab('data');
+                  setAiAgentActiveRow(row);
+                  setIsAiAgentOpen(true);
+                }}
               />
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400">
@@ -1203,7 +1227,23 @@ export default function App() {
         }}
       />
 
-      {/* 12. Calendar Notification Alarm Toast */}
+      {/* 12. WonBee AI Multi-Agent Drawer */}
+      <AiAgentDrawer
+        isOpen={isAiAgentOpen}
+        onClose={() => {
+          setIsAiAgentOpen(false);
+          setAiAgentActiveRow(null);
+        }}
+        activeTableId={activeTableId || undefined}
+        table={activeTable || undefined}
+        activeRow={aiAgentActiveRow || editingRow || undefined}
+        onUpdateTable={handleUpdateTable}
+        onUpdateRow={handleSaveRowFromEditor}
+        onRefreshData={loadWorkspaceData}
+        initialTab={aiAgentInitialTab}
+      />
+
+      {/* 13. Calendar Notification Alarm Toast */}
       {activeAlarmEvent && (
         <CalendarNotificationToast
           event={activeAlarmEvent}

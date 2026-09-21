@@ -33,6 +33,7 @@ import { delimitedTextToHtmlTable, convertTextDataToEditorContent } from '../../
 import { compressAndResizeImage } from '../../utils/imageOptimizer';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
+import { AiAgentDrawer } from '../agent/AiAgentDrawer';
 import {
   markdownToHtml,
   htmlToMarkdown,
@@ -69,6 +70,7 @@ import {
   Table as TableIcon,
   ChevronDown,
   ChevronRight,
+  ChevronLeft,
   Plus,
   Trash2,
   Columns,
@@ -844,6 +846,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     });
   };
   const [activeRibbonTab, setActiveRibbonTab] = useState<'home' | 'insert' | 'format'>('home');
+  const [isAiAgentDrawerOpen, setIsAiAgentDrawerOpen] = useState(false);
   
   // Top-level modal popup state (rendered at the very top of rich editor container, never clipped or constrained by toolbar overflow)
   const [activeTopDialog, setActiveTopDialog] = useState<
@@ -943,6 +946,46 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   const [selectedTargetId, setSelectedTargetId] = useState<string>(() => resolveTargetId(initialTargetId));
   const selectedTargetIdRef = useRef<string>(selectedTargetId);
   selectedTargetIdRef.current = selectedTargetId;
+
+  // Horizontal scroll state & controls for '서식 편집 대상' tabs
+  const targetTabsScrollRef = useRef<HTMLDivElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const checkTabsScroll = useCallback(() => {
+    const el = targetTabsScrollRef.current;
+    if (!el) return;
+    setCanScrollLeft(el.scrollLeft > 4);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 4);
+  }, []);
+
+  useEffect(() => {
+    const el = targetTabsScrollRef.current;
+    if (!el) return;
+    checkTabsScroll();
+    el.addEventListener('scroll', checkTabsScroll, { passive: true });
+    window.addEventListener('resize', checkTabsScroll);
+    return () => {
+      el.removeEventListener('scroll', checkTabsScroll);
+      window.removeEventListener('resize', checkTabsScroll);
+    };
+  }, [checkTabsScroll, richTargets]);
+
+  // Scroll active tab into view when selectedTargetId changes
+  useEffect(() => {
+    const el = targetTabsScrollRef.current;
+    if (!el) return;
+    const activeBtn = el.querySelector(`[data-target-id="${selectedTargetId}"]`);
+    if (activeBtn && typeof (activeBtn as HTMLElement).scrollIntoView === 'function') {
+      (activeBtn as HTMLElement).scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+    }
+  }, [selectedTargetId]);
+
+  const scrollTabs = useCallback((direction: 'left' | 'right') => {
+    const el = targetTabsScrollRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction === 'left' ? -150 : 150, behavior: 'smooth' });
+  }, []);
 
   // Helper to format content for TipTap editor, ensuring plain Java/source code is safely wrapped in code block
   const formatContentForEditor = useCallback((rawContent: string): string => {
@@ -4725,31 +4768,88 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         </div>
 
         {/* Target Field Switcher Tabs (e.g. 내용 | 처리방법 | 추가 상세 노트) */}
-        <div className="px-6 py-2 bg-stone-100/70 dark:bg-stone-900/60 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between gap-3 shrink-0">
-          <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar">
-            <span className="text-[11px] font-bold text-stone-500 dark:text-stone-400 mr-1 flex items-center gap-1">
+        <div className="px-4 sm:px-6 py-2 bg-stone-100/70 dark:bg-stone-900/60 border-b border-stone-200 dark:border-stone-800 flex items-center justify-between gap-3 shrink-0">
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 relative">
+            <span className="text-[11px] font-bold text-stone-500 dark:text-stone-400 mr-1 flex items-center gap-1 shrink-0 select-none">
               <Edit3 className="w-3.5 h-3.5 text-amber-500" />
               서식 편집 대상:
             </span>
-            {richTargets.map((field) => (
+
+            {/* Scroll Left Button if overflowed */}
+            {canScrollLeft && (
               <button
-                key={field.id}
                 type="button"
-                onClick={() => handleSwitchTarget(field.id)}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                  selectedTargetId === field.id
-                    ? 'bg-amber-500 text-stone-950 shadow-sm font-bold'
-                    : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 hover:bg-stone-200 dark:hover:bg-stone-700'
-                }`}
+                onClick={() => scrollTabs('left')}
+                className="p-1 rounded-md bg-white dark:bg-stone-800 shadow-xs border border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:text-amber-600 hover:bg-stone-50 shrink-0 z-10 transition-colors"
+                title="왼쪽으로 스크롤"
               >
-                <span>{field.name}</span>
+                <ChevronLeft className="w-3.5 h-3.5" />
               </button>
-            ))}
+            )}
+
+            {/* Scrollable Container */}
+            <div
+              ref={targetTabsScrollRef}
+              onWheel={(e) => {
+                if (e.deltaY !== 0 && e.currentTarget.scrollWidth > e.currentTarget.clientWidth) {
+                  e.currentTarget.scrollLeft += e.deltaY;
+                }
+              }}
+              className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto custom-scrollbar py-0.5 scroll-smooth"
+            >
+              {richTargets.map((field) => {
+                const isSelected = selectedTargetId === field.id;
+                return (
+                  <button
+                    key={field.id}
+                    data-target-id={field.id}
+                    type="button"
+                    onClick={() => handleSwitchTarget(field.id)}
+                    title={field.name}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center transition-all shrink-0 max-w-[130px] sm:max-w-[150px] md:max-w-[170px] min-h-[34px] border ${
+                      isSelected
+                        ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm font-bold ring-1 ring-amber-400/50'
+                        : 'bg-white dark:bg-stone-800 text-stone-600 dark:text-stone-300 border-stone-200/80 dark:border-stone-700/60 hover:bg-stone-200 dark:hover:bg-stone-700'
+                    }`}
+                  >
+                    <span
+                      className="line-clamp-2 leading-[1.25] text-[11px] break-words text-left"
+                      style={{
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        wordBreak: 'break-word',
+                      }}
+                    >
+                      {field.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+
+            {/* Scroll Right Button if overflowed */}
+            {canScrollRight && (
+              <button
+                type="button"
+                onClick={() => scrollTabs('right')}
+                className="p-1 rounded-md bg-white dark:bg-stone-800 shadow-xs border border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:text-amber-600 hover:bg-stone-50 shrink-0 z-10 transition-colors"
+                title="오른쪽으로 스크롤"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2.5 shrink-0">
-            <div className="text-[11px] text-amber-700 dark:text-amber-400 font-medium whitespace-nowrap hidden sm:block">
-              현재 <strong>[{currentTargetName}]</strong> 서식 편집 중
+            <div className="text-[11px] text-amber-700 dark:text-amber-400 font-medium whitespace-nowrap hidden sm:flex items-center gap-1">
+              <span>현재</span>
+              <strong className="max-w-[120px] md:max-w-[160px] truncate inline-block align-bottom" title={currentTargetName}>
+                [{currentTargetName}]
+              </strong>
+              <span>서식 편집 중</span>
             </div>
             <button
               type="button"
@@ -4763,6 +4863,16 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             >
               <span>속성 필드 ({columns.length})</span>
               {isPropsBarOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsAiAgentDrawerOpen(true)}
+              className="px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 bg-amber-500/15 text-amber-800 dark:text-amber-300 hover:bg-amber-500/25 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs"
+              title="AI를 통해 행 데이터(상태, 우선순위, 마감일, 비고 등)를 자연어로 수정합니다."
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+              <span>AI 속성 수정</span>
             </button>
           </div>
         </div>
@@ -4870,8 +4980,18 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 </button>
               </div>
 
-              {/* Quick Action Buttons on Top Right (Undo, Redo, Paste MD) */}
+              {/* Quick Action Buttons on Top Right (Undo, Redo, Paste MD, AI Agent) */}
               <div className="flex items-center gap-1.5 pb-1">
+                <button
+                  type="button"
+                  onClick={() => setIsAiAgentDrawerOpen(true)}
+                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 transition-colors shadow-2xs"
+                  title="WonBee AI 에이전트 (양식 변환, 맞춤법/문체 린팅, Diff 비교, 다이어그램, RAG)"
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>AI 에이전트</span>
+                </button>
+
                 <button
                   type="button"
                   onClick={handlePasteMarkdownFromClipboard}
@@ -5994,6 +6114,39 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             </div>
           </div>
         )}
+        {/* AI Agent Drawer within Editor */}
+        <AiAgentDrawer
+          isOpen={isAiAgentDrawerOpen}
+          onClose={() => setIsAiAgentDrawerOpen(false)}
+          editorContent={editor ? editor.getText() : ''}
+          columns={columns}
+          activeRow={{
+            ...row,
+            data: currentRowData,
+            richContent: editor ? editor.getHTML() : row.richContent,
+          }}
+          onUpdateRow={(updated) => {
+            if (updated.data) {
+              setCurrentRowData(updated.data);
+              setHasUnsavedChanges(true);
+            }
+          }}
+          initialTab="data"
+          onApplyToEditor={(newText) => {
+            if (editor) {
+              const html = isLikelyMarkdown(newText) ? markdownToHtml(newText) : newText;
+              editor.commands.setContent(html);
+              setHasUnsavedChanges(true);
+            }
+          }}
+          onInsertToEditor={(snippet) => {
+            if (editor) {
+              const html = isLikelyMarkdown(snippet) ? markdownToHtml(snippet) : snippet;
+              editor.commands.insertContent(html);
+              setHasUnsavedChanges(true);
+            }
+          }}
+        />
       </div>
     </div>
   );

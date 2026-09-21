@@ -87,12 +87,47 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
     }
   });
 
+  // Reload stored events whenever active table changes or on mount
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(storageKey);
+      if (saved) {
+        setStoredEvents(JSON.parse(saved));
+      } else {
+        setStoredEvents([]);
+      }
+    } catch {
+      setStoredEvents([]);
+    }
+
+    // Also sync from backend SQLite API
+    fetch(`/api/events?tableId=${encodeURIComponent(table.id)}`)
+      .then((res) => (res.ok ? res.json() : []))
+      .then((serverEvents: CalendarEvent[]) => {
+        if (Array.isArray(serverEvents) && serverEvents.length > 0) {
+          setStoredEvents((prev) => {
+            const map = new Map<string, CalendarEvent>();
+            prev.forEach((e) => map.set(e.id, e));
+            serverEvents.forEach((e) => map.set(e.id, e));
+            const merged = Array.from(map.values());
+            try {
+              localStorage.setItem(storageKey, JSON.stringify(merged));
+            } catch {}
+            return merged;
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('[CalendarViewer] Backend events fetch fallback:', err);
+      });
+  }, [table.id, storageKey]);
+
   const saveStoredEvents = (newEvents: CalendarEvent[]) => {
     setStoredEvents(newEvents);
     try {
       localStorage.setItem(storageKey, JSON.stringify(newEvents));
     } catch (err) {
-      console.error('Failed to save calendar events:', err);
+      console.error('Failed to save calendar events to localStorage:', err);
     }
   };
 
@@ -270,7 +305,9 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
     saveStoredEvents(updated);
   };
 
-  const handleDeleteEvent = (eventId: string) => {
+  const handleDeleteEvent = async (eventId: string) => {
+    console.log('[CalendarViewer] Starting handleDeleteEvent for event ID:', eventId);
+
     // Check if event is linked to a table row
     let targetRowId: string | undefined;
     if (eventId.startsWith('row_evt_')) {
@@ -283,6 +320,7 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
     }
 
     if (targetRowId) {
+      console.log('[CalendarViewer] Event is tied to table row ID:', targetRowId, 'Deleting from table rows.');
       const updatedRows = table.rows.filter((r) => r.id !== targetRowId);
       onUpdateTable({
         ...table,
@@ -291,8 +329,27 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
       });
     }
 
-    const updated = storedEvents.filter((e) => e.id !== eventId && e.tableRowId !== targetRowId);
+    // Precise filtering: remove the targeted event AND any event referencing the target row
+    const updated = storedEvents.filter((e) => {
+      if (e.id === eventId) return false;
+      if (targetRowId && e.tableRowId === targetRowId) return false;
+      return true;
+    });
+
     saveStoredEvents(updated);
+    console.log('[CalendarViewer] Updated local storedEvents count:', updated.length);
+
+    // Call backend SQLite delete API
+    try {
+      const res = await fetch(`/api/events/${encodeURIComponent(eventId)}`, { method: 'DELETE' });
+      if (res.ok) {
+        console.log('[CalendarViewer] Successfully deleted event from SQLite DB:', eventId);
+      } else {
+        console.warn('[CalendarViewer] Server returned status on delete:', res.status);
+      }
+    } catch (err) {
+      console.error('[CalendarViewer] Network error deleting event from backend SQLite:', err);
+    }
   };
 
   // Macro bulk actions
@@ -333,6 +390,13 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
 
     const updated = storedEvents.filter((e) => !set.has(e.id) && (!e.tableRowId || !tableRowIdsToDelete.has(e.tableRowId)));
     saveStoredEvents(updated);
+
+    // Sync macro deletions with backend
+    eventIds.forEach((id) => {
+      fetch(`/api/events/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch((err) => {
+        console.warn('[CalendarViewer] Macro batch delete error:', err);
+      });
+    });
   };
 
   // Open modal for new event on specific date & hour

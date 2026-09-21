@@ -88,6 +88,8 @@ interface DataTableViewerProps {
   perfOptions?: PerformanceOptions;
   onUpdatePerfOptions?: (newOpts: PerformanceOptions) => void;
   onOpenPerfModal?: () => void;
+  onOpenAiDataAssistant?: () => void;
+  onOpenAiRowAssistant?: (row: TableRow) => void;
 }
 
 export const DataTableViewer: React.FC<DataTableViewerProps> = ({
@@ -100,6 +102,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   perfOptions: propsPerfOptions,
   onUpdatePerfOptions,
   onOpenPerfModal,
+  onOpenAiDataAssistant,
+  onOpenAiRowAssistant,
 }) => {
   // View Mode: Table (Grid) vs Kanban (Board) vs Calendar
   const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban' | 'calendar'>('table');
@@ -1695,6 +1699,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             )}
           </div>
 
+          {/* AI Data Modifier Assistant Button */}
+          {onOpenAiDataAssistant && (
+            <button
+              type="button"
+              onClick={onOpenAiDataAssistant}
+              className="px-3 py-1.5 bg-amber-500/15 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 font-bold rounded-lg text-xs flex items-center gap-1.5 transition-all shadow-2xs active:scale-98 shrink-0 whitespace-nowrap"
+              title="AI를 통해 자연어로 테이블 데이터 수정, 일괄 변경, 요약 생성을 수행합니다."
+            >
+              <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span>AI 데이터 수정</span>
+            </button>
+          )}
+
           {/* Quick Add Row Button (Opens Add Row Modal) */}
           <button
             onClick={() => handleOpenAddRowModal('bottom')}
@@ -2300,6 +2317,20 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       >
                         <ArrowDown className="w-3.5 h-3.5" />
                       </button>
+
+                      {/* AI Row Data Modifier Action */}
+                      {onOpenAiRowAssistant && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onOpenAiRowAssistant(row);
+                          }}
+                          title="AI를 통해 이 행의 데이터(상태, 우선순위, 마감일 등) 수정하기"
+                          className="p-1 rounded hover:bg-amber-100 dark:hover:bg-amber-950/60 text-amber-600 dark:text-amber-400 transition-colors"
+                        >
+                          <Sparkles className="w-3.5 h-3.5" />
+                        </button>
+                      )}
 
                       {/* Detail View */}
                       <button
