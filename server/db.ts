@@ -2,6 +2,7 @@ import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
 import { WorkspaceData, TableDocument, TableRow, TableColumn, TreeItem, CalendarEvent } from '../src/types';
+import { ensureWorkspaceTree } from '../src/utils/workspaceTreeUtils';
 
 const DB_FILE_PATH = path.resolve(process.cwd(), 'wonbee.sqlite');
 const USER_DATA_PATH = path.resolve(process.cwd(), 'user_data.json');
@@ -125,19 +126,35 @@ export async function initDatabase(): Promise<Database> {
     );
   `);
 
-  // Check if database needs initial seeding/migration
-  const res = dbInstance.exec("SELECT COUNT(*) as count FROM tables");
-  const tableCount = (res[0]?.values[0]?.[0] as number) || 0;
-
-  if (tableCount === 0) {
-    console.log('[SQLite] Empty database detected. Running migration...');
-    migrateJsonToSqlite(dbInstance);
+  // Sync with user_data.json if present
+  if (fs.existsSync(USER_DATA_PATH)) {
+    console.log('[SQLite] Found user_data.json. Loading and syncing to SQLite DB...');
+    try {
+      const raw = fs.readFileSync(USER_DATA_PATH, 'utf-8');
+      const data: WorkspaceData = JSON.parse(raw);
+      const completeData = ensureWorkspaceTree(data);
+      importWorkspaceDataToDb(dbInstance, completeData);
+      // Re-save so user_data.json is guaranteed to have the complete tree
+      fs.writeFileSync(USER_DATA_PATH, JSON.stringify(completeData, null, 2), 'utf-8');
+      console.log(`[SQLite] Loaded ${completeData.tree.length} tree items and ${Object.keys(completeData.tables).length} tables from user_data.json`);
+    } catch (err) {
+      console.error('[SQLite] Failed to load user_data.json:', err);
+    }
   } else {
-    // If user_data.json exists and is newer or explicit, we check if backup is needed
-    if (fs.existsSync(USER_DATA_PATH)) {
-      const backupPath = `${USER_DATA_PATH}.bak.${Date.now()}`;
-      console.log(`[Migration] Backing up existing user_data.json to ${backupPath}`);
-      fs.copyFileSync(USER_DATA_PATH, backupPath);
+    // Check if database contains only legacy sample tables
+    const res = dbInstance.exec("SELECT id FROM tables");
+    const existingIds = (res[0]?.values || []).map((v) => String(v[0]));
+    const sampleIds = ['table-roadmap', 'table-tasks', 'table-sql-dict', 'table-feedback'];
+    const onlyHasSampleTables = existingIds.length > 0 && existingIds.every((id) => sampleIds.includes(id));
+    if (onlyHasSampleTables) {
+      console.log('[SQLite] Legacy sample tables detected without user_data.json. Removing sample tables as requested.');
+      dbInstance.run('DELETE FROM table_rows;');
+      dbInstance.run('DELETE FROM table_columns;');
+      dbInstance.run('DELETE FROM calendar_events;');
+      dbInstance.run('DELETE FROM tables;');
+      dbInstance.run('DELETE FROM tree_items;');
+    } else {
+      console.log(`[SQLite] Database ready with ${existingIds.length} tables.`);
     }
   }
 
@@ -146,41 +163,23 @@ export async function initDatabase(): Promise<Database> {
 }
 
 /**
- * Migrate user_data.json or wonbee_data.json into SQLite
+ * Sync entire database state to user_data.json so workspace tree and tables are always preserved together
  */
-function migrateJsonToSqlite(db: Database): void {
-  let sourcePath = USER_DATA_PATH;
-  if (!fs.existsSync(sourcePath)) {
-    sourcePath = DEFAULT_DATA_PATH;
-  }
-
-  if (!fs.existsSync(sourcePath)) {
-    console.warn('[Migration] No JSON source file found to migrate.');
-    return;
-  }
-
+export function syncDbToUserDataJson(): void {
   try {
-    const raw = fs.readFileSync(sourcePath, 'utf-8');
-    const data: WorkspaceData = JSON.parse(raw);
-
-    // Backup source if it is user_data.json
-    if (sourcePath === USER_DATA_PATH) {
-      const backupPath = `${USER_DATA_PATH}.bak.${Date.now()}`;
-      fs.copyFileSync(USER_DATA_PATH, backupPath);
-      console.log(`[Migration] Backed up ${USER_DATA_PATH} to ${backupPath}`);
-    }
-
-    importWorkspaceDataToDb(db, data);
-    console.log(`[Migration] Successfully imported workspace from ${sourcePath}`);
+    const ws = getWorkspaceData();
+    const completeWs = ensureWorkspaceTree(ws);
+    fs.writeFileSync(USER_DATA_PATH, JSON.stringify(completeWs, null, 2), 'utf-8');
   } catch (err) {
-    console.error('[Migration] Failed to migrate JSON data to SQLite:', err);
+    console.error('[Storage] Failed to sync user_data.json:', err);
   }
 }
 
 /**
  * Import a complete WorkspaceData payload into SQLite tables
  */
-export function importWorkspaceDataToDb(db: Database, data: WorkspaceData): void {
+export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): void {
+  const data = ensureWorkspaceTree(rawData);
   db.run('BEGIN TRANSACTION;');
 
   try {
@@ -390,22 +389,24 @@ export function getWorkspaceData(): WorkspaceData {
     }
   }
 
-  return {
+  return ensureWorkspaceTree({
     version,
     exportedAt,
     tree,
     tables,
     settings,
-  };
+  });
 }
 
 /**
- * Save complete workspace data into SQLite
+ * Save complete workspace data into SQLite and sync to user_data.json
  */
 export function saveWorkspaceData(data: WorkspaceData): void {
   if (!dbInstance) throw new Error('Database not initialized');
-  importWorkspaceDataToDb(dbInstance, data);
+  const complete = ensureWorkspaceTree(data);
+  importWorkspaceDataToDb(dbInstance, complete);
   persistDatabase();
+  syncDbToUserDataJson();
 }
 
 /**
@@ -417,7 +418,7 @@ export function getTable(tableId: string): TableDocument | null {
 }
 
 /**
- * Save single TableDocument into SQLite
+ * Save single TableDocument into SQLite and keep tree synchronized
  */
 export function saveTable(table: TableDocument): void {
   if (!dbInstance) throw new Error('Database not initialized');
@@ -428,6 +429,12 @@ export function saveTable(table: TableDocument): void {
       `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?);`,
       [table.id, table.title, table.description || null, table.defaultView || 'grid', table.createdAt, table.updatedAt]
+    );
+
+    // Keep tree item title in sync with table title
+    dbInstance.run(
+      `UPDATE tree_items SET title = ?, updated_at = ? WHERE id = ?;`,
+      [table.title, table.updatedAt, table.id]
     );
 
     // Columns
@@ -476,6 +483,51 @@ export function saveTable(table: TableDocument): void {
   }
 
   persistDatabase();
+  syncDbToUserDataJson();
+}
+
+/**
+ * Save Tree items into SQLite and sync to user_data.json
+ */
+export function saveTree(tree: TreeItem[]): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  dbInstance.run('BEGIN TRANSACTION;');
+  try {
+    dbInstance.run('DELETE FROM tree_items;');
+    tree.forEach((item, idx) => {
+      dbInstance!.run(
+        `INSERT INTO tree_items (id, parent_id, title, type, icon, color, is_expanded, created_at, updated_at, sort_order)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+        [
+          item.id,
+          item.parentId || null,
+          item.title,
+          item.type,
+          item.icon || null,
+          item.color || null,
+          item.isExpanded ? 1 : 0,
+          item.createdAt || Date.now(),
+          item.updatedAt || Date.now(),
+          idx,
+        ]
+      );
+
+      // If item is a table, keep table title in sync with tree item title
+      if (item.type === 'table') {
+        dbInstance!.run(
+          `UPDATE tables SET title = ?, updated_at = ? WHERE id = ?;`,
+          [item.title, item.updatedAt || Date.now(), item.id]
+        );
+      }
+    });
+    dbInstance.run('COMMIT;');
+  } catch (err) {
+    dbInstance.run('ROLLBACK;');
+    throw err;
+  }
+
+  persistDatabase();
+  syncDbToUserDataJson();
 }
 
 /**
@@ -496,6 +548,7 @@ export function deleteTable(tableId: string): void {
     throw err;
   }
   persistDatabase();
+  syncDbToUserDataJson();
 }
 
 /**

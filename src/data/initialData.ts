@@ -1,4 +1,15 @@
 import { WorkspaceData } from '../types';
-import defaultData from '../../public/wonbee_data.json';
 
-export const INITIAL_WORKSPACE_DATA: WorkspaceData = defaultData as unknown as WorkspaceData;
+export const INITIAL_WORKSPACE_DATA: WorkspaceData = {
+  version: '1.0.0',
+  exportedAt: Date.now(),
+  settings: {
+    theme: 'light',
+    zoom: 100,
+    useServer: true,
+    serverUrl: '/api',
+  },
+  tree: [],
+  tables: {},
+};
+

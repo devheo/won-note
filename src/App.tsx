@@ -19,6 +19,7 @@ import {
 import { WorkspaceRepositoryFactory } from './services/storage/repository';
 import { localFileService } from './services/storage/localFileService';
 import { INITIAL_WORKSPACE_DATA } from './data/initialData';
+import { ensureWorkspaceTree } from './utils/workspaceTreeUtils';
 import { InfiniteTreeSidebar } from './components/sidebar/InfiniteTreeSidebar';
 import { DataTableViewer } from './components/table/DataTableViewer';
 import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer';
@@ -54,7 +55,7 @@ import {
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceData>(INITIAL_WORKSPACE_DATA);
   const [activeTableId, setActiveTableId] = useState<string | null>(() => {
-    return localStorage.getItem('wonbee_active_table_id') || 'table-roadmap';
+    return localStorage.getItem('wonbee_active_table_id') || Object.keys(INITIAL_WORKSPACE_DATA.tables)[0] || null;
   });
   const [isLoading, setIsLoading] = useState(true);
 
@@ -98,9 +99,14 @@ export default function App() {
     }
   };
 
-  // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend
-  const [useServer, setUseServer] = useState<boolean>(true);
-  const [serverUrl, setServerUrl] = useState<string>('/api');
+  // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend (Persisted in localStorage)
+  const [useServer, setUseServer] = useState<boolean>(() => {
+    const saved = localStorage.getItem('wonbee_use_server');
+    return saved !== null ? saved === 'true' : true;
+  });
+  const [serverUrl, setServerUrl] = useState<string>(() => {
+    return localStorage.getItem('wonbee_server_url') || '/api';
+  });
 
   // Modals state
   const [editingRow, setEditingRow] = useState<TableRow | null>(null);
@@ -115,6 +121,8 @@ export default function App() {
   const [isAiAgentOpen, setIsAiAgentOpen] = useState(false);
   const [aiAgentInitialTab, setAiAgentInitialTab] = useState<'data' | 'editor' | 'rag' | 'diagram' | 'action'>('data');
   const [aiAgentActiveRow, setAiAgentActiveRow] = useState<TableRow | null>(null);
+  const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
+  const [headerTitleInput, setHeaderTitleInput] = useState('');
 
   // Performance Optimization Options State
   const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
@@ -180,7 +188,8 @@ export default function App() {
   const loadWorkspaceData = useCallback(async () => {
     try {
       setIsLoading(true);
-      const data = await repository.loadWorkspace();
+      const rawData = await repository.loadWorkspace();
+      const data = ensureWorkspaceTree(rawData);
 
       // Clean up legacy template welcome richContent if present on any row
       let needsSave = false;
@@ -216,21 +225,28 @@ export default function App() {
       }
 
       const savedTableId = localStorage.getItem('wonbee_active_table_id');
-      if (savedTableId && data.tables[savedTableId]) {
+      const tableKeys = Object.keys(finalData.tables);
+      if (savedTableId && finalData.tables[savedTableId]) {
         setActiveTableId(savedTableId);
-      } else if (!activeTableId || !data.tables[activeTableId]) {
-        const firstTableId = Object.keys(data.tables)[0] || null;
-        setActiveTableId(firstTableId);
-        if (firstTableId) {
-          localStorage.setItem('wonbee_active_table_id', firstTableId);
-        }
+      } else {
+        // Fallback to activeTableId if valid in loaded tables, otherwise select first available table
+        setActiveTableId((prev) => {
+          if (prev && finalData.tables[prev]) {
+            return prev;
+          }
+          const firstTableId = tableKeys[0] || null;
+          if (firstTableId) {
+            localStorage.setItem('wonbee_active_table_id', firstTableId);
+          }
+          return firstTableId;
+        });
       }
     } catch (err) {
       console.error('Failed to load workspace:', err);
     } finally {
       setIsLoading(false);
     }
-  }, [repository, activeTableId]);
+  }, [repository]);
 
   useEffect(() => {
     loadWorkspaceData();
@@ -253,31 +269,54 @@ export default function App() {
     return workspace.tables[activeTableId] || null;
   }, [workspace.tables, activeTableId]);
 
-  // Update whole tree
+  // Update whole tree and keep table titles in sync
   const handleUpdateTree = async (updatedTree: TreeItem[]) => {
-    const updatedWs = {
+    const updatedTables = { ...workspace.tables };
+    let tablesChanged = false;
+
+    updatedTree.forEach((item) => {
+      if (item.type === 'table' && updatedTables[item.id]) {
+        if (updatedTables[item.id].title !== item.title) {
+          updatedTables[item.id] = {
+            ...updatedTables[item.id],
+            title: item.title,
+            updatedAt: Date.now(),
+          };
+          tablesChanged = true;
+        }
+      }
+    });
+
+    const updatedWs: WorkspaceData = {
       ...workspace,
       tree: updatedTree,
+      tables: tablesChanged ? updatedTables : workspace.tables,
       exportedAt: Date.now(),
     };
     setWorkspace(updatedWs);
-    await repository.saveTree(updatedTree);
+    await repository.saveWorkspace(updatedWs);
     await syncToLocalFileIfConnected(updatedWs);
   };
 
-  // Update specific table
+  // Update specific table and keep tree item in sync
   const handleUpdateTable = async (updatedTable: TableDocument) => {
     const updatedTables = {
       ...workspace.tables,
       [updatedTable.id]: updatedTable,
     };
-    const updatedWs = {
+    const updatedTree = workspace.tree.map((item) =>
+      item.id === updatedTable.id
+        ? { ...item, title: updatedTable.title, updatedAt: updatedTable.updatedAt }
+        : item
+    );
+    const updatedWs: WorkspaceData = {
       ...workspace,
+      tree: updatedTree,
       tables: updatedTables,
       exportedAt: Date.now(),
     };
     setWorkspace(updatedWs);
-    await repository.saveTable(updatedTable);
+    await repository.saveWorkspace(updatedWs);
     await syncToLocalFileIfConnected(updatedWs);
   };
 
@@ -815,11 +854,13 @@ export default function App() {
     importedData: WorkspaceData,
     mode: 'merge' | 'replace' | 'keep_both'
   ) => {
-    const result = await repository.mergeWorkspace(importedData, mode);
-    setWorkspace(result);
-    const firstTableId = Object.keys(result.tables)[0] || null;
+    const ensuredImport = ensureWorkspaceTree(importedData);
+    const result = await repository.mergeWorkspace(ensuredImport, mode);
+    const ensuredResult = ensureWorkspaceTree(result);
+    setWorkspace(ensuredResult);
+    const firstTableId = Object.keys(ensuredResult.tables)[0] || null;
     if (firstTableId) setActiveTableId(firstTableId);
-    await syncToLocalFileIfConnected(result);
+    await syncToLocalFileIfConnected(ensuredResult);
   };
 
   // Local File Connect Handler
@@ -827,11 +868,12 @@ export default function App() {
     try {
       const res = await localFileService.openLocalFile();
       if (res) {
+        const ensuredData = ensureWorkspaceTree(res.data);
         setConnectedFileName(res.fileName);
-        setWorkspace(res.data);
-        const firstTableId = Object.keys(res.data.tables)[0] || null;
+        setWorkspace(ensuredData);
+        const firstTableId = Object.keys(ensuredData.tables)[0] || null;
         if (firstTableId) setActiveTableId(firstTableId);
-        await repository.saveWorkspace(res.data);
+        await repository.saveWorkspace(ensuredData);
       }
     } catch (err) {
       console.error('Failed to open local file:', err);
@@ -908,9 +950,56 @@ export default function App() {
               WonBee
             </span>
             <ChevronRight className="w-3.5 h-3.5 text-stone-400" />
-            <span className="font-medium text-stone-800 dark:text-[#f0f0f0] truncate max-w-xs">
-              {activeTable?.title || '테이블을 선택하세요'}
-            </span>
+            {isEditingHeaderTitle && activeTable ? (
+              <input
+                type="text"
+                autoFocus
+                value={headerTitleInput}
+                onChange={(e) => setHeaderTitleInput(e.target.value)}
+                onBlur={() => {
+                  if (headerTitleInput.trim() && headerTitleInput.trim() !== activeTable.title) {
+                    handleUpdateTable({
+                      ...activeTable,
+                      title: headerTitleInput.trim(),
+                      updatedAt: Date.now(),
+                    });
+                  }
+                  setIsEditingHeaderTitle(false);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    if (headerTitleInput.trim() && headerTitleInput.trim() !== activeTable.title) {
+                      handleUpdateTable({
+                        ...activeTable,
+                        title: headerTitleInput.trim(),
+                        updatedAt: Date.now(),
+                      });
+                    }
+                    setIsEditingHeaderTitle(false);
+                  } else if (e.key === 'Escape') {
+                    setIsEditingHeaderTitle(false);
+                  }
+                }}
+                className="font-medium text-stone-900 dark:text-stone-100 bg-amber-50/60 dark:bg-stone-800 px-2 py-0.5 rounded border border-amber-400 dark:border-amber-500 outline-none text-xs"
+              />
+            ) : (
+              <span
+                onClick={() => {
+                  if (activeTable) {
+                    setHeaderTitleInput(activeTable.title);
+                    setIsEditingHeaderTitle(true);
+                  }
+                }}
+                title={activeTable ? '클릭하여 테이블 이름 변경' : undefined}
+                className={`font-medium truncate max-w-xs ${
+                  activeTable
+                    ? 'text-stone-800 dark:text-[#f0f0f0] cursor-pointer hover:underline hover:text-amber-600 dark:hover:text-amber-400'
+                    : 'text-stone-400 dark:text-stone-500'
+                }`}
+              >
+                {activeTable?.title || '테이블을 선택하세요'}
+              </span>
+            )}
 
             <div className="h-4 w-px bg-stone-300 dark:bg-[#383838] mx-1" />
 
@@ -1135,7 +1224,11 @@ export default function App() {
         serverUrl={serverUrl}
         onToggleUseServer={(newUseServer, newUrl) => {
           setUseServer(newUseServer);
-          if (newUrl) setServerUrl(newUrl);
+          localStorage.setItem('wonbee_use_server', String(newUseServer));
+          if (newUrl) {
+            setServerUrl(newUrl);
+            localStorage.setItem('wonbee_server_url', newUrl);
+          }
         }}
         onRefreshData={loadWorkspaceData}
       />

@@ -5,6 +5,7 @@
  */
 
 import { WorkspaceData } from '../../types';
+import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 
 class FileSystemSyncService {
   private fileHandle: any = null;
@@ -61,11 +62,14 @@ class FileSystemSyncService {
 
       const file = await handle.getFile();
       const content = await file.text();
-      const data: WorkspaceData = JSON.parse(content);
+      const data: WorkspaceData = ensureWorkspaceTree(JSON.parse(content));
 
       this.fileHandle = handle;
       this.fileName = handle.name;
       this.isAutoSyncEnabled = true;
+
+      // If tree was auto-reconstructed or synced, update file
+      this.saveToFile(data).catch((e) => console.warn('Background sync after load failed:', e));
 
       return { data, fileName: handle.name };
     } catch (err: any) {
@@ -137,7 +141,8 @@ class FileSystemSyncService {
 
       // @ts-ignore
       const writable = await this.fileHandle.createWritable();
-      const serialized = JSON.stringify(data, null, 2);
+      const completeData = ensureWorkspaceTree(data);
+      const serialized = JSON.stringify(completeData, null, 2);
       await writable.write(serialized);
       await writable.close();
       return true;
@@ -157,8 +162,9 @@ class FileSystemSyncService {
   /**
    * Standard File Download Fallback (for non-supporting browsers or manual backup)
    */
-  public downloadAsFile(data: WorkspaceData, customFileName = 'wonbee_data.json'): void {
-    const jsonStr = JSON.stringify(data, null, 2);
+  public downloadAsFile(data: WorkspaceData, customFileName = 'user_data.json'): void {
+    const completeData = ensureWorkspaceTree(data);
+    const jsonStr = JSON.stringify(completeData, null, 2);
     const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');

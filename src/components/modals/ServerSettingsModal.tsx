@@ -32,7 +32,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   onRefreshData,
 }) => {
   const [tempUseServer, setTempUseServer] = useState(useServer);
-  const [tempServerUrl, setTempServerUrl] = useState(serverUrl || 'https://api.wonbee.com/v1');
+  const [tempServerUrl, setTempServerUrl] = useState(serverUrl || '/api');
   const [stats, setStats] = useState<{ totalItems: number; sizeEstimatedBytes: number }>({
     totalItems: 0,
     sizeEstimatedBytes: 0,
@@ -41,7 +41,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
 
   useEffect(() => {
     setTempUseServer(useServer);
-    setTempServerUrl(serverUrl || 'https://api.wonbee.com/v1');
+    setTempServerUrl(serverUrl || '/api');
     wonbeeDB.getStorageStats().then(setStats);
   }, [isOpen, useServer, serverUrl]);
 
@@ -146,7 +146,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
                 type="text"
                 value={tempServerUrl}
                 onChange={(e) => setTempServerUrl(e.target.value)}
-                placeholder="https://api.wonbee.com/v1"
+                placeholder="/api"
                 className="w-full px-3 py-1.5 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-lg text-xs outline-none focus:border-emerald-500 font-mono"
               />
             </div>

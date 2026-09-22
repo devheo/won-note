@@ -4,6 +4,7 @@
  */
 import { WorkspaceData, TableDocument, TreeItem } from '../../types';
 import { INITIAL_WORKSPACE_DATA } from '../../data/initialData';
+import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 
 const DB_NAME = 'wonbee_workspace_db';
 const DB_VERSION = 1;
@@ -82,28 +83,20 @@ export class WonBeeIndexedDB {
         };
 
         tx.oncomplete = () => {
-          if (!metaResult || (tablesResult.length === 0 && treeResult.length === 0)) {
-            // First time launch - seed initial data
-            console.info('🐝 WonBee: Seeding initial workspace data into IndexedDB');
-            this.saveFullWorkspace(INITIAL_WORKSPACE_DATA).then(() => {
-              resolve(INITIAL_WORKSPACE_DATA);
-            });
-            return;
-          }
-
           const tablesMap: Record<string, TableDocument> = {};
           tablesResult.forEach((t) => {
             tablesMap[t.id] = t;
           });
 
-          resolve({
-            version: metaResult.version || '1.0.0',
-            exportedAt: metaResult.exportedAt || Date.now(),
-            author: metaResult.author || 'WonBee User',
-            settings: metaResult.settings || { theme: 'light', zoom: 100, useServer: false },
-            tree: treeResult.length > 0 ? treeResult : INITIAL_WORKSPACE_DATA.tree,
-            tables: Object.keys(tablesMap).length > 0 ? tablesMap : INITIAL_WORKSPACE_DATA.tables,
+          const complete = ensureWorkspaceTree({
+            version: metaResult?.version || '1.0.0',
+            exportedAt: metaResult?.exportedAt || Date.now(),
+            settings: metaResult?.settings || { theme: 'light', zoom: 100, useServer: false },
+            tree: treeResult,
+            tables: tablesMap,
           });
+
+          resolve(complete);
         };
 
         tx.onerror = () => {

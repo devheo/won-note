@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { TableDocument, WorkspaceData, TableColumn, TableRow } from '../../types';
 import { parseDelimitedText } from '../../utils/csvParser';
 import { envService } from '../../services/storage/envService';
+import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 import {
   FileText,
   FileSpreadsheet,
@@ -116,9 +117,10 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     setIsOpen(false);
   };
 
-  // 2. Export user_data.json (Entire Workspace Data)
+  // 2. Export user_data.json (Entire Workspace Data with Tree)
   const handleExportUserDataJson = () => {
-    const jsonStr = JSON.stringify(workspace, null, 2);
+    const completeWs = ensureWorkspaceTree(workspace);
+    const jsonStr = JSON.stringify(completeWs, null, 2);
     const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -126,7 +128,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     link.download = 'user_data.json';
     link.click();
     URL.revokeObjectURL(url);
-    showToast('user_data.json(워크스페이스 데이터)이 다운로드되었습니다.');
+    showToast('user_data.json(워크스페이스 트리 및 테이블)이 다운로드되었습니다.');
     setIsOpen(false);
   };
 
@@ -161,9 +163,10 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     reader.onload = (evt) => {
       try {
         const parsed = JSON.parse(evt.target?.result as string);
-        if (parsed.tree && parsed.tables) {
-          onImportJsonWorkspace(parsed as WorkspaceData);
-          showToast('user_data.json 워크스페이스가 성공적으로 적용되었습니다.');
+        if (parsed.tables || (parsed.tree && Array.isArray(parsed.tree))) {
+          const completeWs = ensureWorkspaceTree(parsed);
+          onImportJsonWorkspace(completeWs);
+          showToast('user_data.json 워크스페이스(트리 복원 완료)가 성공적으로 적용되었습니다.');
         } else if (parsed.id && parsed.columns && parsed.rows) {
           onImportCsvToNewTable(parsed.title || '가져온 JSON 테이블', parsed.columns, parsed.rows);
           showToast('단일 테이블 JSON이 성공적으로 임포트되었습니다.');

@@ -210,7 +210,13 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
 
   // Render Infinite Depth Recursive Tree Nodes
   const renderTreeNodes = (parentId: string | null = null, depth: number = 0) => {
-    const nodes = tree.filter((item) => item.parentId === parentId);
+    const isRoot = parentId === null || parentId === '' || parentId === undefined;
+    const nodes = (tree || []).filter((item) => {
+      if (isRoot) {
+        return !item.parentId || item.parentId === null || item.parentId === '';
+      }
+      return item.parentId === parentId;
+    });
 
     // Apply search filter if searching
     const filteredNodes = searchQuery.trim()

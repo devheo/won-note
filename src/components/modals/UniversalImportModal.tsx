@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { TableDocument, WorkspaceData, TableColumn, TableRow, UserEnvData } from '../../types';
 import { parseDelimitedText } from '../../utils/csvParser';
+import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 import {
   Upload,
   FileSpreadsheet,
@@ -81,11 +82,12 @@ export const UniversalImportModal: React.FC<UniversalImportModalProps> = ({
         const json = JSON.parse(trimmed);
 
         // Case A: Entire Workspace (user_data.json)
-        if (json && json.tree && json.tables) {
+        if (json && (json.tables || (json.tree && Array.isArray(json.tree)))) {
+          const completeWs = ensureWorkspaceTree(json);
           setDetectedType('workspace_json');
-          setParsedWorkspace(json as WorkspaceData);
-          const tableCount = Object.keys(json.tables).length;
-          setDetectedSummary(`WonBee 전체 워크스페이스 데이터 (user_data.json) • ${tableCount}개 테이블`);
+          setParsedWorkspace(completeWs);
+          const tableCount = Object.keys(completeWs.tables).length;
+          setDetectedSummary(`WonBee 전체 워크스페이스 데이터 (user_data.json) • ${tableCount}개 테이블 (트리 복원됨)`);
           setCustomTableName(sourceName.replace(/\.[^/.]+$/, '') || '워크스페이스 백업');
           return;
         }

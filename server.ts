@@ -5,6 +5,7 @@ import {
   initDatabase,
   getWorkspaceData,
   saveWorkspaceData,
+  saveTree,
   getTable,
   saveTable,
   deleteTable,
@@ -54,6 +55,22 @@ async function startServer() {
       res.json({ success: true, message: 'Workspace saved to SQLite DB' });
     } catch (err: any) {
       console.error('[API] Failed to save workspace:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Workspace Tree Endpoint ---
+  app.put('/api/tree', (req, res) => {
+    try {
+      const tree = req.body;
+      if (!Array.isArray(tree)) {
+        res.status(400).json({ error: 'tree must be an array' });
+        return;
+      }
+      saveTree(tree);
+      res.json({ success: true, count: tree.length });
+    } catch (err: any) {
+      console.error('[API] Failed to save tree:', err);
       res.status(500).json({ error: err.message });
     }
   });
