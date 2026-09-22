@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { TableDocument, WorkspaceData, TableColumn, TableRow, UserEnvData } from '../../types';
 import { parseDelimitedText } from '../../utils/csvParser';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
+import { extractFirstImageSrc, isImageValue } from '../../utils/textSanitizer';
 import {
   Upload,
   FileSpreadsheet,
@@ -116,13 +117,23 @@ export const UniversalImportModal: React.FC<UniversalImportModalProps> = ({
           const keys = Array.from(
             new Set(json.flatMap((obj) => Object.keys(obj || {})))
           );
-          const columns: TableColumn[] = keys.map((key, idx) => ({
-            id: `col-${idx}-${key}`,
-            name: key,
-            type: typeof json[0][key] === 'number' ? 'number' : 'text',
-            width: 160,
-            isPrimaryKey: idx === 0,
-          }));
+          const columns: TableColumn[] = keys.map((key, idx) => {
+            const sampleVal = json[0][key];
+            const lowerKey = key.toLowerCase();
+            const isImage =
+              lowerKey.includes('image') ||
+              lowerKey.includes('이미지') ||
+              lowerKey.includes('사진') ||
+              isImageValue(sampleVal);
+
+            return {
+              id: `col-${idx}-${key}`,
+              name: key,
+              type: typeof sampleVal === 'number' ? 'number' : isImage ? 'image' : 'text',
+              width: isImage ? 140 : 160,
+              isPrimaryKey: idx === 0,
+            };
+          });
 
           const rows: TableRow[] = json.map((item, rIdx) => {
             const rowData: Record<string, any> = {};
@@ -509,7 +520,37 @@ export const UniversalImportModal: React.FC<UniversalImportModalProps> = ({
                                 key={col.id}
                                 className="px-2.5 py-1 text-stone-600 dark:text-[#cccccc] truncate max-w-[140px]"
                               >
-                                {String(row.data[col.id] ?? '')}
+                                {(() => {
+                                  const cellVal = row.data[col.id];
+                                  const strVal = String(cellVal ?? '');
+                                  const isImg = col.type === 'image' || isImageValue(strVal);
+                                  const imgSrc = isImg ? extractFirstImageSrc(strVal) : null;
+
+                                  if (imgSrc) {
+                                    return (
+                                      <div className="flex items-center gap-1.5">
+                                        <img
+                                          src={imgSrc}
+                                          alt="미리보기"
+                                          className="w-5 h-5 rounded object-cover border border-amber-300 dark:border-amber-700 shrink-0"
+                                        />
+                                        <span className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                                          [이미지]
+                                        </span>
+                                      </div>
+                                    );
+                                  }
+
+                                  if (isImg) {
+                                    return (
+                                      <span className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                                        [이미지]
+                                      </span>
+                                    );
+                                  }
+
+                                  return strVal;
+                                })()}
                               </td>
                             ))}
                           </tr>

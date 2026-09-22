@@ -18,7 +18,7 @@ export interface TreeItem {
   updatedAt: number;
 }
 
-export type ColumnType = 'text' | 'number' | 'select' | 'status' | 'date' | 'checkbox' | 'richText' | 'code';
+export type ColumnType = 'text' | 'number' | 'select' | 'status' | 'date' | 'checkbox' | 'richText' | 'code' | 'image';
 
 export type RowDensity = 'compact' | 'normal' | 'spacious';
 

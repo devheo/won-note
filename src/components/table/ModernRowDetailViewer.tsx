@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
-import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
+import { cleanTextValue, extractFirstImageSrc, isImageValue } from '../../utils/textSanitizer';
 import { isLikelyMarkdown, markdownToHtml } from '../../utils/markdownHelper';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
@@ -876,6 +876,32 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                   maxHeight={heightLimitClass}
                                 />
                               );
+                            }
+
+                            // 1.5. Dedicated Image Detection & Preview (Base64 data URLs, raw base64, image columns, etc.)
+                            if (col.type === 'image' || isImageValue(strVal)) {
+                              const imgSrc = extractFirstImageSrc(strVal);
+                              if (imgSrc) {
+                                return (
+                                  <div className="flex flex-col gap-2 py-1">
+                                    <div
+                                      className="relative group rounded-xl overflow-hidden border border-stone-200 dark:border-[#383838] bg-stone-100 dark:bg-[#181818] p-2 flex items-center justify-center cursor-zoom-in max-w-sm transition-all hover:border-amber-500/50"
+                                      onClick={() => setLightboxImg(imgSrc)}
+                                      title="클릭하여 원본 크기로 확대"
+                                    >
+                                      <img
+                                        src={imgSrc}
+                                        alt="이미지 미리보기"
+                                        className="max-h-64 max-w-full rounded-lg object-contain group-hover:scale-[1.02] transition-transform duration-200"
+                                      />
+                                      <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md bg-stone-900/75 backdrop-blur-xs text-white text-[11px] font-medium flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md">
+                                        <Maximize2 className="w-3 h-3" />
+                                        원본 보기
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              }
                             }
 
                             // 2. Check for Markdown content (code fences ```...```, headers #, markdown tables, lists, etc.)

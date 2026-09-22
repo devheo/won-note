@@ -1,14 +1,17 @@
 import { TableColumn, TableRow } from '../types';
-import { cleanTextValue } from './textSanitizer';
+import { cleanTextValue, isImageValue } from './textSanitizer';
 
 /**
  * Escapes a field string for standard RFC 4180 CSV
  */
-export function escapeCsvField(val: any): string {
+export function escapeCsvField(val: any, colType?: string): string {
   if (val === null || val === undefined) return '';
   let str = '';
   if (typeof val === 'object') {
     str = JSON.stringify(val);
+  } else if (colType === 'image' || isImageValue(val)) {
+    // Preserve full image URL / Base64 string in CSV export
+    str = String(val);
   } else {
     str = cleanTextValue(val);
   }
@@ -31,7 +34,7 @@ export function formatRowsAsCsv(columns: TableColumn[], rows: TableRow[]): strin
     return visibleCols
       .map((c) => {
         const val = r.data[c.id];
-        return escapeCsvField(val);
+        return escapeCsvField(val, c.type);
       })
       .join(',');
   });

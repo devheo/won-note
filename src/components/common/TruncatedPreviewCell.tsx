@@ -58,7 +58,12 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
   const rawString = typeof value === 'object' ? JSON.stringify(value) : String(value ?? '');
 
   // Performance optimization 1: If skipImageDetection is enabled, skip expensive regex parsing for non-image columns
-  const shouldDetectImage = !skipImageDetection || columnType === 'image';
+  // ALWAYS detect image if columnType === 'image' or rawString contains/starts with data:image/
+  const isDirectImage =
+    columnType === 'image' ||
+    (typeof rawString === 'string' && (rawString.trim().startsWith('data:image/') || rawString.includes('data:image/')));
+
+  const shouldDetectImage = !skipImageDetection || isDirectImage;
   const firstImageSrc = shouldDetectImage ? extractFirstImageSrc(rawString) : null;
   const hasImage = shouldDetectImage && (!!firstImageSrc || rawString.includes('<img'));
 
@@ -296,28 +301,30 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 {customRender}
               </div>
             ) : hasImage ? (
-              <div className="flex items-start gap-1.5 min-w-0">
+              <div className="flex items-center gap-1.5 min-w-0">
                 {firstImageSrc ? (
                   <img
                     src={firstImageSrc}
-                    alt="thumb"
+                    alt="미리보기"
                     onClick={(e) => {
                       if (onOpenImage && firstImageSrc) {
                         e.stopPropagation();
                         onOpenImage(firstImageSrc);
                       }
                     }}
-                    className="w-4 h-4 rounded object-cover border border-stone-300 dark:border-[#444444] flex-shrink-0 cursor-zoom-in hover:scale-110 transition-transform mt-0.5"
+                    className="w-5 h-5 rounded object-cover border border-stone-300 dark:border-[#444444] shrink-0 cursor-zoom-in hover:scale-110 transition-transform shadow-2xs"
                     title="클릭하여 원본 이미지 뷰어 열기"
                   />
                 ) : (
-                  <ImageIcon className="w-3.5 h-3.5 text-amber-500 flex-shrink-0 mt-0.5" />
+                  <ImageIcon className="w-3.5 h-3.5 text-amber-500 shrink-0" />
                 )}
                 <span className={`${clampClass} text-xs text-stone-700 dark:text-stone-300`}>
-                  {displayPlainText.length > 0 ? (
+                  {displayPlainText.length > 0 && displayPlainText !== '[이미지]' ? (
                     <HighlightText text={displayPlainText} highlight={highlightQuery} />
                   ) : (
-                    '[이미지 첨부]'
+                    <span className="text-[11px] text-amber-700 dark:text-amber-400 font-medium">
+                      [이미지]
+                    </span>
                   )}
                 </span>
               </div>
@@ -457,6 +464,31 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 className="max-h-72 leading-relaxed text-stone-800 dark:text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table wonbee-markdown-content tiptap [&_p]:mb-1.5 [&_p]:leading-relaxed"
                 dangerouslySetInnerHTML={{ __html: markdownHtml }}
               />
+            ) : hasImage && firstImageSrc ? (
+              <div className="flex flex-col gap-2">
+                <div
+                  className="rounded-lg overflow-hidden border border-stone-200 dark:border-stone-700 bg-stone-100 dark:bg-[#151515] p-1.5 flex items-center justify-center cursor-zoom-in group/imgprev"
+                  onClick={(e) => {
+                    if (onOpenImage && firstImageSrc) {
+                      e.stopPropagation();
+                      forceClose();
+                      onOpenImage(firstImageSrc);
+                    }
+                  }}
+                  title="클릭하여 원본 크기로 보기"
+                >
+                  <img
+                    src={firstImageSrc}
+                    alt="미리보기"
+                    className="max-h-60 max-w-full rounded object-contain group-hover/imgprev:scale-102 transition-transform"
+                  />
+                </div>
+                {displayPlainText && displayPlainText !== '[이미지]' && (
+                  <div className="text-xs text-stone-700 dark:text-stone-300 leading-relaxed whitespace-pre-wrap">
+                    <HighlightText text={displayPlainText} highlight={highlightQuery} />
+                  </div>
+                )}
+              </div>
             ) : isRich ? (
               <div
                 className="max-h-64 leading-relaxed text-stone-800 dark:text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table tiptap"

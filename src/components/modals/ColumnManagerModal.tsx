@@ -21,6 +21,7 @@ import {
   AlertTriangle,
   Save,
   Clock,
+  Image as ImageIcon,
 } from 'lucide-react';
 import { isUpdateDateColumn } from '../../utils/dateColumnUtils';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
@@ -130,6 +131,8 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
         return <Code className="w-3.5 h-3.5 text-stone-500 dark:text-amber-400" />;
       case 'richText':
         return <Sparkles className="w-3.5 h-3.5 text-amber-500" />;
+      case 'image':
+        return <ImageIcon className="w-3.5 h-3.5 text-rose-500" />;
       default:
         return <Type className="w-3.5 h-3.5 text-stone-400" />;
     }
@@ -190,6 +193,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
             <option value="checkbox">체크박스 (Checkbox)</option>
             <option value="code">코드 블록 (Code)</option>
             <option value="richText">서식 문서 (RichText)</option>
+            <option value="image">이미지 (Image / Base64)</option>
           </select>
           <button
             type="submit"
@@ -276,6 +280,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
                           <option value="checkbox">체크박스</option>
                           <option value="code">코드</option>
                           <option value="richText">서식 문서</option>
+                          <option value="image">이미지 (Image)</option>
                         </select>
                         <button
                           onClick={() => handleCommitEdit(col.id)}

@@ -227,7 +227,7 @@ export function parseDelimitedText(
       id: colId,
       name: colName,
       type: colType,
-      width: idx === 0 ? 180 : colType === 'richText' ? 320 : 160,
+      width: idx === 0 ? 180 : colType === 'richText' ? 320 : colType === 'image' ? 140 : 160,
       options,
       isPrimaryKey: idx === 0,
     };
@@ -282,6 +282,20 @@ function cleanCell(cell: string, delimiter: string): string {
 function inferColumnType(colName: string, values: string[], colIndex: number): ColumnType {
   const lowerName = colName.toLowerCase();
 
+  // Image heuristics (column name)
+  if (
+    lowerName.includes('이미지') ||
+    lowerName.includes('사진') ||
+    lowerName.includes('image') ||
+    lowerName.includes('photo') ||
+    lowerName.includes('img') ||
+    lowerName.includes('pic') ||
+    lowerName.includes('thumbnail') ||
+    lowerName.includes('avatar')
+  ) {
+    return 'image';
+  }
+
   // Name heuristics
   if (lowerName.includes('상태') || lowerName.includes('status') || lowerName.includes('진행')) {
     return 'status';
@@ -310,6 +324,19 @@ function inferColumnType(colName: string, values: string[], colIndex: number): C
 
   // Value heuristics
   if (values.length > 0) {
+    // Check if column contains image data (Base64 data URLs, raw base64 images, <img> tags, or image URLs)
+    const hasImageValues = values.some((v) => {
+      const trimmed = v.trim();
+      return (
+        trimmed.startsWith('data:image/') ||
+        trimmed.includes('data:image/') ||
+        trimmed.startsWith('<img') ||
+        (trimmed.length > 60 && (/^iVBORw0KGgo/i.test(trimmed) || /^\/9j\/4/i.test(trimmed) || /^R0lGOD/i.test(trimmed) || /^UklGR/i.test(trimmed))) ||
+        /^https?:\/\/[^\s"'<>]+\.(?:png|jpe?g|gif|webp|svg|bmp|ico)(?:\?[^\s"'<>]*)?$/i.test(trimmed)
+      );
+    });
+    if (hasImageValues) return 'image';
+
     const hasMultiLine = values.some((v) => v.includes('\n'));
     if (hasMultiLine) return 'richText';
 
