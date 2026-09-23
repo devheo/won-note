@@ -124,6 +124,17 @@ export async function initDatabase(): Promise<Database> {
       embedding_json TEXT,
       created_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS row_images (
+      id TEXT PRIMARY KEY,
+      table_id TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      column_key TEXT NOT NULL,
+      mime_type TEXT,
+      image_data BLOB NOT NULL,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
   // Sync with user_data.json if present
@@ -681,3 +692,19 @@ export function searchDocumentChunks(query: string, limit = 5): Array<{ id: stri
 
   return scored.filter((s) => s.score > 0).sort((a, b) => b.score - a.score).slice(0, limit);
 }
+
+/**
+ * Retrieve Image BLOB by ID from SQLite
+ */
+export function getRowImage(imageId: string): { id: string; mimeType: string; data: Uint8Array } | null {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const res = dbInstance.exec("SELECT id, mime_type, image_data FROM row_images WHERE id = ?", [imageId]);
+  if (res.length === 0 || res[0].values.length === 0) return null;
+  const val = res[0].values[0];
+  return {
+    id: String(val[0]),
+    mimeType: String(val[1] || 'image/png'),
+    data: val[2] as Uint8Array,
+  };
+}
+

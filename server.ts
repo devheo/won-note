@@ -14,6 +14,7 @@ import {
   deleteCalendarEvent,
   insertDocumentChunk,
   searchDocumentChunks,
+  getRowImage,
 } from './server/db';
 import {
   checkOllamaStatus,
@@ -102,6 +103,22 @@ async function startServer() {
     try {
       deleteTable(req.params.id);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Binary Image BLOB Endpoint ---
+  app.get('/api/images/:id', (req, res) => {
+    try {
+      const img = getRowImage(req.params.id);
+      if (!img) {
+        res.status(404).json({ error: 'Image not found' });
+        return;
+      }
+      res.setHeader('Content-Type', img.mimeType || 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(Buffer.from(img.data));
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
