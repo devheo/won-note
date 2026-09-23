@@ -197,24 +197,53 @@ export async function initDatabase(): Promise<Database> {
     );
   `);
 
+  // Count existing tables in SQLite DB
+  const res = dbInstance.exec("SELECT count(*) FROM tables;");
+  const dbTableCount = Number(res[0]?.values[0]?.[0] || 0);
+
   // Sync with user_data.json if present
   if (fs.existsSync(USER_DATA_PATH)) {
-    console.log('[SQLite] Found user_data.json. Loading and syncing to SQLite DB...');
+    console.log(`[SQLite] Checking user_data.json (SQLite currently has ${dbTableCount} tables)...`);
     try {
       const raw = fs.readFileSync(USER_DATA_PATH, 'utf-8');
       const data: WorkspaceData = JSON.parse(raw);
       const completeData = ensureWorkspaceTree(data);
-      importWorkspaceDataToDb(dbInstance, completeData);
-      fs.writeFileSync(USER_DATA_PATH, JSON.stringify(completeData, null, 2), 'utf-8');
-      console.log(`[SQLite] Loaded ${completeData.tree.length} tree items and ${Object.keys(completeData.tables).length} tables from user_data.json`);
+      const jsonTableCount = Object.keys(completeData.tables).length;
+      const jsonTreeCount = completeData.tree.length;
+
+      if (dbTableCount > 0 && jsonTableCount === 0) {
+        // SQLite already has tables, but user_data.json is empty:
+        // NEVER overwrite SQLite with 0 tables! Instead, sync SQLite DB -> user_data.json
+        console.log(`[SQLite] Preserving existing ${dbTableCount} SQLite tables. Syncing database state to user_data.json...`);
+        syncDbToUserDataJson();
+      } else if (jsonTableCount > 0) {
+        if (dbTableCount === 0) {
+          // SQLite is empty, load from user_data.json
+          importWorkspaceDataToDb(dbInstance, completeData);
+          console.log(`[SQLite] Successfully imported ${jsonTreeCount} tree items and ${jsonTableCount} tables from user_data.json to SQLite.`);
+        } else {
+          // Both have tables: compare exportedAt timestamp
+          const currentWs = getWorkspaceData();
+          if ((completeData.exportedAt || 0) > (currentWs.exportedAt || 0)) {
+            console.log(`[SQLite] user_data.json is newer. Updating SQLite with ${jsonTableCount} tables...`);
+            importWorkspaceDataToDb(dbInstance, completeData);
+          } else {
+            console.log(`[SQLite] SQLite DB is current (${dbTableCount} tables). Syncing to user_data.json...`);
+            syncDbToUserDataJson();
+          }
+        }
+      } else {
+        console.log(`[SQLite] Both SQLite and user_data.json are currently empty.`);
+      }
     } catch (err) {
-      console.error('[SQLite] Failed to load user_data.json:', err);
+      console.error('[SQLite] Failed to parse user_data.json:', err);
+      if (dbTableCount > 0) {
+        syncDbToUserDataJson();
+      }
     }
   } else {
     // Database initialized: sync current state to user_data.json
-    const res = dbInstance.exec("SELECT count(*) FROM tables;");
-    const count = Number(res[0]?.values[0]?.[0] || 0);
-    console.log(`[SQLite] Database ready with ${count} tables. Syncing to user_data.json...`);
+    console.log(`[SQLite] Database ready with ${dbTableCount} tables. Syncing to user_data.json...`);
     syncDbToUserDataJson();
   }
 

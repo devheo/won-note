@@ -29,9 +29,39 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
     useServer: true,
     serverUrl: '/api',
   };
-  const tables: Record<string, TableDocument> = { ...(data.tables || {}) };
 
-  let tree: TreeItem[] = Array.isArray(data.tree) ? [...data.tree] : [];
+  // Robustly extract tables whether formatted as Record, Array, or wrapped under data/workspace
+  const rawTables =
+    (data as any)?.tables ||
+    (Array.isArray(data) ? data : null) ||
+    (data as any)?.data?.tables ||
+    (data as any)?.workspace?.tables ||
+    {};
+
+  const tables: Record<string, TableDocument> = {};
+  if (Array.isArray(rawTables)) {
+    rawTables.forEach((tbl, idx) => {
+      if (tbl && typeof tbl === 'object') {
+        const id = tbl.id || `table-${idx + 1}`;
+        tables[id] = { ...tbl, id };
+      }
+    });
+  } else if (typeof rawTables === 'object' && rawTables !== null) {
+    Object.entries(rawTables).forEach(([key, tbl]: [string, any]) => {
+      if (tbl && typeof tbl === 'object') {
+        const id = tbl.id || key;
+        tables[id] = { ...tbl, id };
+      }
+    });
+  }
+
+  // Robustly extract tree
+  const rawTree =
+    (data as any)?.tree ||
+    (data as any)?.data?.tree ||
+    (data as any)?.workspace?.tree ||
+    [];
+  let tree: TreeItem[] = Array.isArray(rawTree) ? [...rawTree] : [];
 
   // Set of IDs already in tree
   const existingIdsInTree = new Set(tree.map((item) => item.id));
