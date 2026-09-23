@@ -201,53 +201,64 @@ export async function initDatabase(): Promise<Database> {
   const res = dbInstance.exec("SELECT count(*) FROM tables;");
   const dbTableCount = Number(res[0]?.values[0]?.[0] || 0);
 
-  // Sync with user_data.json if present
+  const treeRes = dbInstance.exec("SELECT count(*) FROM tree_items;");
+  const dbTreeCount = Number(treeRes[0]?.values[0]?.[0] || 0);
+
+  console.log(`[SQLite] Database initialized. Loaded tables: ${dbTableCount}, tree items: ${dbTreeCount}`);
+
+  // Auto-heal: If tables exist in SQLite but tree_items is empty, recreate tree items so UI displays them
+  if (dbTableCount > 0 && dbTreeCount === 0) {
+    console.log('[SQLite] Auto-healing: tables exist but tree_items table is empty. Generating tree items from tables...');
+    const tblListRes = dbInstance.exec("SELECT id, title, created_at, updated_at FROM tables;");
+    if (tblListRes.length > 0 && tblListRes[0].values) {
+      tblListRes[0].values.forEach(([tId, tTitle, tCreated, tUpdated], idx) => {
+        dbInstance?.run(
+          `INSERT OR REPLACE INTO tree_items (id, parent_id, title, type, is_expanded, created_at, updated_at, sort_order)
+           VALUES (?, NULL, ?, 'table', 0, ?, ?, ?);`,
+          [toSqliteParam(tId), toSqliteParam(tTitle || '새 데이터 테이블'), toSqliteParam(tCreated || Date.now()), toSqliteParam(tUpdated || Date.now()), idx]
+        );
+      });
+      console.log(`[SQLite] Restored ${tblListRes[0].values.length} tree items from tables.`);
+    }
+  }
+
+  // If SQLite already has tables, SQLite IS THE SINGLE SOURCE OF TRUTH.
+  // NEVER overwrite it with user_data.json!
+  if (dbTableCount > 0) {
+    console.log(`[SQLite] Keeping existing SQLite database as authoritative source (${dbTableCount} tables).`);
+    syncDbToUserDataJson();
+    return dbInstance;
+  }
+
+  // Only if SQLite DB is completely fresh/empty (0 tables), try loading seed data:
   if (fs.existsSync(USER_DATA_PATH)) {
-    console.log(`[SQLite] Checking user_data.json (SQLite currently has ${dbTableCount} tables)...`);
+    console.log(`[SQLite] Fresh database with 0 tables. Checking user_data.json for seed data...`);
     try {
       const raw = fs.readFileSync(USER_DATA_PATH, 'utf-8');
       const data: WorkspaceData = JSON.parse(raw);
       const completeData = ensureWorkspaceTree(data);
       const jsonTableCount = Object.keys(completeData.tables).length;
-      const jsonTreeCount = completeData.tree.length;
-
-      if (dbTableCount > 0 && jsonTableCount === 0) {
-        // SQLite already has tables, but user_data.json is empty:
-        // NEVER overwrite SQLite with 0 tables! Instead, sync SQLite DB -> user_data.json
-        console.log(`[SQLite] Preserving existing ${dbTableCount} SQLite tables. Syncing database state to user_data.json...`);
-        syncDbToUserDataJson();
-      } else if (jsonTableCount > 0) {
-        if (dbTableCount === 0) {
-          // SQLite is empty, load from user_data.json
-          importWorkspaceDataToDb(dbInstance, completeData);
-          console.log(`[SQLite] Successfully imported ${jsonTreeCount} tree items and ${jsonTableCount} tables from user_data.json to SQLite.`);
-        } else {
-          // Both have tables: compare exportedAt timestamp
-          const currentWs = getWorkspaceData();
-          if ((completeData.exportedAt || 0) > (currentWs.exportedAt || 0)) {
-            console.log(`[SQLite] user_data.json is newer. Updating SQLite with ${jsonTableCount} tables...`);
-            importWorkspaceDataToDb(dbInstance, completeData);
-          } else {
-            console.log(`[SQLite] SQLite DB is current (${dbTableCount} tables). Syncing to user_data.json...`);
-            syncDbToUserDataJson();
-          }
-        }
-      } else {
-        console.log(`[SQLite] Both SQLite and user_data.json are currently empty.`);
+      if (jsonTableCount > 0) {
+        console.log(`[SQLite] Seeding fresh database with ${jsonTableCount} tables from user_data.json...`);
+        importWorkspaceDataToDb(dbInstance, completeData);
+        persistDatabase();
       }
     } catch (err) {
-      console.error('[SQLite] Failed to parse user_data.json:', err);
-      if (dbTableCount > 0) {
-        syncDbToUserDataJson();
-      }
+      console.error('[SQLite] Failed to load user_data.json for fresh database:', err);
     }
-  } else {
-    // Database initialized: sync current state to user_data.json
-    console.log(`[SQLite] Database ready with ${dbTableCount} tables. Syncing to user_data.json...`);
-    syncDbToUserDataJson();
+  } else if (fs.existsSync(DEFAULT_DATA_PATH)) {
+    try {
+      const raw = fs.readFileSync(DEFAULT_DATA_PATH, 'utf-8');
+      const data: WorkspaceData = JSON.parse(raw);
+      const completeData = ensureWorkspaceTree(data);
+      console.log(`[SQLite] Seeding fresh database from public/wonbee_data.json...`);
+      importWorkspaceDataToDb(dbInstance, completeData);
+      persistDatabase();
+    } catch (err) {
+      console.error('[SQLite] Failed to seed from public/wonbee_data.json:', err);
+    }
   }
 
-  persistDatabase();
   return dbInstance;
 }
 
