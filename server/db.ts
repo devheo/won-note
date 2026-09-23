@@ -559,6 +559,179 @@ export function getWorkspaceData(): WorkspaceData {
     }
   }
 
+  // 4. Physical Tables Auto-Discovery (e.g. table_mti5tvnp, table_mti8bx9v, table_roadmap, table_tasks, table_mu3dp609...)
+  // In SQLite, user tables may exist as individual physical relational tables!
+  try {
+    const physRes = dbInstance.exec("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'table_%' AND name NOT IN ('table_columns', 'table_rows');");
+    if (physRes.length > 0 && physRes[0].values) {
+      for (const [rawName] of physRes[0].values) {
+        const tableName = String(rawName);
+        // Map table name to standard tableId: e.g. table_mti5tvnp -> table_mti5tvnp (or table-mti5tvnp)
+        const tableId = tableName;
+        
+        // If this table already exists in metadata tables and has rows, don't overwrite unless empty
+        if (tables[tableId] && tables[tableId].rows.length > 0) {
+          continue;
+        }
+
+        // Get column definitions via PRAGMA
+        const colInfoRes = dbInstance.exec(`PRAGMA table_info("${tableName}");`);
+        if (!colInfoRes.length || !colInfoRes[0].values) continue;
+
+        const columns: TableColumn[] = [];
+        const rawColNames: string[] = [];
+
+        colInfoRes[0].values.forEach((colRow, idx) => {
+          const colName = String(colRow[1]);
+          const colType = String(colRow[2] || 'TEXT').toUpperCase();
+          rawColNames.push(colName);
+
+          // Skip system row metadata columns from user column list
+          if (colName === 'id' || colName === 'created_at' || colName === 'updated_at') {
+            return;
+          }
+
+          // Determine column display name
+          let displayName = colName.replace(/^col_/, '').replace(/^col-/, '');
+          const knownLabels: Record<string, string> = {
+            feature: '기능/과제',
+            status: '상태',
+            priority: '우선순위',
+            owner: '담당자',
+            details: '상세 설명',
+            duedate: '마감일',
+            due: '마감일',
+            task: '할 일',
+            checked: '완료 여부',
+            tag: '태그',
+            est: '예상 시간',
+            assignee: '담당자',
+            name: '이름',
+            note: '메모',
+            desc: '설명',
+            dbtype: 'DB 종류',
+            sql: 'SQL 쿼리',
+            user: '사용자',
+            rating: '평점',
+            comment: '코멘트',
+            action: '조치 사항',
+            thumbnail: '이미지/썸네일',
+            updated_at: '수정일',
+          };
+
+          if (knownLabels[displayName]) {
+            displayName = knownLabels[displayName];
+          }
+
+          // Determine column data type
+          let type: any = 'text';
+          if (colType === 'NUMERIC' || colType === 'INTEGER' || colType === 'REAL') {
+            type = 'number';
+          } else if (colName.includes('date') || colName.includes('due')) {
+            type = 'date';
+          } else if (colName.includes('status') || colName.includes('priority')) {
+            type = 'select';
+          } else if (colName.includes('tag')) {
+            type = 'multiselect';
+          } else if (colName.includes('checked')) {
+            type = 'checkbox';
+          } else if (colType === 'BLOB' || colName.includes('thumbnail') || colName.includes('image')) {
+            type = 'image';
+          }
+
+          columns.push({
+            id: colName,
+            name: displayName,
+            type,
+            width: colName.includes('details') || colName.includes('note') || colName.includes('sql') ? 240 : 160,
+            isPrimaryKey: false,
+            autoUpdateDate: colName.includes('updated_at'),
+          });
+        });
+
+        // Query all rows from physical table
+        const rowsRes = dbInstance.exec(`SELECT * FROM "${tableName}" ORDER BY rowid ASC;`);
+        const rows: TableRow[] = [];
+
+        if (rowsRes.length > 0 && rowsRes[0].values) {
+          const colList = rowsRes[0].columns;
+          rowsRes[0].values.forEach((rowVal, rIdx) => {
+            let rId = `r-${rIdx + 1}`;
+            let rCreated = Date.now();
+            let rUpdated = Date.now();
+            const rData: Record<string, any> = {};
+            let richContent = '';
+
+            colList.forEach((cName, cIdx) => {
+              const val = rowVal[cIdx];
+              if (cName === 'id' && val) {
+                rId = String(val);
+              } else if (cName === 'created_at' && val) {
+                rCreated = Number(val) || Date.now();
+              } else if (cName === 'updated_at' && val) {
+                rUpdated = Number(val) || Date.now();
+              } else if (val instanceof Uint8Array) {
+                // BLOB image to base64 data URL
+                const b64 = Buffer.from(val).toString('base64');
+                rData[cName] = `data:image/png;base64,${b64}`;
+              } else if (val !== null && val !== undefined) {
+                rData[cName] = val;
+                // Also support hyphenated key if col_xxx
+                if (cName.startsWith('col_')) {
+                  rData[cName.replace('col_', 'col-')] = val;
+                }
+                if (cName.includes('details') || cName.includes('note') || cName.includes('desc')) {
+                  richContent = String(val);
+                }
+              }
+            });
+
+            rows.push({
+              id: rId,
+              data: rData,
+              richContent: richContent || undefined,
+              stickers: [],
+              createdAt: rCreated,
+              updatedAt: rUpdated,
+            });
+          });
+        }
+
+        // Determine table title
+        let tableTitle = tableName.replace(/^table_/, '');
+        const titleMap: Record<string, string> = {
+          roadmap: '🚀 제품 로드맵',
+          tasks: '✅ 프로젝트 작업 관리',
+          sql_dict: '📖 SQL 명령어 사전',
+          feedback: '💬 사용자 피드백',
+        };
+
+        if (titleMap[tableTitle]) {
+          tableTitle = titleMap[tableTitle];
+        } else {
+          tableTitle = `📊 ${tableTitle}`;
+        }
+
+        // If existing table had a custom title, keep it
+        if (tables[tableId]?.title) {
+          tableTitle = tables[tableId].title;
+        }
+
+        tables[tableId] = {
+          id: tableId,
+          title: tableTitle,
+          defaultView: 'grid',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          columns,
+          rows,
+        };
+      }
+    }
+  } catch (err) {
+    console.error('[SQLite] Error auto-discovering physical tables:', err);
+  }
+
   return ensureWorkspaceTree({
     version,
     exportedAt,
