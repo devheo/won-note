@@ -11,6 +11,96 @@ import {
   CalendarEvent,
 } from '../../types';
 import { wonbeeDB } from './indexedDb';
+import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
+
+export function mergeWorkspaces(
+  current: WorkspaceData,
+  imported: WorkspaceData,
+  mode: 'merge' | 'replace' | 'keep_both' = 'merge'
+): WorkspaceData {
+  if (mode === 'replace') {
+    return ensureWorkspaceTree(imported);
+  }
+
+  const mergedTables: Record<string, TableDocument> = { ...current.tables };
+  const mergedTree: TreeItem[] = [...current.tree];
+
+  const currentTreeIdMap = new Map(current.tree.map((t, idx) => [t.id, idx]));
+  const currentTableIdMap = new Set(Object.keys(current.tables));
+
+  // 1. Handle incoming tree items
+  for (const item of imported.tree) {
+    if (!currentTreeIdMap.has(item.id)) {
+      mergedTree.push({ ...item });
+      currentTreeIdMap.set(item.id, mergedTree.length - 1);
+    } else if (mode === 'keep_both') {
+      const newId = `${item.id}_imported_${Date.now().toString(36)}`;
+      mergedTree.push({
+        ...item,
+        id: newId,
+        title: `${item.title} (가져옴)`,
+      });
+    } else {
+      // In 'merge' mode: update the existing tree item with incoming item's properties
+      const existingIdx = currentTreeIdMap.get(item.id)!;
+      mergedTree[existingIdx] = {
+        ...mergedTree[existingIdx],
+        ...item,
+        title: item.title,
+        updatedAt: item.updatedAt || Date.now(),
+      };
+    }
+  }
+
+  // 2. Handle incoming tables
+  for (const [tId, tDoc] of Object.entries(imported.tables)) {
+    let targetTableId = tId;
+    let targetTableDoc = { ...tDoc };
+
+    if (!currentTableIdMap.has(tId)) {
+      mergedTables[tId] = targetTableDoc;
+    } else if (mode === 'keep_both') {
+      targetTableId = `${tId}_imported_${Date.now().toString(36)}`;
+      targetTableDoc = {
+        ...tDoc,
+        id: targetTableId,
+        title: `${tDoc.title} (가져옴)`,
+      };
+      mergedTables[targetTableId] = targetTableDoc;
+    } else {
+      // Overwrite/update table
+      mergedTables[tId] = targetTableDoc;
+    }
+
+    // Crucial: Keep tree item title synchronized with the table document title!
+    const treeIdx = mergedTree.findIndex((t) => t.id === targetTableId);
+    if (treeIdx >= 0) {
+      mergedTree[treeIdx] = {
+        ...mergedTree[treeIdx],
+        title: targetTableDoc.title,
+        updatedAt: targetTableDoc.updatedAt || Date.now(),
+      };
+    } else {
+      // If table wasn't in tree, add it
+      mergedTree.push({
+        id: targetTableId,
+        parentId: null,
+        title: targetTableDoc.title || '새 데이터 테이블',
+        type: 'table',
+        isExpanded: false,
+        createdAt: targetTableDoc.createdAt || Date.now(),
+        updatedAt: targetTableDoc.updatedAt || Date.now(),
+      });
+    }
+  }
+
+  return ensureWorkspaceTree({
+    ...current,
+    tree: mergedTree,
+    tables: mergedTables,
+    exportedAt: Date.now(),
+  });
+}
 
 /**
  * 1. Serverless Implementation (IndexedDB in Browser)
@@ -46,60 +136,9 @@ export class IndexedDBWorkspaceRepository implements IWorkspaceRepository {
     mode: 'merge' | 'replace' | 'keep_both' = 'merge'
   ): Promise<WorkspaceData> {
     const current = await this.loadWorkspace();
-
-    if (mode === 'replace') {
-      await this.saveWorkspace(imported);
-      return imported;
-    }
-
-    // Merge Mode: intelligently combine tables and tree items without dropping local state
-    const mergedTables: Record<string, TableDocument> = { ...current.tables };
-    const mergedTree: TreeItem[] = [...current.tree];
-
-    const currentTreeIdMap = new Set(current.tree.map((t) => t.id));
-    const currentTableIdMap = new Set(Object.keys(current.tables));
-
-    // Handle incoming tree items
-    for (const item of imported.tree) {
-      if (!currentTreeIdMap.has(item.id)) {
-        mergedTree.push(item);
-      } else if (mode === 'keep_both') {
-        // Generate new ID for collision
-        const newId = `${item.id}_imported_${Date.now().toString(36)}`;
-        mergedTree.push({
-          ...item,
-          id: newId,
-          title: `${item.title} (가져옴)`,
-        });
-      }
-    }
-
-    // Handle incoming tables
-    for (const [tId, tDoc] of Object.entries(imported.tables)) {
-      if (!currentTableIdMap.has(tId)) {
-        mergedTables[tId] = tDoc;
-      } else if (mode === 'keep_both') {
-        const newTableId = `${tId}_imported_${Date.now().toString(36)}`;
-        mergedTables[newTableId] = {
-          ...tDoc,
-          id: newTableId,
-          title: `${tDoc.title} (가져옴)`,
-        };
-      } else {
-        // Overwrite or update with newer version
-        mergedTables[tId] = tDoc;
-      }
-    }
-
-    const mergedWorkspace: WorkspaceData = {
-      ...current,
-      tree: mergedTree,
-      tables: mergedTables,
-      exportedAt: Date.now(),
-    };
-
-    await this.saveWorkspace(mergedWorkspace);
-    return mergedWorkspace;
+    const merged = mergeWorkspaces(current, imported, mode);
+    await this.saveWorkspace(merged);
+    return merged;
   }
 
   async getStorageInfo() {
@@ -139,17 +178,23 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   }
 
   async saveWorkspace(data: WorkspaceData): Promise<void> {
+    const ensured = ensureWorkspaceTree(data);
     // Keep local cache synced
-    await this.localFallback.saveWorkspace(data);
+    await this.localFallback.saveWorkspace(ensured);
 
     try {
-      await fetch(`${this.serverUrl}/workspace`, {
+      const res = await fetch(`${this.serverUrl}/workspace`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(ensured),
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
     } catch (err) {
-      console.warn('Server save failed, changes safely preserved in local cache:', err);
+      console.error('[Repository] Server saveWorkspace failed:', err);
+      throw err;
     }
   }
 
@@ -166,42 +211,58 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   async saveTable(table: TableDocument): Promise<void> {
     await this.localFallback.saveTable(table);
     try {
-      await fetch(`${this.serverUrl}/tables/${table.id}`, {
+      const res = await fetch(`${this.serverUrl}/tables/${table.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(table),
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
     } catch (err) {
-      console.warn('Server saveTable failed:', err);
+      console.error('[Repository] Server saveTable failed:', err);
+      throw err;
     }
   }
 
   async deleteTable(tableId: string): Promise<void> {
     await this.localFallback.deleteTable(tableId);
     try {
-      await fetch(`${this.serverUrl}/tables/${tableId}`, {
+      const res = await fetch(`${this.serverUrl}/tables/${tableId}`, {
         method: 'DELETE',
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
     } catch (err) {
-      console.warn('Server deleteTable failed:', err);
+      console.error('[Repository] Server deleteTable failed:', err);
+      throw err;
     }
   }
 
   async saveTree(tree: TreeItem[]): Promise<void> {
     await this.localFallback.saveTree(tree);
     try {
-      await fetch(`${this.serverUrl}/tree`, {
+      const res = await fetch(`${this.serverUrl}/tree`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tree),
       });
+      if (!res.ok) {
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || `HTTP ${res.status}`);
+      }
     } catch (err) {
-      console.warn('Server saveTree failed:', err);
+      console.error('[Repository] Server saveTree failed:', err);
+      throw err;
     }
   }
 
   async mergeWorkspace(imported: WorkspaceData, mode: 'merge' | 'replace' | 'keep_both' = 'merge'): Promise<WorkspaceData> {
-    const merged = await this.localFallback.mergeWorkspace(imported, mode);
+    const current = await this.loadWorkspace();
+    const merged = mergeWorkspaces(current, imported, mode);
     await this.saveWorkspace(merged);
     return merged;
   }

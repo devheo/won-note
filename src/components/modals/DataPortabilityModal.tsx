@@ -1,6 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { WorkspaceData, TableDocument, TreeItem } from '../../types';
 import { localFileService } from '../../services/storage/localFileService';
+import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 import {
   Layers,
   Download,
@@ -112,10 +113,14 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
     try {
       setErrorMsg(null);
       const parsed = JSON.parse(text);
-      if (!parsed.tree || !parsed.tables) {
-        throw new Error('WonBee 워크스페이스 유효한 형식이 아닙니다 (tree, tables 필드 누락).');
+      if (!parsed || (typeof parsed !== 'object')) {
+        throw new Error('올바른 JSON 객체 형식이 아닙니다.');
       }
-      setParsedImport(parsed);
+      if (!parsed.tables && !parsed.tree) {
+        throw new Error('WonBee 워크스페이스 유효한 형식이 아닙니다 (tree 또는 tables 필드가 필요합니다).');
+      }
+      const ensured = ensureWorkspaceTree(parsed);
+      setParsedImport(ensured);
     } catch (err: any) {
       setParsedImport(null);
       setErrorMsg(err.message || 'JSON 파싱에 실패했습니다.');

@@ -1,0 +1,51 @@
+{
+  "version": "1.0.0",
+  "exportedAt": 1700000000000,
+  "settings": {
+    "theme": "light",
+    "zoom": 100,
+    "useServer": true,
+    "serverUrl": "/api"
+  },
+  "tree": [
+    {
+      "id": "tbl-user-1",
+      "parentId": null,
+      "title": "🌳 사이드바에서 수정한 이름",
+      "type": "table",
+      "isExpanded": false,
+      "createdAt": 1700000000000,
+      "updatedAt": 1799999999999
+    }
+  ],
+  "tables": {
+    "tbl-user-1": {
+      "id": "tbl-user-1",
+      "title": "🌳 사이드바에서 수정한 이름",
+      "defaultView": "grid",
+      "createdAt": 1790148628405,
+      "updatedAt": 1799999999999,
+      "columns": [
+        {
+          "id": "c1",
+          "name": "이름",
+          "type": "text",
+          "width": 160,
+          "isPrimaryKey": false,
+          "autoUpdateDate": false
+        }
+      ],
+      "rows": [
+        {
+          "id": "r1",
+          "data": {
+            "c1": "이순신"
+          },
+          "stickers": [],
+          "createdAt": 1700000000000,
+          "updatedAt": 1700000000000
+        }
+      ]
+    }
+  }
+}

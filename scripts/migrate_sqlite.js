@@ -418,6 +418,15 @@ export function migrateJsonToSqlite(jsonFilePath, dbFilePath, options = {}) {
 
     db.exec("COMMIT;");
     console.log("[✓] Node.js SQLite Migration Completed Successfully!");
+
+    // Also sync user_data.json so server and local modes are completely aligned
+    try {
+      const userDataPath = path.resolve(path.dirname(dbPath), 'user_data.json');
+      fs.writeFileSync(userDataPath, JSON.stringify(data, null, 2), 'utf-8');
+      console.log(`[✓] Synced workspace data to: ${userDataPath}`);
+    } catch (uErr) {
+      // Non-critical
+    }
   } catch (err) {
     db.exec("ROLLBACK;");
     console.error("[!] Migration Failed with Error:", err);

@@ -15,6 +15,7 @@ import {
   insertDocumentChunk,
   searchDocumentChunks,
   getRowImage,
+  reloadDatabaseFromDisk,
 } from './server/db';
 import {
   checkOllamaStatus,
@@ -56,6 +57,16 @@ async function startServer() {
       res.json({ success: true, message: 'Workspace saved to SQLite DB' });
     } catch (err: any) {
       console.error('[API] Failed to save workspace:', err);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/database/reload', (req, res) => {
+    try {
+      const ws = reloadDatabaseFromDisk();
+      res.json({ success: true, message: 'Database reloaded successfully', tablesCount: Object.keys(ws.tables).length });
+    } catch (err: any) {
+      console.error('[API] Failed to reload database:', err);
       res.status(500).json({ error: err.message });
     }
   });

@@ -25,6 +25,66 @@ export function persistDatabase(): void {
   }
 }
 
+const DATA_URI_REGEX = /data:image\/([a-zA-Z0-9.+_-]+);base64,([A-Za-z0-9+/=\r\n]+)/i;
+const IMG_TAG_REGEX = /<img[^>]+src=["'](data:image\/([a-zA-Z0-9.+_-]+);base64,([^"']+))["'][^>]*>/i;
+
+export function toSqliteParam(v: any): any {
+  if (v === undefined || v === null) return null;
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (Buffer.isBuffer(v) || v instanceof Uint8Array) return v;
+  if (typeof v === 'object') return JSON.stringify(v);
+  return v;
+}
+
+export function extractAndDecodeImage(val: any): { mime: string; buffer: Uint8Array } | null {
+  if (typeof val !== 'string' || val.length < 10) return null;
+  const str = val.trim();
+
+  // 1. <img> tag containing base64
+  const imgMatch = str.match(IMG_TAG_REGEX);
+  if (imgMatch) {
+    const mime = `image/${imgMatch[2]}`;
+    const cleanB64 = imgMatch[3].replace(/\s+/g, '');
+    try {
+      const buffer = Buffer.from(cleanB64, 'base64');
+      return { mime, buffer };
+    } catch {
+      return null;
+    }
+  }
+
+  // 2. data:image/...;base64,...
+  const uriMatch = str.match(DATA_URI_REGEX);
+  if (uriMatch) {
+    const mime = `image/${uriMatch[1]}`;
+    const cleanB64 = uriMatch[2].replace(/\s+/g, '');
+    try {
+      const buffer = Buffer.from(cleanB64, 'base64');
+      return { mime, buffer };
+    } catch {
+      return null;
+    }
+  }
+
+  // 3. Contains 'base64,'
+  if (str.includes('base64,')) {
+    const parts = str.split('base64,');
+    let mime = 'image/png';
+    const header = parts[0];
+    const mimeMatch = header.match(/data:image\/([a-zA-Z0-9.+_-]+)/);
+    if (mimeMatch) mime = `image/${mimeMatch[1]}`;
+    const cleanB64 = parts[1].replace(/[\s"'<>]+/g, '');
+    try {
+      const buffer = Buffer.from(cleanB64, 'base64');
+      return { mime, buffer };
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Initialize SQLite Database & Schema
  */
@@ -145,28 +205,17 @@ export async function initDatabase(): Promise<Database> {
       const data: WorkspaceData = JSON.parse(raw);
       const completeData = ensureWorkspaceTree(data);
       importWorkspaceDataToDb(dbInstance, completeData);
-      // Re-save so user_data.json is guaranteed to have the complete tree
       fs.writeFileSync(USER_DATA_PATH, JSON.stringify(completeData, null, 2), 'utf-8');
       console.log(`[SQLite] Loaded ${completeData.tree.length} tree items and ${Object.keys(completeData.tables).length} tables from user_data.json`);
     } catch (err) {
       console.error('[SQLite] Failed to load user_data.json:', err);
     }
   } else {
-    // Check if database contains only legacy sample tables
-    const res = dbInstance.exec("SELECT id FROM tables");
-    const existingIds = (res[0]?.values || []).map((v) => String(v[0]));
-    const sampleIds = ['table-roadmap', 'table-tasks', 'table-sql-dict', 'table-feedback'];
-    const onlyHasSampleTables = existingIds.length > 0 && existingIds.every((id) => sampleIds.includes(id));
-    if (onlyHasSampleTables) {
-      console.log('[SQLite] Legacy sample tables detected without user_data.json. Removing sample tables as requested.');
-      dbInstance.run('DELETE FROM table_rows;');
-      dbInstance.run('DELETE FROM table_columns;');
-      dbInstance.run('DELETE FROM calendar_events;');
-      dbInstance.run('DELETE FROM tables;');
-      dbInstance.run('DELETE FROM tree_items;');
-    } else {
-      console.log(`[SQLite] Database ready with ${existingIds.length} tables.`);
-    }
+    // Database initialized: sync current state to user_data.json
+    const res = dbInstance.exec("SELECT count(*) FROM tables;");
+    const count = Number(res[0]?.values[0]?.[0] || 0);
+    console.log(`[SQLite] Database ready with ${count} tables. Syncing to user_data.json...`);
+    syncDbToUserDataJson();
   }
 
   persistDatabase();
@@ -187,6 +236,29 @@ export function syncDbToUserDataJson(): void {
 }
 
 /**
+ * Reload database from disk or user_data.json
+ */
+export function reloadDatabaseFromDisk(): WorkspaceData {
+  if (!SQL) throw new Error('SQL.js not initialized');
+  if (fs.existsSync(DB_FILE_PATH)) {
+    console.log('[SQLite] Reloading database from disk:', DB_FILE_PATH);
+    const fileBuffer = fs.readFileSync(DB_FILE_PATH);
+    dbInstance = new SQL.Database(fileBuffer);
+  } else if (fs.existsSync(USER_DATA_PATH)) {
+    console.log('[SQLite] Reloading database from user_data.json:', USER_DATA_PATH);
+    const raw = fs.readFileSync(USER_DATA_PATH, 'utf-8');
+    const data: WorkspaceData = JSON.parse(raw);
+    const complete = ensureWorkspaceTree(data);
+    dbInstance = new SQL.Database();
+    initDatabase();
+    importWorkspaceDataToDb(dbInstance, complete);
+    persistDatabase();
+  }
+  syncDbToUserDataJson();
+  return getWorkspaceData();
+}
+
+/**
  * Import a complete WorkspaceData payload into SQLite tables
  */
 export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): void {
@@ -195,10 +267,10 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
 
   try {
     // 1. Meta
-    db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('version', ?);", [data.version || '1.0.0']);
-    db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(data.exportedAt || Date.now())]);
+    db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('version', ?);", [toSqliteParam(data.version || '1.0.0')]);
+    db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [toSqliteParam(String(data.exportedAt || Date.now()))]);
     if (data.settings) {
-      db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('settings', ?);", [JSON.stringify(data.settings)]);
+      db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('settings', ?);", [toSqliteParam(JSON.stringify(data.settings))]);
     }
 
     // 2. Tree Items
@@ -209,15 +281,15 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
           `INSERT INTO tree_items (id, parent_id, title, type, icon, color, is_expanded, created_at, updated_at, sort_order)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
-            item.id,
-            item.parentId,
-            item.title,
-            item.type,
-            item.icon || null,
-            item.color || null,
+            toSqliteParam(item.id),
+            toSqliteParam(item.parentId),
+            toSqliteParam(item.title || '새 데이터 테이블'),
+            toSqliteParam(item.type || 'table'),
+            toSqliteParam(item.icon),
+            toSqliteParam(item.color),
             item.isExpanded ? 1 : 0,
-            item.createdAt || Date.now(),
-            item.updatedAt || Date.now(),
+            toSqliteParam(item.createdAt || Date.now()),
+            toSqliteParam(item.updatedAt || Date.now()),
             index,
           ]
         );
@@ -231,34 +303,41 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
 
     if (data.tables && typeof data.tables === 'object') {
       Object.values(data.tables).forEach((tbl) => {
+        if (!tbl || !tbl.id) return;
+        const tId = tbl.id;
+        const tTitle = tbl.title || '새 데이터 테이블';
+        const tCreated = tbl.createdAt || Date.now();
+        const tUpdated = tbl.updatedAt || Date.now();
+
         db.run(
           `INSERT INTO tables (id, title, description, default_view, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?);`,
           [
-            tbl.id,
-            tbl.title,
-            tbl.description || null,
-            tbl.defaultView || 'grid',
-            tbl.createdAt || Date.now(),
-            tbl.updatedAt || Date.now(),
+            toSqliteParam(tId),
+            toSqliteParam(tTitle),
+            toSqliteParam(tbl.description),
+            toSqliteParam(tbl.defaultView || 'grid'),
+            toSqliteParam(tCreated),
+            toSqliteParam(tUpdated),
           ]
         );
 
         if (Array.isArray(tbl.columns)) {
           tbl.columns.forEach((col, cIdx) => {
+            if (!col || !col.id) return;
             db.run(
               `INSERT INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
               [
-                col.id,
-                tbl.id,
-                col.name,
-                col.type,
-                col.width || 160,
+                toSqliteParam(col.id),
+                toSqliteParam(tId),
+                toSqliteParam(col.name || col.id),
+                toSqliteParam(col.type || 'text'),
+                toSqliteParam(col.width || 160),
                 col.isPrimaryKey ? 1 : 0,
                 col.autoUpdateDate ? 1 : 0,
                 col.options ? JSON.stringify(col.options) : null,
-                col.format || null,
+                toSqliteParam(col.format),
                 cIdx,
               ]
             );
@@ -267,17 +346,57 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
 
         if (Array.isArray(tbl.rows)) {
           tbl.rows.forEach((row) => {
+            if (!row || !row.id) return;
+            const rData = row.data && typeof row.data === 'object' ? { ...row.data } : {};
+            const rCreated = row.createdAt || Date.now();
+            const rUpdated = row.updatedAt || Date.now();
+
+            // Extract & save binary images from row.data
+            for (const [colKey, val] of Object.entries(rData)) {
+              const ext = extractAndDecodeImage(val);
+              if (ext) {
+                const imgId = `img_${tId}_${row.id}_${colKey}`;
+                try {
+                  db.run(
+                    `INSERT OR REPLACE INTO row_images (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+                    [imgId, tId, row.id, colKey, ext.mime, ext.buffer, rCreated, rUpdated]
+                  );
+                } catch (imgErr) {
+                  console.warn('[SQLite] Failed to persist row_image:', imgErr);
+                }
+              }
+            }
+
+            // Extract & save binary images from richContent
+            if (row.richContent && typeof row.richContent === 'string' && row.richContent.includes('<img')) {
+              const matches = row.richContent.matchAll(/<img[^>]+src=["'](data:image\/([a-zA-Z0-9.+_-]+);base64,([^"']+))["'][^>]*>/gi);
+              let richIdx = 0;
+              for (const m of matches) {
+                const mime = `image/${m[2]}`;
+                try {
+                  const buffer = Buffer.from(m[3].replace(/\s+/g, ''), 'base64');
+                  const imgId = `img_${tId}_${row.id}_rich_${richIdx++}`;
+                  db.run(
+                    `INSERT OR REPLACE INTO row_images (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+                    [imgId, tId, row.id, 'richContent', mime, buffer, rCreated, rUpdated]
+                  );
+                } catch {}
+              }
+            }
+
             db.run(
               `INSERT INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?);`,
               [
-                row.id,
-                tbl.id,
-                JSON.stringify(row.data || {}),
-                row.richContent || null,
+                toSqliteParam(row.id),
+                toSqliteParam(tId),
+                JSON.stringify(rData),
+                toSqliteParam(row.richContent),
                 row.stickers ? JSON.stringify(row.stickers) : null,
-                row.createdAt || Date.now(),
-                row.updatedAt || Date.now(),
+                toSqliteParam(rCreated),
+                toSqliteParam(rUpdated),
               ]
             );
           });
@@ -436,56 +555,93 @@ export function saveTable(table: TableDocument): void {
 
   dbInstance.run('BEGIN TRANSACTION;');
   try {
+    const tCreated = table.createdAt || Date.now();
+    const tUpdated = table.updatedAt || Date.now();
+
     dbInstance.run(
       `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?);`,
-      [table.id, table.title, table.description || null, table.defaultView || 'grid', table.createdAt, table.updatedAt]
+      [
+        toSqliteParam(table.id),
+        toSqliteParam(table.title || '새 데이터 테이블'),
+        toSqliteParam(table.description),
+        toSqliteParam(table.defaultView || 'grid'),
+        toSqliteParam(tCreated),
+        toSqliteParam(tUpdated),
+      ]
     );
 
-    // Keep tree item title in sync with table title
+    // Keep tree item title in sync with table title: upsert if missing
     dbInstance.run(
-      `UPDATE tree_items SET title = ?, updated_at = ? WHERE id = ?;`,
-      [table.title, table.updatedAt, table.id]
+      `INSERT INTO tree_items (id, parent_id, title, type, is_expanded, created_at, updated_at, sort_order)
+       VALUES (?, null, ?, 'table', 0, ?, ?, 0)
+       ON CONFLICT(id) DO UPDATE SET title = excluded.title, updated_at = excluded.updated_at;`,
+      [toSqliteParam(table.id), toSqliteParam(table.title || '새 데이터 테이블'), toSqliteParam(tCreated), toSqliteParam(tUpdated)]
     );
 
     // Columns
-    dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [table.id]);
-    table.columns.forEach((col, idx) => {
-      dbInstance!.run(
-        `INSERT INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [
-          col.id,
-          table.id,
-          col.name,
-          col.type,
-          col.width,
-          col.isPrimaryKey ? 1 : 0,
-          col.autoUpdateDate ? 1 : 0,
-          col.options ? JSON.stringify(col.options) : null,
-          col.format || null,
-          idx,
-        ]
-      );
-    });
+    dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(table.id)]);
+    if (Array.isArray(table.columns)) {
+      table.columns.forEach((col, idx) => {
+        if (!col || !col.id) return;
+        dbInstance!.run(
+          `INSERT INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+          [
+            toSqliteParam(col.id),
+            toSqliteParam(table.id),
+            toSqliteParam(col.name || col.id),
+            toSqliteParam(col.type || 'text'),
+            toSqliteParam(col.width || 160),
+            col.isPrimaryKey ? 1 : 0,
+            col.autoUpdateDate ? 1 : 0,
+            col.options ? JSON.stringify(col.options) : null,
+            toSqliteParam(col.format),
+            idx,
+          ]
+        );
+      });
+    }
 
     // Rows
-    dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [table.id]);
-    table.rows.forEach((row) => {
-      dbInstance!.run(
-        `INSERT INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?);`,
-        [
-          row.id,
-          table.id,
-          JSON.stringify(row.data || {}),
-          row.richContent || null,
-          row.stickers ? JSON.stringify(row.stickers) : null,
-          row.createdAt,
-          row.updatedAt,
-        ]
-      );
-    });
+    dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(table.id)]);
+    if (Array.isArray(table.rows)) {
+      table.rows.forEach((row) => {
+        if (!row || !row.id) return;
+        const rData = row.data && typeof row.data === 'object' ? { ...row.data } : {};
+        const rCreated = row.createdAt || Date.now();
+        const rUpdated = row.updatedAt || Date.now();
+
+        // Extract and save binary images
+        for (const [colKey, val] of Object.entries(rData)) {
+          const ext = extractAndDecodeImage(val);
+          if (ext) {
+            const imgId = `img_${table.id}_${row.id}_${colKey}`;
+            try {
+              dbInstance!.run(
+                `INSERT OR REPLACE INTO row_images (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+                [imgId, toSqliteParam(table.id), toSqliteParam(row.id), colKey, ext.mime, ext.buffer, toSqliteParam(rCreated), toSqliteParam(rUpdated)]
+              );
+            } catch {}
+          }
+        }
+
+        dbInstance!.run(
+          `INSERT INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?);`,
+          [
+            toSqliteParam(row.id),
+            toSqliteParam(table.id),
+            JSON.stringify(rData),
+            toSqliteParam(row.richContent),
+            row.stickers ? JSON.stringify(row.stickers) : null,
+            toSqliteParam(rCreated),
+            toSqliteParam(rUpdated),
+          ]
+        );
+      });
+    }
 
     dbInstance.run('COMMIT;');
   } catch (err) {
@@ -510,15 +666,15 @@ export function saveTree(tree: TreeItem[]): void {
         `INSERT INTO tree_items (id, parent_id, title, type, icon, color, is_expanded, created_at, updated_at, sort_order)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
         [
-          item.id,
-          item.parentId || null,
-          item.title,
-          item.type,
-          item.icon || null,
-          item.color || null,
+          toSqliteParam(item.id),
+          toSqliteParam(item.parentId),
+          toSqliteParam(item.title || '새 데이터 테이블'),
+          toSqliteParam(item.type || 'table'),
+          toSqliteParam(item.icon),
+          toSqliteParam(item.color),
           item.isExpanded ? 1 : 0,
-          item.createdAt || Date.now(),
-          item.updatedAt || Date.now(),
+          toSqliteParam(item.createdAt || Date.now()),
+          toSqliteParam(item.updatedAt || Date.now()),
           idx,
         ]
       );
@@ -527,7 +683,7 @@ export function saveTree(tree: TreeItem[]): void {
       if (item.type === 'table') {
         dbInstance!.run(
           `UPDATE tables SET title = ?, updated_at = ? WHERE id = ?;`,
-          [item.title, item.updatedAt || Date.now(), item.id]
+          [toSqliteParam(item.title), toSqliteParam(item.updatedAt || Date.now()), toSqliteParam(item.id)]
         );
       }
     });

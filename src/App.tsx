@@ -272,7 +272,7 @@ export default function App() {
   // Update whole tree and keep table titles in sync
   const handleUpdateTree = async (updatedTree: TreeItem[]) => {
     const updatedTables = { ...workspace.tables };
-    let tablesChanged = false;
+    const now = Date.now();
 
     updatedTree.forEach((item) => {
       if (item.type === 'table' && updatedTables[item.id]) {
@@ -280,19 +280,18 @@ export default function App() {
           updatedTables[item.id] = {
             ...updatedTables[item.id],
             title: item.title,
-            updatedAt: Date.now(),
+            updatedAt: item.updatedAt || now,
           };
-          tablesChanged = true;
         }
       }
     });
 
-    const updatedWs: WorkspaceData = {
+    const updatedWs = ensureWorkspaceTree({
       ...workspace,
       tree: updatedTree,
-      tables: tablesChanged ? updatedTables : workspace.tables,
-      exportedAt: Date.now(),
-    };
+      tables: updatedTables,
+      exportedAt: now,
+    });
     setWorkspace(updatedWs);
     await repository.saveWorkspace(updatedWs);
     await syncToLocalFileIfConnected(updatedWs);
@@ -300,21 +299,46 @@ export default function App() {
 
   // Update specific table and keep tree item in sync
   const handleUpdateTable = async (updatedTable: TableDocument) => {
+    const now = Date.now();
+    const updatedTableWithTime: TableDocument = {
+      ...updatedTable,
+      updatedAt: updatedTable.updatedAt || now,
+    };
     const updatedTables = {
       ...workspace.tables,
-      [updatedTable.id]: updatedTable,
+      [updatedTableWithTime.id]: updatedTableWithTime,
     };
-    const updatedTree = workspace.tree.map((item) =>
-      item.id === updatedTable.id
-        ? { ...item, title: updatedTable.title, updatedAt: updatedTable.updatedAt }
-        : item
-    );
-    const updatedWs: WorkspaceData = {
+    let foundInTree = false;
+    const updatedTree = workspace.tree.map((item) => {
+      if (item.id === updatedTableWithTime.id) {
+        foundInTree = true;
+        return {
+          ...item,
+          title: updatedTableWithTime.title,
+          updatedAt: updatedTableWithTime.updatedAt,
+        };
+      }
+      return item;
+    });
+
+    if (!foundInTree) {
+      updatedTree.push({
+        id: updatedTableWithTime.id,
+        parentId: null,
+        title: updatedTableWithTime.title,
+        type: 'table',
+        isExpanded: false,
+        createdAt: updatedTableWithTime.createdAt || now,
+        updatedAt: updatedTableWithTime.updatedAt,
+      });
+    }
+
+    const updatedWs = ensureWorkspaceTree({
       ...workspace,
       tree: updatedTree,
       tables: updatedTables,
-      exportedAt: Date.now(),
-    };
+      exportedAt: now,
+    });
     setWorkspace(updatedWs);
     await repository.saveWorkspace(updatedWs);
     await syncToLocalFileIfConnected(updatedWs);
@@ -1201,11 +1225,18 @@ export default function App() {
         onClose={() => setIsDataPortabilityOpen(false)}
         currentWorkspace={workspace}
         onMergeWorkspace={handleMergeWorkspace}
-        onLocalFileConnected={(fileName, data) => {
+        onLocalFileConnected={async (fileName, data) => {
+          const ensured = ensureWorkspaceTree(data);
           setConnectedFileName(fileName);
-          setWorkspace(data);
-          const firstTableId = Object.keys(data.tables)[0] || null;
+          setWorkspace(ensured);
+          const firstTableId = Object.keys(ensured.tables)[0] || null;
           if (firstTableId) setActiveTableId(firstTableId);
+          try {
+            await repository.saveWorkspace(ensured);
+            await syncToLocalFileIfConnected(ensured);
+          } catch (e) {
+            console.error('Failed to persist connected local file to DB:', e);
+          }
         }}
       />
 
