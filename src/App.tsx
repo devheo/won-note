@@ -34,6 +34,7 @@ import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
 import { SettingsMenuDropdown } from './components/common/SettingsMenuDropdown';
 import { PerformanceSettingsModal } from './components/modals/PerformanceSettingsModal';
+import { DeleteTreeItemModal } from './components/modals/DeleteTreeItemModal';
 import {
   PerformanceOptions,
   loadPerformanceOptions,
@@ -123,6 +124,7 @@ export default function App() {
   const [aiAgentActiveRow, setAiAgentActiveRow] = useState<TableRow | null>(null);
   const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
   const [headerTitleInput, setHeaderTitleInput] = useState('');
+  const [treeItemToDelete, setTreeItemToDelete] = useState<TreeItem | null>(null);
 
   // Performance Optimization Options State
   const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
@@ -275,10 +277,15 @@ export default function App() {
     const now = Date.now();
 
     updatedTree.forEach((item) => {
-      if (item.type === 'table' && updatedTables[item.id]) {
-        if (updatedTables[item.id].title !== item.title) {
-          updatedTables[item.id] = {
-            ...updatedTables[item.id],
+      if (item.type === 'table') {
+        const target =
+          updatedTables[item.id] ||
+          Object.values(updatedTables).find(
+            (t) => t.id === item.id || t.id.replace(/_/g, '-') === item.id.replace(/_/g, '-')
+          );
+        if (target && target.title !== item.title) {
+          updatedTables[target.id] = {
+            ...target,
             title: item.title,
             updatedAt: item.updatedAt || now,
           };
@@ -293,7 +300,11 @@ export default function App() {
       exportedAt: now,
     });
     setWorkspace(updatedWs);
-    await repository.saveWorkspace(updatedWs);
+    try {
+      await repository.saveWorkspace(updatedWs);
+    } catch (err) {
+      console.error('[Repository] Failed to save workspace during tree update:', err);
+    }
     await syncToLocalFileIfConnected(updatedWs);
   };
 
@@ -310,7 +321,10 @@ export default function App() {
     };
     let foundInTree = false;
     const updatedTree = workspace.tree.map((item) => {
-      if (item.id === updatedTableWithTime.id) {
+      if (
+        item.id === updatedTableWithTime.id ||
+        item.id.replace(/_/g, '-') === updatedTableWithTime.id.replace(/_/g, '-')
+      ) {
         foundInTree = true;
         return {
           ...item,
@@ -340,7 +354,16 @@ export default function App() {
       exportedAt: now,
     });
     setWorkspace(updatedWs);
-    await repository.saveWorkspace(updatedWs);
+    try {
+      await repository.saveWorkspace(updatedWs);
+    } catch (saveWsErr) {
+      console.error('[Repository] Failed to save workspace during table update:', saveWsErr);
+    }
+    try {
+      await repository.saveTable(updatedTableWithTime);
+    } catch (saveTblErr) {
+      console.warn('[Repository] saveTable direct warning:', saveTblErr);
+    }
     await syncToLocalFileIfConnected(updatedWs);
   };
 
@@ -769,8 +792,19 @@ export default function App() {
     await syncToLocalFileIfConnected(updatedWs);
   };
 
-  // Delete Tree Item (Recursive)
-  const handleDeleteTreeItem = async (itemId: string) => {
+  // Request Delete Tree Item (Opens confirmation warning modal first)
+  const handleDeleteTreeItem = (itemId: string) => {
+    const item = workspace.tree.find((t) => t.id === itemId);
+    if (item) {
+      setTreeItemToDelete(item);
+    }
+  };
+
+  // Confirm and Execute Bulk Deletion of Tree Item and Database Records
+  const handleConfirmDeleteTreeItem = async () => {
+    if (!treeItemToDelete) return;
+    const itemId = treeItemToDelete.id;
+
     const findDescendantIds = (rootId: string): string[] => {
       const children = workspace.tree.filter((t) => t.parentId === rootId);
       let ids = [rootId];
@@ -801,8 +835,22 @@ export default function App() {
       setActiveTableId(remainingTableIds[0] || null);
     }
 
-    await repository.saveWorkspace(updatedWs);
+    // Call deleteTable for all affected tables on server repository to cascade delete SQLite data & drop physical table
+    for (const id of idsToDelete) {
+      try {
+        await repository.deleteTable(id);
+      } catch (err) {
+        console.warn(`[Delete] repository.deleteTable(${id}) warning:`, err);
+      }
+    }
+
+    try {
+      await repository.saveWorkspace(updatedWs);
+    } catch (saveErr) {
+      console.error('[Repository] Failed to save workspace after delete:', saveErr);
+    }
     await syncToLocalFileIfConnected(updatedWs);
+    setTreeItemToDelete(null);
   };
 
   // Import CSV/JSON File as a New Table
@@ -1379,6 +1427,16 @@ export default function App() {
           }}
         />
       )}
+
+      {/* 14. Workspace Tree Item Deletion Confirmation Modal */}
+      <DeleteTreeItemModal
+        isOpen={Boolean(treeItemToDelete)}
+        item={treeItemToDelete}
+        tree={workspace.tree}
+        tables={workspace.tables}
+        onConfirm={handleConfirmDeleteTreeItem}
+        onClose={() => setTreeItemToDelete(null)}
+      />
     </div>
   );
 }

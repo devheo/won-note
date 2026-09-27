@@ -86,25 +86,32 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
 
   // 2. Keep tree item titles and table titles in sync bidirectionally
   tree = tree.map((item) => {
-    if (item.type === 'table' && tables[item.id]) {
-      const tbl = tables[item.id];
-      const tblTitle = tbl.title || '';
-      const itemTitle = item.title || '';
+    if (item.type === 'table') {
+      const tbl =
+        tables[item.id] ||
+        Object.values(tables).find((t) => t.id.replace(/_/g, '-') === item.id.replace(/_/g, '-'));
 
-      if (tblTitle && itemTitle && tblTitle !== itemTitle) {
-        // If tree item was updated more recently than the table, sync table's title
-        if ((item.updatedAt || 0) > (tbl.updatedAt || 0)) {
-          tables[item.id] = { ...tbl, title: itemTitle };
-          return item;
-        } else {
-          // Otherwise, sync tree item title from table
+      if (tbl) {
+        const tblTitle = tbl.title || '';
+        const itemTitle = item.title || '';
+
+        if (tblTitle && itemTitle && tblTitle !== itemTitle) {
+          // If tree item was updated more recently or at same timestamp, sync table's title
+          if ((item.updatedAt || 0) >= (tbl.updatedAt || 0)) {
+            tbl.title = itemTitle;
+            tables[tbl.id] = { ...tbl, title: itemTitle };
+            return item;
+          } else {
+            // Otherwise, sync tree item title from table
+            return { ...item, title: tblTitle };
+          }
+        } else if (!itemTitle && tblTitle) {
           return { ...item, title: tblTitle };
+        } else if (!tblTitle && itemTitle) {
+          tbl.title = itemTitle;
+          tables[tbl.id] = { ...tbl, title: itemTitle };
+          return item;
         }
-      } else if (!itemTitle && tblTitle) {
-        return { ...item, title: tblTitle };
-      } else if (!tblTitle && itemTitle) {
-        tables[item.id] = { ...tbl, title: itemTitle };
-        return item;
       }
     }
     return item;

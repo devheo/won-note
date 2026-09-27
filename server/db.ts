@@ -86,6 +86,43 @@ export function extractAndDecodeImage(val: any): { mime: string; buffer: Uint8Ar
 }
 
 /**
+ * Ensure table_rows table has composite primary key (id, table_id) to avoid cross-table ID collisions
+ */
+function ensureTableRowsCompositePrimaryKey(db: Database): void {
+  try {
+    const info = db.exec("PRAGMA table_info(table_rows);");
+    if (info.length > 0 && info[0].values) {
+      const tableIdCol = info[0].values.find((v) => v[1] === 'table_id');
+      // If table_id is not part of primary key (pk column index is 0)
+      if (tableIdCol && Number(tableIdCol[5]) === 0) {
+        console.log('[SQLite DB] Migrating table_rows to composite PRIMARY KEY (id, table_id)...');
+        db.run('BEGIN TRANSACTION;');
+        db.run(`
+          CREATE TABLE IF NOT EXISTS table_rows_migrated (
+            id TEXT NOT NULL,
+            table_id TEXT NOT NULL,
+            data_json TEXT NOT NULL,
+            rich_content TEXT,
+            stickers_json TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (id, table_id)
+          );
+        `);
+        db.run(`INSERT OR REPLACE INTO table_rows_migrated SELECT id, table_id, data_json, rich_content, stickers_json, created_at, updated_at FROM table_rows;`);
+        db.run(`DROP TABLE table_rows;`);
+        db.run(`ALTER TABLE table_rows_migrated RENAME TO table_rows;`);
+        db.run('COMMIT;');
+        console.log('[SQLite DB] Successfully migrated table_rows to composite PRIMARY KEY (id, table_id).');
+      }
+    }
+  } catch (err) {
+    console.error('[SQLite DB] Failed to migrate table_rows schema:', err);
+    try { db.run('ROLLBACK;'); } catch {}
+  }
+}
+
+/**
  * Initialize SQLite Database & Schema
  */
 export async function initDatabase(): Promise<Database> {
@@ -146,13 +183,14 @@ export async function initDatabase(): Promise<Database> {
     );
 
     CREATE TABLE IF NOT EXISTS table_rows (
-      id TEXT PRIMARY KEY,
+      id TEXT NOT NULL,
       table_id TEXT NOT NULL,
       data_json TEXT NOT NULL,
       rich_content TEXT,
       stickers_json TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (id, table_id)
     );
 
     CREATE TABLE IF NOT EXISTS calendar_events (
@@ -196,6 +234,9 @@ export async function initDatabase(): Promise<Database> {
       updated_at INTEGER NOT NULL
     );
   `);
+
+  // Auto-migrate schema if existing table_rows table lacked composite primary key
+  ensureTableRowsCompositePrimaryKey(dbInstance);
 
   // Count existing tables in SQLite DB
   const res = dbInstance.exec("SELECT count(*) FROM tables;");
@@ -350,7 +391,7 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
         const tUpdated = tbl.updatedAt || Date.now();
 
         db.run(
-          `INSERT INTO tables (id, title, description, default_view, created_at, updated_at)
+          `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?);`,
           [
             toSqliteParam(tId),
@@ -366,7 +407,7 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
           tbl.columns.forEach((col, cIdx) => {
             if (!col || !col.id) return;
             db.run(
-              `INSERT INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
+              `INSERT OR REPLACE INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
               [
                 toSqliteParam(col.id),
@@ -427,7 +468,7 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
             }
 
             db.run(
-              `INSERT INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
+              `INSERT OR REPLACE INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?);`,
               [
                 toSqliteParam(row.id),
@@ -562,15 +603,28 @@ export function getWorkspaceData(): WorkspaceData {
   // 4. Physical Tables Auto-Discovery (e.g. table_mti5tvnp, table_mti8bx9v, table_roadmap, table_tasks, table_mu3dp609...)
   // In SQLite, user tables may exist as individual physical relational tables!
   try {
-    const physRes = dbInstance.exec("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'table_%' AND name NOT IN ('table_columns', 'table_rows');");
+    const physRes = dbInstance.exec(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' 
+        AND (name LIKE 'table\\_%' ESCAPE '\\' OR name LIKE 'tbl\\_%' ESCAPE '\\') 
+        AND name NOT IN ('table_columns', 'table_rows', 'tables', 'workspace_meta', 'tree_items', 'calendar_events', 'document_chunks', 'row_images');
+    `);
     if (physRes.length > 0 && physRes[0].values) {
       for (const [rawName] of physRes[0].values) {
         const tableName = String(rawName);
-        // Map table name to standard tableId: e.g. table_mti5tvnp -> table_mti5tvnp (or table-mti5tvnp)
-        const tableId = tableName;
-        
-        // If this table already exists in metadata tables and has rows, don't overwrite unless empty
-        if (tables[tableId] && tables[tableId].rows.length > 0) {
+        // Find existing table in metadata that matches this physical table
+        const matchingKey = Object.keys(tables).find((k) => {
+          if (k === tableName) return true;
+          if (k === tableName.replace(/^table_/, 'table-')) return true;
+          if (k === tableName.replace(/^table_/, '')) return true;
+          if (k.replace(/_/g, '-') === tableName.replace(/_/g, '-')) return true;
+          return false;
+        });
+
+        const tableId = matchingKey || tableName;
+
+        // If this table already exists in metadata tables and has rows, don't overwrite or duplicate!
+        if (tables[tableId] && tables[tableId].rows && tables[tableId].rows.length > 0) {
           continue;
         }
 
@@ -712,20 +766,45 @@ export function getWorkspaceData(): WorkspaceData {
           tableTitle = `📊 ${tableTitle}`;
         }
 
-        // If existing table had a custom title, keep it
-        if (tables[tableId]?.title) {
+        // Check if tree item or existing table has a custom title:
+        const existingTreeItem = tree.find(
+          (t) => t.id === tableId || t.id.replace(/_/g, '-') === tableId.replace(/_/g, '-')
+        );
+        if (existingTreeItem?.title) {
+          tableTitle = existingTreeItem.title;
+        } else if (tables[tableId]?.title) {
           tableTitle = tables[tableId].title;
         }
 
-        tables[tableId] = {
-          id: tableId,
-          title: tableTitle,
-          defaultView: 'grid',
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          columns,
-          rows,
-        };
+        if (tables[tableId]) {
+          if (!tables[tableId].columns || tables[tableId].columns.length === 0) {
+            tables[tableId].columns = columns;
+          }
+          tables[tableId].rows = rows;
+        } else {
+          tables[tableId] = {
+            id: tableId,
+            title: tableTitle,
+            defaultView: 'grid',
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            columns,
+            rows,
+          };
+        }
+
+        // Also ensure it is present in the tree
+        if (!tree.find((t) => t.id === tableId || t.id.replace(/_/g, '-') === tableId.replace(/_/g, '-'))) {
+          tree.push({
+            id: tableId,
+            parentId: null,
+            title: tableTitle,
+            type: 'table',
+            isExpanded: false,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          });
+        }
       }
     }
   } catch (err) {
@@ -798,7 +877,7 @@ export function saveTable(table: TableDocument): void {
       table.columns.forEach((col, idx) => {
         if (!col || !col.id) return;
         dbInstance!.run(
-          `INSERT INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
+          `INSERT OR REPLACE INTO table_columns (id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format, sort_order)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             toSqliteParam(col.id),
@@ -841,7 +920,7 @@ export function saveTable(table: TableDocument): void {
         }
 
         dbInstance!.run(
-          `INSERT INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
+          `INSERT OR REPLACE INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, ?, ?);`,
           [
             toSqliteParam(row.id),
@@ -911,17 +990,60 @@ export function saveTree(tree: TreeItem[]): void {
 }
 
 /**
- * Delete a TableDocument from SQLite
+ * Delete a TableDocument from SQLite and drop any physical table
  */
 export function deleteTable(tableId: string): void {
   if (!dbInstance) throw new Error('Database not initialized');
   dbInstance.run('BEGIN TRANSACTION;');
   try {
-    dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [tableId]);
-    dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [tableId]);
-    dbInstance.run("DELETE FROM calendar_events WHERE table_id = ?;", [tableId]);
-    dbInstance.run("DELETE FROM tables WHERE id = ?;", [tableId]);
-    dbInstance.run("DELETE FROM tree_items WHERE id = ?;", [tableId]);
+    const ids = Array.from(
+      new Set([
+        tableId,
+        tableId.replace(/-/g, '_'),
+        tableId.replace(/_/g, '-'),
+        tableId.replace(/^table[-_]/, ''),
+      ])
+    );
+
+    for (const tid of ids) {
+      dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance.run("DELETE FROM calendar_events WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance.run("DELETE FROM row_images WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance.run("DELETE FROM tables WHERE id = ?;", [toSqliteParam(tid)]);
+      dbInstance.run("DELETE FROM tree_items WHERE id = ?;", [toSqliteParam(tid)]);
+    }
+
+    // Also drop physical table if it exists in SQLite
+    const possibleTableNames = Array.from(
+      new Set([
+        tableId,
+        tableId.replace(/-/g, '_'),
+        tableId.startsWith('table_') ? tableId : `table_${tableId}`,
+        tableId.startsWith('table-') ? tableId.replace(/^table-/, 'table_') : `table_${tableId}`,
+      ])
+    );
+
+    const systemTables = [
+      'tables',
+      'table_columns',
+      'table_rows',
+      'workspace_meta',
+      'tree_items',
+      'calendar_events',
+      'document_chunks',
+      'row_images',
+    ];
+    for (const ptName of possibleTableNames) {
+      if (!systemTables.includes(ptName)) {
+        try {
+          dbInstance.run(`DROP TABLE IF EXISTS "${ptName}";`);
+        } catch (dropErr) {
+          console.warn(`[SQLite] Failed dropping physical table ${ptName}:`, dropErr);
+        }
+      }
+    }
+
     dbInstance.run('COMMIT;');
   } catch (err) {
     dbInstance.run('ROLLBACK;');
