@@ -294,10 +294,44 @@ export async function initDatabase(): Promise<Database> {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY,
+      table_id TEXT,
+      title TEXT,
+      content TEXT,
+      data_json TEXT,
+      rich_content TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    -- 1.1 SQL Compound Indexes for Full Table Scan Prevention & O(1) Cursor Queries
+    CREATE INDEX IF NOT EXISTS idx_notes_updated_at_id ON notes(updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_notes_table_id ON notes(table_id);
+    CREATE INDEX IF NOT EXISTS idx_table_rows_updated_at_id ON table_rows(updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_table_rows_table_id_updated_at ON table_rows(table_id, updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_tables_updated_at_id ON tables(updated_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_tree_items_parent_id ON tree_items(parent_id);
   `);
 
   // Auto-migrate schema if existing table_rows table lacked composite primary key
   ensureTableRowsCompositePrimaryKey(dbInstance);
+
+  // Sync table_rows to notes table if notes table is empty
+  try {
+    const notesCountRes = dbInstance.exec("SELECT count(*) FROM notes;");
+    const notesCount = Number(notesCountRes[0]?.values[0]?.[0] || 0);
+    if (notesCount === 0) {
+      dbInstance.run(`
+        INSERT OR IGNORE INTO notes (id, table_id, title, content, data_json, rich_content, created_at, updated_at)
+        SELECT id, table_id, id, rich_content, data_json, rich_content, created_at, updated_at FROM table_rows;
+      `);
+      console.log('[SQLite] Synced table_rows to notes table.');
+    }
+  } catch (syncNotesErr) {
+    console.warn('[SQLite] Notice during notes sync:', syncNotesErr);
+  }
 
   // Count existing tables in SQLite DB
   const res = dbInstance.exec("SELECT count(*) FROM tables;");
@@ -328,6 +362,7 @@ export async function initDatabase(): Promise<Database> {
   // NEVER overwrite it with user_data.json!
   if (dbTableCount > 0) {
     console.log(`[SQLite] Keeping existing SQLite database as authoritative source (${dbTableCount} tables).`);
+    persistDatabase(true);
     syncDbToUserDataJson();
     return dbInstance;
   }
@@ -425,10 +460,11 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
       });
     }
 
-    // 3. Tables, Columns, Rows
+    // 3. Tables, Columns, Rows, Notes
     db.run('DELETE FROM tables;');
     db.run('DELETE FROM table_columns;');
     db.run('DELETE FROM table_rows;');
+    db.run('DELETE FROM notes;');
 
     if (data.tables && typeof data.tables === 'object') {
       Object.values(data.tables).forEach((tbl) => {
@@ -524,6 +560,23 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
                 JSON.stringify(rData),
                 toSqliteParam(row.richContent),
                 row.stickers ? JSON.stringify(row.stickers) : null,
+                toSqliteParam(rCreated),
+                toSqliteParam(rUpdated),
+              ]
+            );
+
+            // Sync to notes table
+            const rowTitle = rData.name || rData.title || Object.values(rData)[0] || row.id;
+            db.run(
+              `INSERT OR REPLACE INTO notes (id, table_id, title, content, data_json, rich_content, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+              [
+                toSqliteParam(row.id),
+                toSqliteParam(tId),
+                toSqliteParam(String(rowTitle)),
+                toSqliteParam(row.richContent || JSON.stringify(rData)),
+                JSON.stringify(rData),
+                toSqliteParam(row.richContent),
                 toSqliteParam(rCreated),
                 toSqliteParam(rUpdated),
               ]
@@ -977,6 +1030,7 @@ export function saveTable(table: TableDocument): void {
 
     // Rows
     dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(table.id)]);
+    dbInstance.run("DELETE FROM notes WHERE table_id = ?;", [toSqliteParam(table.id)]);
     if (Array.isArray(table.rows)) {
       table.rows.forEach((row) => {
         if (!row || !row.id) return;
@@ -1008,6 +1062,23 @@ export function saveTable(table: TableDocument): void {
             JSON.stringify(rData),
             toSqliteParam(row.richContent),
             row.stickers ? JSON.stringify(row.stickers) : null,
+            toSqliteParam(rCreated),
+            toSqliteParam(rUpdated),
+          ]
+        );
+
+        // Sync to notes table
+        const rowTitle = rData.name || rData.title || Object.values(rData)[0] || row.id;
+        dbInstance!.run(
+          `INSERT OR REPLACE INTO notes (id, table_id, title, content, data_json, rich_content, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+          [
+            toSqliteParam(row.id),
+            toSqliteParam(table.id),
+            toSqliteParam(String(rowTitle)),
+            toSqliteParam(row.richContent || JSON.stringify(rData)),
+            JSON.stringify(rData),
+            toSqliteParam(row.richContent),
             toSqliteParam(rCreated),
             toSqliteParam(rUpdated),
           ]
@@ -1099,6 +1170,7 @@ export function deleteTable(tableId: string): void {
 
     for (const tid of ids) {
       dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance.run("DELETE FROM notes WHERE table_id = ?;", [toSqliteParam(tid)]);
       dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(tid)]);
       dbInstance.run("DELETE FROM calendar_events WHERE table_id = ?;", [toSqliteParam(tid)]);
       dbInstance.run("DELETE FROM row_images WHERE table_id = ?;", [toSqliteParam(tid)]);
@@ -1120,6 +1192,7 @@ export function deleteTable(tableId: string): void {
       'tables',
       'table_columns',
       'table_rows',
+      'notes',
       'workspace_meta',
       'tree_items',
       'calendar_events',
@@ -1224,6 +1297,7 @@ export function cleanDatabaseConsistency(keepTableIds?: string[]): { dropped: st
         // If table doesn't match any valid tree ID, drop it (even if validTreeTableIds is empty!)
         if (!matchesValid) {
           dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [tId]);
+          dbInstance.run("DELETE FROM notes WHERE table_id = ?;", [tId]);
           dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [tId]);
           dbInstance.run("DELETE FROM calendar_events WHERE table_id = ?;", [tId]);
           dbInstance.run("DELETE FROM row_images WHERE table_id = ?;", [tId]);
@@ -1240,7 +1314,7 @@ export function cleanDatabaseConsistency(keepTableIds?: string[]): { dropped: st
       SELECT name FROM sqlite_master 
       WHERE type='table' 
         AND (name LIKE 'table\\_%' ESCAPE '\\' OR name LIKE 'tbl\\_%' ESCAPE '\\') 
-        AND name NOT IN ('table_columns', 'table_rows', 'tables', 'workspace_meta', 'tree_items', 'calendar_events', 'document_chunks', 'row_images');
+        AND name NOT IN ('table_columns', 'table_rows', 'notes', 'tables', 'workspace_meta', 'tree_items', 'calendar_events', 'document_chunks', 'row_images');
     `);
     if (physRes.length > 0 && physRes[0].values) {
       for (const [rawName] of physRes[0].values) {
@@ -1436,6 +1510,188 @@ export function getRowImage(imageId: string): { id: string; mimeType: string; da
     id: String(val[0]),
     mimeType: String(val[1] || 'image/png'),
     data: val[2] as Uint8Array,
+  };
+}
+
+/**
+ * 1.2. Workspace Metadata API (Replaces 100MB+ full workspace dumps)
+ */
+export function getWorkspaceMeta(): {
+  last_updated_at: number;
+  total_count: number;
+  tableCount: number;
+  treeCount: number;
+} {
+  if (!dbInstance) throw new Error('Database not initialized');
+  let totalCount = 0;
+  try {
+    const res = dbInstance.exec("SELECT count(*) FROM notes;");
+    totalCount = Number(res[0]?.values[0]?.[0] || 0);
+  } catch {
+    try {
+      const resRows = dbInstance.exec("SELECT count(*) FROM table_rows;");
+      totalCount = Number(resRows[0]?.values[0]?.[0] || 0);
+    } catch {}
+  }
+
+  return {
+    last_updated_at: getLastUpdatedTimestamp(),
+    total_count: totalCount,
+    tableCount: getTableCount(),
+    treeCount: getTreeCount(),
+  };
+}
+
+/**
+ * 1.3. O(1) Cursor-based Pagination API for notes
+ * Prevents OFFSET degradation on 1000MB+ datasets.
+ * Query:
+ *   WHERE (updated_at < :last_updated_at) OR (updated_at = :last_updated_at AND id < :last_id)
+ *   ORDER BY updated_at DESC, id DESC LIMIT :limit;
+ */
+export function getNotesCursor(
+  cursor?: string,
+  limit: number = 50,
+  tableId?: string
+): {
+  data: any[];
+  pagination: {
+    next_cursor: string | null;
+    has_more: boolean;
+  };
+} {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const safeLimit = Math.min(Math.max(limit, 1), 200);
+
+  let query: string;
+  let params: any[];
+
+  if (cursor) {
+    const parts = cursor.split('_');
+    const lastUpdatedAt = parseInt(parts[0], 10) || 0;
+    const lastId = parts.slice(1).join('_');
+
+    if (tableId) {
+      query = `
+        SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+        FROM notes
+        WHERE table_id = ? AND ((updated_at < ?) OR (updated_at = ? AND id < ?))
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?;
+      `;
+      params = [toSqliteParam(tableId), lastUpdatedAt, lastUpdatedAt, toSqliteParam(lastId), safeLimit];
+    } else {
+      query = `
+        SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+        FROM notes
+        WHERE (updated_at < ?) OR (updated_at = ? AND id < ?)
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?;
+      `;
+      params = [lastUpdatedAt, lastUpdatedAt, toSqliteParam(lastId), safeLimit];
+    }
+  } else {
+    if (tableId) {
+      query = `
+        SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+        FROM notes
+        WHERE table_id = ?
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?;
+      `;
+      params = [toSqliteParam(tableId), safeLimit];
+    } else {
+      query = `
+        SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+        FROM notes
+        ORDER BY updated_at DESC, id DESC
+        LIMIT ?;
+      `;
+      params = [safeLimit];
+    }
+  }
+
+  const res = dbInstance.exec(query, params);
+  const rows: any[] = [];
+  if (res.length > 0 && res[0].values) {
+    const cols = res[0].columns;
+    res[0].values.forEach((v) => {
+      const rowObj: any = {};
+      cols.forEach((c, idx) => {
+        rowObj[c] = v[idx];
+      });
+      if (typeof rowObj.data_json === 'string') {
+        try { rowObj.data = JSON.parse(rowObj.data_json); } catch {}
+      }
+      rows.push(rowObj);
+    });
+  }
+
+  const hasMore = rows.length === safeLimit;
+  let nextCursor: string | null = null;
+  if (hasMore && rows.length > 0) {
+    const last = rows[rows.length - 1];
+    nextCursor = `${last.updated_at}_${last.id}`;
+  }
+
+  return {
+    data: rows,
+    pagination: {
+      next_cursor: nextCursor,
+      has_more: hasMore,
+    },
+  };
+}
+
+/**
+ * 1.4. Delta Sync API for notes
+ * SELECT * FROM notes WHERE updated_at > :since ORDER BY updated_at ASC LIMIT :limit;
+ */
+export function getNotesSync(
+  since: number = 0,
+  limit: number = 1000
+): {
+  data: any[];
+  since: number;
+  latest_updated_at: number;
+  count: number;
+} {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const safeLimit = Math.min(Math.max(limit, 1), 5000);
+
+  const query = `
+    SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+    FROM notes
+    WHERE updated_at > ?
+    ORDER BY updated_at ASC
+    LIMIT ?;
+  `;
+  const res = dbInstance.exec(query, [since, safeLimit]);
+  const rows: any[] = [];
+  let latestUpdatedAt = since;
+
+  if (res.length > 0 && res[0].values) {
+    const cols = res[0].columns;
+    res[0].values.forEach((v) => {
+      const rowObj: any = {};
+      cols.forEach((c, idx) => {
+        rowObj[c] = v[idx];
+      });
+      if (typeof rowObj.data_json === 'string') {
+        try { rowObj.data = JSON.parse(rowObj.data_json); } catch {}
+      }
+      rows.push(rowObj);
+      if (typeof rowObj.updated_at === 'number' && rowObj.updated_at > latestUpdatedAt) {
+        latestUpdatedAt = rowObj.updated_at;
+      }
+    });
+  }
+
+  return {
+    data: rows,
+    since,
+    latest_updated_at: latestUpdatedAt,
+    count: rows.length,
   };
 }
 

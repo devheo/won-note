@@ -21,6 +21,9 @@ import {
   searchDocumentChunks,
   getRowImage,
   reloadDatabaseFromDisk,
+  getWorkspaceMeta,
+  getNotesCursor,
+  getNotesSync,
 } from './server/db';
 import {
   checkOllamaStatus,
@@ -53,14 +56,66 @@ async function startServer() {
     res.json({ status: 'ok', database: 'sqlite3', timestamp: Date.now() });
   });
 
-  // --- Multi-PC Version & Change Tracking Endpoint ---
+  // --- Multi-PC Version & Change Tracking Endpoint with HTTP ETag / 304 Not Modified Support ---
   app.get('/api/workspace/version', (req, res) => {
     try {
+      const lastUpdated = getLastUpdatedTimestamp();
+      const tableCount = getTableCount();
+      const treeCount = getTreeCount();
+      const etag = `W/"${lastUpdated}-${tableCount}-${treeCount}"`;
+
+      // 1.5. If client provided matching ETag, return 304 Not Modified immediately (0 bytes payload)
+      if (req.headers['if-none-match'] === etag) {
+        res.status(304).end();
+        return;
+      }
+
+      res.setHeader('ETag', etag);
       res.json({
-        lastUpdated: getLastUpdatedTimestamp(),
-        tableCount: getTableCount(),
-        treeCount: getTreeCount(),
+        lastUpdated,
+        tableCount,
+        treeCount,
       });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- 1.2. Workspace Metadata API (Replaces 100MB+ full payload dumps) ---
+  app.get('/api/workspace/meta', (req, res) => {
+    try {
+      const meta = getWorkspaceMeta();
+      res.json({
+        last_updated_at: meta.last_updated_at,
+        total_count: meta.total_count,
+        table_count: meta.tableCount,
+        tree_count: meta.treeCount,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- 1.3. O(1) Cursor-based Pagination API for notes ---
+  app.get('/api/notes', (req, res) => {
+    try {
+      const cursor = req.query.cursor as string | undefined;
+      const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '50', 10), 1), 200);
+      const tableId = req.query.tableId as string | undefined;
+      const result = getNotesCursor(cursor, limit, tableId);
+      res.json(result);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- 1.4. Delta (Changed) Synchronization API for notes ---
+  app.get('/api/notes/sync', (req, res) => {
+    try {
+      const since = parseInt((req.query.since as string) || '0', 10);
+      const limit = Math.min(Math.max(parseInt((req.query.limit as string) || '1000', 10), 1), 5000);
+      const result = getNotesSync(since, limit);
+      res.json(result);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

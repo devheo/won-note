@@ -172,6 +172,9 @@ export interface IWorkspaceRepository {
   getStorageInfo(): Promise<{ type: 'indexeddb' | 'server'; status: 'connected' | 'offline'; totalItems: number; sizeBytes?: number }>;
   renameTable?(tableId: string, newTitle: string): Promise<void>;
   cleanDatabase?(keepTableIds?: string[]): Promise<any>;
+  getWorkspaceMeta?(): Promise<{ last_updated_at: number; total_count: number; table_count?: number; tree_count?: number }>;
+  getNotesCursor?(cursor?: string, limit?: number, tableId?: string): Promise<{ data: any[]; pagination: { next_cursor: string | null; has_more: boolean } }>;
+  syncNotes?(since: number): Promise<{ data: any[]; since: number; latest_updated_at: number; count: number }>;
   getEvents?(tableId?: string): Promise<CalendarEvent[]>;
   saveEvent?(event: CalendarEvent, tableId: string): Promise<void>;
   deleteEvent?(eventId: string): Promise<void>;

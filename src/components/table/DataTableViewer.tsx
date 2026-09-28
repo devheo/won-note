@@ -534,17 +534,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           [colId]: latestWidth,
         }));
 
-        // Persist to user_env.json
+        // 2.6. UI Configuration Separation:
+        // Persist column width to user_env.json in background asynchronously
+        // NEVER trigger full data fetch, backend table reload, or browser refresh!
         envService.setColumnWidth(table.id, colId, latestWidth);
-
-        const updatedCols = table.columns.map((c) =>
-          c.id === colId ? { ...c, width: latestWidth } : c
-        );
-        onUpdateTable({
-          ...table,
-          columns: updatedCols,
-          updatedAt: Date.now(),
-        });
       }
     };
 

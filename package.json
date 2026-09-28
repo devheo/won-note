@@ -40,6 +40,7 @@
     "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^5.0.4",
     "canvas-confetti": "^1.9.4",
+    "dexie": "^4.4.6",
     "diff": "^9.0.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",

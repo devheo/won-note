@@ -92,11 +92,33 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   const [dropTargetId, setDropTargetId] = useState<string | null>(null);
   const [dropPosition, setDropPosition] = useState<'inside' | 'before' | 'after' | null>(null);
 
+  // 2.5. Tree UI Expand/Collapse Isolation:
+  // Decoupled from server persistence. Stored strictly in local client state and localStorage.
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem('wonbee_expanded_tree_folders');
+      if (saved) {
+        const arr = JSON.parse(saved);
+        if (Array.isArray(arr)) return new Set(arr);
+      }
+    } catch {}
+    return new Set(tree.filter((t) => t.isExpanded !== false).map((t) => t.id));
+  });
+
   const toggleFolder = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    onUpdateTree(
-      tree.map((item) => (item.id === id ? { ...item, isExpanded: !item.isExpanded } : item))
-    );
+    setExpandedFolderIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      try {
+        localStorage.setItem('wonbee_expanded_tree_folders', JSON.stringify(Array.from(next)));
+      } catch {}
+      return next;
+    });
   };
 
   const handleStartRename = (item: TreeItem, e: React.MouseEvent) => {
@@ -271,7 +293,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                   onClick={(e) => toggleFolder(item.id, e)}
                   className="p-0.5 rounded hover:bg-black/10 transition-colors flex-shrink-0"
                 >
-                  {item.isExpanded ? (
+                  {expandedFolderIds.has(item.id) ? (
                     <ChevronDown className="w-3.5 h-3.5 text-stone-500" />
                   ) : (
                     <ChevronRight className="w-3.5 h-3.5 text-stone-500" />
@@ -284,7 +306,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
               {/* Item Type Icon */}
               <div className="flex-shrink-0">
                 {isFolder ? (
-                  item.isExpanded ? (
+                  expandedFolderIds.has(item.id) ? (
                     <FolderOpen className="w-4 h-4 text-amber-500 dark:text-amber-400" />
                   ) : (
                     <Folder className="w-4 h-4 text-amber-500/80 dark:text-amber-400/80" />
@@ -419,7 +441,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
           )}
 
           {/* Recursive Render Child Nodes if Folder is Expanded */}
-          {isFolder && item.isExpanded && renderTreeNodes(item.id, depth + 1)}
+          {isFolder && expandedFolderIds.has(item.id) && renderTreeNodes(item.id, depth + 1)}
         </div>
       );
     });

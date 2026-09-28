@@ -166,6 +166,62 @@ export class IndexedDBWorkspaceRepository implements IWorkspaceRepository {
   async cleanDatabase(keepTableIds?: string[]): Promise<any> {
     return { success: true };
   }
+
+  async getWorkspaceMeta() {
+    const ws = await this.loadWorkspace();
+    const rowCount = Object.values(ws.tables).reduce((sum, t) => sum + (t.rows?.length || 0), 0);
+    return {
+      last_updated_at: ws.exportedAt || Date.now(),
+      total_count: rowCount,
+      table_count: Object.keys(ws.tables).length,
+      tree_count: ws.tree.length,
+    };
+  }
+
+  async getNotesCursor(cursor?: string, limit: number = 50, tableId?: string) {
+    const ws = await this.loadWorkspace();
+    let rows: any[] = [];
+    if (tableId && ws.tables[tableId]) {
+      rows = ws.tables[tableId].rows || [];
+    } else {
+      rows = Object.values(ws.tables).flatMap((t) => t.rows || []);
+    }
+    rows.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+    if (cursor) {
+      const parts = cursor.split('_');
+      const curTime = parseInt(parts[0], 10);
+      const curId = parts.slice(1).join('_');
+      rows = rows.filter((r) => (r.updatedAt || 0) < curTime || ((r.updatedAt || 0) === curTime && r.id < curId));
+    }
+
+    const sliced = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
+    let nextCursor: string | null = null;
+    if (hasMore && sliced.length > 0) {
+      const last = sliced[sliced.length - 1];
+      nextCursor = `${last.updatedAt || 0}_${last.id}`;
+    }
+
+    return {
+      data: sliced,
+      pagination: {
+        next_cursor: nextCursor,
+        has_more: hasMore,
+      },
+    };
+  }
+
+  async syncNotes(since: number) {
+    const ws = await this.loadWorkspace();
+    const changed = Object.values(ws.tables).flatMap((t) => (t.rows || []).filter((r) => (r.updatedAt || 0) > since));
+    return {
+      data: changed,
+      since,
+      latest_updated_at: Date.now(),
+      count: changed.length,
+    };
+  }
 }
 
 /**
@@ -181,7 +237,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async loadWorkspace(): Promise<WorkspaceData> {
     try {
-      const res = await fetch(`${this.serverUrl}/workspace?_t=${Date.now()}`, {
+      const res = await fetch(`${this.serverUrl}/workspace`, {
         cache: 'no-store',
         headers: {
           'Content-Type': 'application/json',
@@ -222,7 +278,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async getTable(tableId: string): Promise<TableDocument | null> {
     try {
-      const res = await fetch(`${this.serverUrl}/tables/${tableId}?_t=${Date.now()}`, {
+      const res = await fetch(`${this.serverUrl}/tables/${tableId}`, {
         cache: 'no-store',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -278,6 +334,44 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     } catch (err) {
       console.error('[Repository] cleanDatabase failed:', err);
       throw err;
+    }
+  }
+
+  async getWorkspaceMeta() {
+    try {
+      const res = await fetch(`${this.serverUrl}/workspace/meta`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      return this.localFallback.getWorkspaceMeta();
+    }
+  }
+
+  async getNotesCursor(cursor?: string, limit: number = 50, tableId?: string) {
+    try {
+      let url = `${this.serverUrl}/notes?limit=${limit}`;
+      if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+      if (tableId) url += `&tableId=${encodeURIComponent(tableId)}`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      return this.localFallback.getNotesCursor(cursor, limit, tableId);
+    }
+  }
+
+  async syncNotes(since: number) {
+    try {
+      const res = await fetch(`${this.serverUrl}/notes/sync?since=${since}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (Array.isArray(data.data) && data.data.length > 0) {
+        // Sync delta notes into Dexie in background
+        wonbeeDB.applyDeltaNotes(data.data).catch(() => {});
+      }
+      return data;
+    } catch (err) {
+      return this.localFallback.syncNotes(since);
     }
   }
 

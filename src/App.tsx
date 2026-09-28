@@ -17,6 +17,7 @@ import {
   applyAutoUpdateDateToRow,
 } from './utils/dateColumnUtils';
 import { WorkspaceRepositoryFactory } from './services/storage/repository';
+import { wonbeeDexieDB } from './services/storage/dexieDb';
 import { localFileService } from './services/storage/localFileService';
 import { INITIAL_WORKSPACE_DATA } from './data/initialData';
 import { ensureWorkspaceTree } from './utils/workspaceTreeUtils';
@@ -187,12 +188,27 @@ export default function App() {
   }, []);
 
   const lastLoadedTimestampRef = useRef<number>(0);
+  const lastEtagRef = useRef<string | null>(null);
 
-  // Load initial or background workspace data
-  // isSilent=false shows initial loading screen; isSilent=true updates state seamlessly without unmounting the UI
+  // Load initial or background workspace data with Stale-While-Revalidate
+  // isSilent=false shows initial loading screen if no cache; isSilent=true updates state seamlessly without unmounting the UI
   const loadWorkspaceData = useCallback(async (isSilent = false) => {
+    // 2.2. Stale-While-Revalidate: load cached Dexie data immediately to render in <10ms
+    if (!isSilent) {
+      try {
+        const cached = await wonbeeDexieDB.loadWorkspace();
+        if (cached && Object.keys(cached.tables).length > 0) {
+          setWorkspace(cached);
+          setIsLoading(false); // UI renders instantly from IndexedDB!
+        } else {
+          setIsLoading(true);
+        }
+      } catch {
+        setIsLoading(true);
+      }
+    }
+
     try {
-      if (!isSilent) setIsLoading(true);
       const rawData = await repository.loadWorkspace();
       const data = ensureWorkspaceTree(rawData);
 
@@ -261,7 +277,7 @@ export default function App() {
   }, [loadWorkspaceData]);
 
   // Multi-PC Auto-Sync: Check server for remote changes every 2.5s, on window focus, or tab visibility change
-  // Runs 100% silently in background without flickering or reloading the whole page!
+  // Uses HTTP ETag / 304 Not Modified to avoid body transfers and unnecessary polling traffic!
   useEffect(() => {
     if (!useServer) return;
 
@@ -275,18 +291,37 @@ export default function App() {
 
       isChecking = true;
       try {
-        const res = await fetch(`${serverUrl}/workspace/version?_t=${Date.now()}`, {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (lastEtagRef.current) {
+          headers['If-None-Match'] = lastEtagRef.current;
+        }
+
+        // 2.1. Removed ?_t= parameter; 2.4. Smart Polling with ETag / 304 Not Modified
+        const res = await fetch(`${serverUrl}/workspace/version`, {
           cache: 'no-store',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
         });
+
+        // If 304 Not Modified, server data has not changed -> zero byte payload & zero overhead!
+        if (res.status === 304) {
+          return;
+        }
+
         if (!res.ok) return;
+
+        const etag = res.headers.get('ETag');
+        if (etag) lastEtagRef.current = etag;
+
         const info = await res.json();
         const localTime = Math.max(lastLoadedTimestampRef.current, workspace.exportedAt || 0);
 
         // If server was updated after our local state
         if (info.lastUpdated && info.lastUpdated > localTime + 600) {
-          console.log('[Multi-PC Sync] Remote updates detected on server, silently syncing in background...');
+          console.log('[Multi-PC Sync] Remote updates detected on server, delta syncing in background...');
           lastLoadedTimestampRef.current = info.lastUpdated;
+          if (repository.syncNotes) {
+            await repository.syncNotes(localTime);
+          }
           await loadWorkspaceData(true); // SILENT SYNC! Never shows bouncing bee loading overlay!
         }
       } catch {
