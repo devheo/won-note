@@ -170,6 +170,8 @@ export interface IWorkspaceRepository {
   saveTree(tree: TreeItem[]): Promise<void>;
   mergeWorkspace(imported: WorkspaceData, mode: 'merge' | 'replace' | 'keep_both'): Promise<WorkspaceData>;
   getStorageInfo(): Promise<{ type: 'indexeddb' | 'server'; status: 'connected' | 'offline'; totalItems: number; sizeBytes?: number }>;
+  renameTable?(tableId: string, newTitle: string): Promise<void>;
+  cleanDatabase?(keepTableIds?: string[]): Promise<any>;
   getEvents?(tableId?: string): Promise<CalendarEvent[]>;
   saveEvent?(event: CalendarEvent, tableId: string): Promise<void>;
   deleteEvent?(eventId: string): Promise<void>;

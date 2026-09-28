@@ -63,13 +63,19 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
     [];
   let tree: TreeItem[] = Array.isArray(rawTree) ? [...rawTree] : [];
 
-  // Set of IDs already in tree
-  const existingIdsInTree = new Set(tree.map((item) => item.id));
+  // Set of IDs already in tree (including hyphen/underscore variants)
+  const existingIdsInTree = new Set<string>();
+  tree.forEach((item) => {
+    existingIdsInTree.add(item.id);
+    existingIdsInTree.add(item.id.replace(/-/g, '_'));
+    existingIdsInTree.add(item.id.replace(/_/g, '-'));
+  });
 
-  // 1. Auto-generate tree node for any table that is not in the tree
+  // 1. Auto-generate tree node for any valid table that is not in the tree
   Object.keys(tables).forEach((tableId) => {
     if (!existingIdsInTree.has(tableId)) {
       const table = tables[tableId];
+      if (!table) return;
       const newTreeItem: TreeItem = {
         id: tableId,
         parentId: null,
@@ -81,6 +87,8 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
       };
       tree.push(newTreeItem);
       existingIdsInTree.add(tableId);
+      existingIdsInTree.add(tableId.replace(/-/g, '_'));
+      existingIdsInTree.add(tableId.replace(/_/g, '-'));
     }
   });
 
@@ -89,17 +97,20 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
     if (item.type === 'table') {
       const tbl =
         tables[item.id] ||
-        Object.values(tables).find((t) => t.id.replace(/_/g, '-') === item.id.replace(/_/g, '-'));
+        Object.values(tables).find(
+          (t) => t.id === item.id || t.id.replace(/_/g, '-') === item.id.replace(/_/g, '-')
+        );
 
       if (tbl) {
-        const tblTitle = tbl.title || '';
-        const itemTitle = item.title || '';
+        const tblTitle = (tbl.title || '').trim();
+        const itemTitle = (item.title || '').trim();
 
         if (tblTitle && itemTitle && tblTitle !== itemTitle) {
           // If tree item was updated more recently or at same timestamp, sync table's title
           if ((item.updatedAt || 0) >= (tbl.updatedAt || 0)) {
             tbl.title = itemTitle;
             tables[tbl.id] = { ...tbl, title: itemTitle };
+            if (tables[item.id]) tables[item.id] = { ...tables[item.id], title: itemTitle };
             return item;
           } else {
             // Otherwise, sync tree item title from table
@@ -110,6 +121,7 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
         } else if (!tblTitle && itemTitle) {
           tbl.title = itemTitle;
           tables[tbl.id] = { ...tbl, title: itemTitle };
+          if (tables[item.id]) tables[item.id] = { ...tables[item.id], title: itemTitle };
           return item;
         }
       }

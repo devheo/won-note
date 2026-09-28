@@ -3,7 +3,7 @@
  * Minimalist Workspace & Data Grid Application
  */
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   WorkspaceData,
   TableDocument,
@@ -186,10 +186,13 @@ export default function App() {
     }
   }, []);
 
-  // Load initial workspace on mount
-  const loadWorkspaceData = useCallback(async () => {
+  const lastLoadedTimestampRef = useRef<number>(0);
+
+  // Load initial or background workspace data
+  // isSilent=false shows initial loading screen; isSilent=true updates state seamlessly without unmounting the UI
+  const loadWorkspaceData = useCallback(async (isSilent = false) => {
     try {
-      setIsLoading(true);
+      if (!isSilent) setIsLoading(true);
       const rawData = await repository.loadWorkspace();
       const data = ensureWorkspaceTree(rawData);
 
@@ -222,7 +225,10 @@ export default function App() {
       });
       const finalData = needsSave ? { ...data, tables: cleanedTables } : data;
       setWorkspace(finalData);
-      if (needsSave) {
+      lastLoadedTimestampRef.current = finalData.exportedAt || Date.now();
+
+      // Only save during manual/initial interactive load; NEVER during background polling to avoid feedback loops!
+      if (needsSave && !isSilent) {
         repository.saveWorkspace(finalData);
       }
 
@@ -246,13 +252,77 @@ export default function App() {
     } catch (err) {
       console.error('Failed to load workspace:', err);
     } finally {
-      setIsLoading(false);
+      if (!isSilent) setIsLoading(false);
     }
   }, [repository]);
 
   useEffect(() => {
-    loadWorkspaceData();
+    loadWorkspaceData(false);
   }, [loadWorkspaceData]);
+
+  // Multi-PC Auto-Sync: Check server for remote changes every 2.5s, on window focus, or tab visibility change
+  // Runs 100% silently in background without flickering or reloading the whole page!
+  useEffect(() => {
+    if (!useServer) return;
+
+    let isChecking = false;
+    const checkServerVersion = async () => {
+      if (isChecking) return;
+      // Do not sync while user is actively typing in a header or has a modal open
+      if (isEditingHeaderTitle || editingRow || isDataPortabilityOpen || isUniversalImportOpen || isServerSettingsOpen) {
+        return;
+      }
+
+      isChecking = true;
+      try {
+        const res = await fetch(`${serverUrl}/workspace/version?_t=${Date.now()}`, {
+          cache: 'no-store',
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!res.ok) return;
+        const info = await res.json();
+        const localTime = Math.max(lastLoadedTimestampRef.current, workspace.exportedAt || 0);
+
+        // If server was updated after our local state
+        if (info.lastUpdated && info.lastUpdated > localTime + 600) {
+          console.log('[Multi-PC Sync] Remote updates detected on server, silently syncing in background...');
+          lastLoadedTimestampRef.current = info.lastUpdated;
+          await loadWorkspaceData(true); // SILENT SYNC! Never shows bouncing bee loading overlay!
+        }
+      } catch {
+        // Ignore network hiccups during background sync check
+      } finally {
+        isChecking = false;
+      }
+    };
+
+    const interval = setInterval(checkServerVersion, 2500);
+    const handleFocus = () => checkServerVersion();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        checkServerVersion();
+      }
+    };
+
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibility);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibility);
+    };
+  }, [
+    useServer,
+    serverUrl,
+    workspace.exportedAt,
+    loadWorkspaceData,
+    isEditingHeaderTitle,
+    editingRow,
+    isDataPortabilityOpen,
+    isUniversalImportOpen,
+    isServerSettingsOpen,
+  ]);
 
   // Theme effect
   useEffect(() => {
@@ -275,6 +345,7 @@ export default function App() {
   const handleUpdateTree = async (updatedTree: TreeItem[]) => {
     const updatedTables = { ...workspace.tables };
     const now = Date.now();
+    lastLoadedTimestampRef.current = now;
 
     updatedTree.forEach((item) => {
       if (item.type === 'table') {
@@ -289,6 +360,9 @@ export default function App() {
             title: item.title,
             updatedAt: item.updatedAt || now,
           };
+          if (useServer && repository.renameTable) {
+            repository.renameTable(target.id, item.title).catch(() => {});
+          }
         }
       }
     });
@@ -300,15 +374,21 @@ export default function App() {
       exportedAt: now,
     });
     setWorkspace(updatedWs);
+
     try {
-      await repository.saveWorkspace(updatedWs);
+      if (useServer) {
+        // Fast incremental tree update: saves tree and updates titles in < 5ms
+        await repository.saveTree(updatedTree);
+      } else {
+        await repository.saveWorkspace(updatedWs);
+      }
     } catch (err) {
-      console.error('[Repository] Failed to save workspace during tree update:', err);
+      console.error('[Repository] Failed to save tree update:', err);
     }
     await syncToLocalFileIfConnected(updatedWs);
   };
 
-  // Update specific table and keep tree item in sync
+  // Update specific table and keep tree item in sync (Fast path: only saves target table)
   const handleUpdateTable = async (updatedTable: TableDocument) => {
     const now = Date.now();
     const updatedTableWithTime: TableDocument = {
@@ -320,12 +400,17 @@ export default function App() {
       [updatedTableWithTime.id]: updatedTableWithTime,
     };
     let foundInTree = false;
+    let titleChanged = false;
+
     const updatedTree = workspace.tree.map((item) => {
       if (
         item.id === updatedTableWithTime.id ||
         item.id.replace(/_/g, '-') === updatedTableWithTime.id.replace(/_/g, '-')
       ) {
         foundInTree = true;
+        if (item.title !== updatedTableWithTime.title) {
+          titleChanged = true;
+        }
         return {
           ...item,
           title: updatedTableWithTime.title,
@@ -345,6 +430,7 @@ export default function App() {
         createdAt: updatedTableWithTime.createdAt || now,
         updatedAt: updatedTableWithTime.updatedAt,
       });
+      titleChanged = true;
     }
 
     const updatedWs = ensureWorkspaceTree({
@@ -354,15 +440,20 @@ export default function App() {
       exportedAt: now,
     });
     setWorkspace(updatedWs);
-    try {
-      await repository.saveWorkspace(updatedWs);
-    } catch (saveWsErr) {
-      console.error('[Repository] Failed to save workspace during table update:', saveWsErr);
-    }
+
+    // Fast path: Save table incrementally (avoids uploading entire 40MB database)
     try {
       await repository.saveTable(updatedTableWithTime);
+      if (titleChanged) {
+        if (repository.renameTable) {
+          await repository.renameTable(updatedTableWithTime.id, updatedTableWithTime.title);
+        } else {
+          await repository.saveTree(updatedTree);
+        }
+      }
     } catch (saveTblErr) {
-      console.warn('[Repository] saveTable direct warning:', saveTblErr);
+      console.warn('[Repository] Incremental saveTable failed, falling back to full save:', saveTblErr);
+      await repository.saveWorkspace(updatedWs);
     }
     await syncToLocalFileIfConnected(updatedWs);
   };
@@ -820,17 +911,30 @@ export default function App() {
     const updatedTables = { ...workspace.tables };
     idsToDelete.forEach((id) => {
       delete updatedTables[id];
+      delete updatedTables[id.replace(/-/g, '_')];
+      delete updatedTables[id.replace(/_/g, '-')];
+      delete updatedTables[id.replace(/^table[-_]/, '')];
+      delete updatedTables[`table_${id.replace(/^table[-_]/, '')}`];
+      delete updatedTables[`table-${id.replace(/^table[-_]/, '')}`];
     });
+
+    // If the entire tree is deleted, wipe all remaining tables to guarantee no ghost/orphan sample tables remain!
+    if (updatedTree.length === 0) {
+      Object.keys(updatedTables).forEach((k) => delete updatedTables[k]);
+    }
+
+    const now = Date.now();
+    lastLoadedTimestampRef.current = now;
 
     const updatedWs: WorkspaceData = {
       ...workspace,
       tree: updatedTree,
       tables: updatedTables,
-      exportedAt: Date.now(),
+      exportedAt: now,
     };
 
     setWorkspace(updatedWs);
-    if (activeTableId && idsToDelete.includes(activeTableId)) {
+    if (activeTableId && (idsToDelete.includes(activeTableId) || updatedTree.length === 0)) {
       const remainingTableIds = Object.keys(updatedTables);
       setActiveTableId(remainingTableIds[0] || null);
     }
@@ -849,8 +953,42 @@ export default function App() {
     } catch (saveErr) {
       console.error('[Repository] Failed to save workspace after delete:', saveErr);
     }
+
+    // If the tree is now completely empty, trigger cleanDatabase to wipe ALL remaining orphan tables and physical tables in SQLite!
+    if (updatedTree.length === 0 && repository.cleanDatabase) {
+      try {
+        await repository.cleanDatabase([]);
+      } catch (cleanErr) {
+        console.warn('[Clean] cleanDatabase error:', cleanErr);
+      }
+    }
+
     await syncToLocalFileIfConnected(updatedWs);
     setTreeItemToDelete(null);
+  };
+
+  // Load Sample Templates (Roadmap, Sprint, SQL Dict, Feedback)
+  const handleLoadSampleTemplates = async () => {
+    try {
+      setIsLoading(true);
+      const res = await fetch('/wonbee_data.json');
+      if (res.ok) {
+        const sampleData: WorkspaceData = await res.json();
+        const completeData = ensureWorkspaceTree(sampleData);
+        setWorkspace(completeData);
+        lastLoadedTimestampRef.current = completeData.exportedAt || Date.now();
+        await repository.saveWorkspace(completeData);
+        const firstTableId = Object.keys(completeData.tables)[0] || null;
+        if (firstTableId) {
+          setActiveTableId(firstTableId);
+          localStorage.setItem('wonbee_active_table_id', firstTableId);
+        }
+      }
+    } catch (err) {
+      console.error('Failed to load sample templates:', err);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Import CSV/JSON File as a New Table
@@ -1189,13 +1327,23 @@ export default function App() {
                 <p className="text-xs text-stone-400 mt-1 max-w-sm">
                   좌측 워크스페이스 트리에서 테이블을 선택하거나 새 테이블을 추가해주세요.
                 </p>
-                <button
-                  onClick={() => handleAddTable(null)}
-                  className="mt-4 px-4 py-2 bg-amber-400 hover:bg-amber-500 text-stone-950 font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  첫 테이블 만들기
-                </button>
+                <div className="flex items-center gap-2.5 mt-5">
+                  <button
+                    onClick={() => handleAddTable(null)}
+                    className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-stone-950 font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    새 테이블 만들기
+                  </button>
+                  <button
+                    onClick={handleLoadSampleTemplates}
+                    className="px-3.5 py-2 bg-stone-100 hover:bg-stone-200 dark:bg-stone-800 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 font-medium rounded-lg text-xs flex items-center gap-1.5 transition-all border border-stone-200 dark:border-stone-700 cursor-pointer"
+                    title="기본 샘플 프로젝트(통합 로드맵, 개발 스프린트, SQL 딕셔너리, 피드백) 복원"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                    샘플 템플릿 불러오기
+                  </button>
+                </div>
               </div>
             )}
           </div>

@@ -9,6 +9,11 @@ import {
   getTable,
   saveTable,
   deleteTable,
+  renameTable,
+  cleanDatabaseConsistency,
+  getLastUpdatedTimestamp,
+  getTableCount,
+  getTreeCount,
   getCalendarEvents,
   saveCalendarEvent,
   deleteCalendarEvent,
@@ -35,9 +40,41 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+  // Prevent browser caching on all API responses for instant multi-PC sync
+  app.use('/api', (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    next();
+  });
+
   // API Routes
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', database: 'sqlite3', timestamp: Date.now() });
+  });
+
+  // --- Multi-PC Version & Change Tracking Endpoint ---
+  app.get('/api/workspace/version', (req, res) => {
+    try {
+      res.json({
+        lastUpdated: getLastUpdatedTimestamp(),
+        tableCount: getTableCount(),
+        treeCount: getTreeCount(),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Clean Database Consistency (Drop orphan & unused physical tables) ---
+  app.post('/api/workspace/clean', (req, res) => {
+    try {
+      const keep = req.body?.keepTableIds;
+      const result = cleanDatabaseConsistency(keep);
+      res.json({ success: true, ...result });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   // --- Workspace Endpoints ---
@@ -105,6 +142,20 @@ async function startServer() {
     try {
       saveTable(req.body);
       res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/tables/:id/rename', (req, res) => {
+    try {
+      const { title } = req.body;
+      if (!title || typeof title !== 'string') {
+        res.status(400).json({ error: 'title is required' });
+        return;
+      }
+      renameTable(req.params.id, title.trim());
+      res.json({ success: true, title: title.trim() });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

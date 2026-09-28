@@ -150,6 +150,22 @@ export class IndexedDBWorkspaceRepository implements IWorkspaceRepository {
       sizeBytes: stats.sizeEstimatedBytes,
     };
   }
+
+  async renameTable(tableId: string, newTitle: string): Promise<void> {
+    const ws = await this.loadWorkspace();
+    const updatedTables = { ...ws.tables };
+    if (updatedTables[tableId]) {
+      updatedTables[tableId] = { ...updatedTables[tableId], title: newTitle, updatedAt: Date.now() };
+    }
+    const updatedTree = ws.tree.map((t) =>
+      t.id === tableId ? { ...t, title: newTitle, updatedAt: Date.now() } : t
+    );
+    await this.saveWorkspace({ ...ws, tables: updatedTables, tree: updatedTree });
+  }
+
+  async cleanDatabase(keepTableIds?: string[]): Promise<any> {
+    return { success: true };
+  }
 }
 
 /**
@@ -165,11 +181,17 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async loadWorkspace(): Promise<WorkspaceData> {
     try {
-      const res = await fetch(`${this.serverUrl}/workspace`, {
-        headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(`${this.serverUrl}/workspace?_t=${Date.now()}`, {
+        cache: 'no-store',
+        headers: {
+          'Content-Type': 'application/json',
+          'Cache-Control': 'no-cache',
+        },
       });
       if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
       const data = await res.json();
+      // Keep local cache synced in background without blocking
+      this.localFallback.saveWorkspace(data).catch(() => {});
       return data;
     } catch (err) {
       console.warn('Server repository unreachable, loading from local offline cache:', err);
@@ -179,8 +201,8 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async saveWorkspace(data: WorkspaceData): Promise<void> {
     const ensured = ensureWorkspaceTree(data);
-    // Keep local cache synced
-    await this.localFallback.saveWorkspace(ensured);
+    // Keep local cache synced in background without blocking
+    this.localFallback.saveWorkspace(ensured).catch(() => {});
 
     try {
       const res = await fetch(`${this.serverUrl}/workspace`, {
@@ -200,7 +222,9 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async getTable(tableId: string): Promise<TableDocument | null> {
     try {
-      const res = await fetch(`${this.serverUrl}/tables/${tableId}`);
+      const res = await fetch(`${this.serverUrl}/tables/${tableId}?_t=${Date.now()}`, {
+        cache: 'no-store',
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch {
@@ -209,7 +233,8 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   }
 
   async saveTable(table: TableDocument): Promise<void> {
-    await this.localFallback.saveTable(table);
+    // Fast path: sync to local fallback in background
+    this.localFallback.saveTable(table).catch(() => {});
     try {
       const res = await fetch(`${this.serverUrl}/tables/${table.id}`, {
         method: 'PUT',
@@ -226,8 +251,38 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     }
   }
 
+  async renameTable(tableId: string, newTitle: string): Promise<void> {
+    try {
+      const res = await fetch(`${this.serverUrl}/tables/${tableId}/rename`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: newTitle }),
+      });
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+    } catch (err) {
+      console.warn('[Repository] Server renameTable warning:', err);
+    }
+  }
+
+  async cleanDatabase(keepTableIds?: string[]): Promise<any> {
+    try {
+      const res = await fetch(`${this.serverUrl}/workspace/clean`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keepTableIds }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      console.error('[Repository] cleanDatabase failed:', err);
+      throw err;
+    }
+  }
+
   async deleteTable(tableId: string): Promise<void> {
-    await this.localFallback.deleteTable(tableId);
+    this.localFallback.deleteTable(tableId).catch(() => {});
     try {
       const res = await fetch(`${this.serverUrl}/tables/${tableId}`, {
         method: 'DELETE',
@@ -243,7 +298,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   }
 
   async saveTree(tree: TreeItem[]): Promise<void> {
-    await this.localFallback.saveTree(tree);
+    this.localFallback.saveTree(tree).catch(() => {});
     try {
       const res = await fetch(`${this.serverUrl}/tree`, {
         method: 'PUT',

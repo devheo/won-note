@@ -38,11 +38,15 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
     sizeEstimatedBytes: 0,
   });
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [cleanConfirmMode, setCleanConfirmMode] = useState(false);
+  const [cleanFeedback, setCleanFeedback] = useState<string | null>(null);
 
   useEffect(() => {
     setTempUseServer(useServer);
     setTempServerUrl(serverUrl || '/api');
     wonbeeDB.getStorageStats().then(setStats);
+    setCleanConfirmMode(false);
+    setCleanFeedback(null);
   }, [isOpen, useServer, serverUrl]);
 
   if (!isOpen) return null;
@@ -167,6 +171,77 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
               정상 가동 중
             </div>
           </div>
+
+          {/* Database Consistency & Orphan Tables Cleanup */}
+          {tempUseServer && (
+            <div className="p-3 bg-amber-500/5 border border-amber-500/20 rounded-xl space-y-2">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                    <ShieldCheck className="w-3.5 h-3.5 text-amber-500" />
+                    <span>데이터베이스 정합성 &amp; 불필요한 테이블 정리</span>
+                  </div>
+                  <p className="text-[10px] text-stone-500 dark:text-stone-400 mt-0.5">
+                    트리에 없는 고아 테이블이나 남겨진 샘플 물리 테이블을 완전 영구 삭제합니다.
+                  </p>
+                </div>
+
+                {!cleanConfirmMode ? (
+                  <button
+                    type="button"
+                    disabled={isRefreshing}
+                    onClick={() => {
+                      setCleanConfirmMode(true);
+                      setCleanFeedback(null);
+                    }}
+                    className="px-2.5 py-1 bg-amber-500 hover:bg-amber-600 text-stone-950 font-bold rounded-lg text-[10px] shrink-0 transition-colors cursor-pointer"
+                  >
+                    정합성 정리 실행
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      disabled={isRefreshing}
+                      onClick={async () => {
+                        setIsRefreshing(true);
+                        try {
+                          const res = await fetch(`${tempServerUrl}/workspace/clean`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({}),
+                          });
+                          const data = await res.json();
+                          await onRefreshData();
+                          setCleanConfirmMode(false);
+                          setCleanFeedback(`정합성 정리 완료: ${data.dropped?.length || 0}개 테이블 정리됨`);
+                        } catch (err: any) {
+                          setCleanFeedback(`정리 실패: ${err.message}`);
+                        } finally {
+                          setIsRefreshing(false);
+                        }
+                      }}
+                      className="px-2.5 py-1 bg-red-600 hover:bg-red-700 text-white font-bold rounded-lg text-[10px] transition-colors cursor-pointer"
+                    >
+                      {isRefreshing ? '정리 중...' : '확인 (영구 삭제)'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCleanConfirmMode(false)}
+                      className="px-2 py-1 bg-stone-200 dark:bg-stone-700 text-stone-700 dark:text-stone-300 rounded-lg text-[10px] cursor-pointer"
+                    >
+                      취소
+                    </button>
+                  </div>
+                )}
+              </div>
+              {cleanFeedback && (
+                <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-medium px-2 py-1 bg-emerald-500/10 rounded-md">
+                  ✓ {cleanFeedback}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Modal Footer */}

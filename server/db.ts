@@ -10,18 +10,79 @@ const DEFAULT_DATA_PATH = path.resolve(process.cwd(), 'public/wonbee_data.json')
 
 let SQL: SqlJsStatic | null = null;
 let dbInstance: Database | null = null;
+let persistTimer: NodeJS.Timeout | null = null;
+let syncJsonTimer: NodeJS.Timeout | null = null;
+let lastServerUpdate: number = Date.now();
+
+export function getLastUpdatedTimestamp(): number {
+  return lastServerUpdate;
+}
+
+export function touchServerUpdate(): void {
+  lastServerUpdate = Date.now();
+}
 
 /**
- * Persist SQLite WebAssembly memory database to disk file
+ * Persist SQLite WebAssembly memory database to disk file (debounced by 600ms for high performance)
  */
-export function persistDatabase(): void {
+export function persistDatabase(immediate = false): void {
+  touchServerUpdate();
   if (!dbInstance) return;
-  try {
-    const data = dbInstance.export();
-    const buffer = Buffer.from(data);
-    fs.writeFileSync(DB_FILE_PATH, buffer);
-  } catch (err) {
-    console.error('[SQLite] Failed to persist database to disk:', err);
+
+  const doExportAndSave = () => {
+    try {
+      if (!dbInstance) return;
+      const data = dbInstance.export();
+      const buffer = Buffer.from(data);
+      fs.writeFile(DB_FILE_PATH, buffer, (err) => {
+        if (err) console.error('[SQLite] Failed writing DB to disk:', err);
+      });
+    } catch (err) {
+      console.error('[SQLite] Failed exporting DB to disk:', err);
+    }
+  };
+
+  if (immediate) {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    doExportAndSave();
+  } else {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      doExportAndSave();
+    }, 600);
+  }
+}
+
+/**
+ * Sync entire database state to user_data.json asynchronously (debounced by 1500ms)
+ */
+export function syncDbToUserDataJson(immediate = false): void {
+  if (syncJsonTimer) clearTimeout(syncJsonTimer);
+
+  const doSync = () => {
+    try {
+      const ws = getWorkspaceData();
+      const completeWs = ensureWorkspaceTree(ws);
+      fs.writeFile(USER_DATA_PATH, JSON.stringify(completeWs), 'utf-8', (err) => {
+        if (err) console.error('[Storage] Failed to sync user_data.json:', err);
+      });
+    } catch (err) {
+      console.error('[Storage] Failed to sync user_data.json:', err);
+    }
+  };
+
+  if (immediate) {
+    syncJsonTimer = null;
+    doSync();
+  } else {
+    syncJsonTimer = setTimeout(() => {
+      syncJsonTimer = null;
+      doSync();
+    }, 1500);
   }
 }
 
@@ -304,19 +365,6 @@ export async function initDatabase(): Promise<Database> {
 }
 
 /**
- * Sync entire database state to user_data.json so workspace tree and tables are always preserved together
- */
-export function syncDbToUserDataJson(): void {
-  try {
-    const ws = getWorkspaceData();
-    const completeWs = ensureWorkspaceTree(ws);
-    fs.writeFileSync(USER_DATA_PATH, JSON.stringify(completeWs, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('[Storage] Failed to sync user_data.json:', err);
-  }
-}
-
-/**
  * Reload database from disk or user_data.json
  */
 export function reloadDatabaseFromDisk(): WorkspaceData {
@@ -483,6 +531,38 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
           });
         }
       });
+    }
+
+    // Drop any physical SQLite tables that are not in data.tables (keeps database consistent)
+    try {
+      const existingPhys = db.exec(`
+        SELECT name FROM sqlite_master 
+        WHERE type='table' 
+          AND (name LIKE 'table\\_%' ESCAPE '\\' OR name LIKE 'tbl\\_%' ESCAPE '\\') 
+          AND name NOT IN ('table_columns', 'table_rows', 'tables', 'workspace_meta', 'tree_items', 'calendar_events', 'document_chunks', 'row_images');
+      `);
+      if (existingPhys.length > 0 && existingPhys[0].values) {
+        const allowedKeys = new Set(
+          Object.keys(data.tables || {}).flatMap((k) => [
+            k,
+            k.replace(/-/g, '_'),
+            k.replace(/_/g, '-'),
+            k.replace(/^table[-_]/, ''),
+            `table_${k}`,
+            `table_${k.replace(/^table[-_]/, '')}`,
+          ])
+        );
+
+        for (const [rawName] of existingPhys[0].values) {
+          const ptName = String(rawName);
+          if (!allowedKeys.has(ptName)) {
+            console.log(`[SQLite] Dropping removed physical table: ${ptName}`);
+            db.run(`DROP TABLE IF EXISTS "${ptName}";`);
+          }
+        }
+      }
+    } catch (cleanErr) {
+      console.warn('[SQLite] Error dropping orphan physical tables in importWorkspaceDataToDb:', cleanErr);
     }
 
     db.run('COMMIT;');
@@ -935,14 +1015,17 @@ export function saveTable(table: TableDocument): void {
       });
     }
 
+    const now = Date.now();
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
     dbInstance.run('COMMIT;');
   } catch (err) {
     dbInstance.run('ROLLBACK;');
     throw err;
   }
 
-  persistDatabase();
-  syncDbToUserDataJson();
+  touchServerUpdate();
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
 }
 
 /**
@@ -950,6 +1033,8 @@ export function saveTable(table: TableDocument): void {
  */
 export function saveTree(tree: TreeItem[]): void {
   if (!dbInstance) throw new Error('Database not initialized');
+  const now = Date.now();
+  touchServerUpdate();
   dbInstance.run('BEGIN TRANSACTION;');
   try {
     dbInstance.run('DELETE FROM tree_items;');
@@ -971,22 +1056,25 @@ export function saveTree(tree: TreeItem[]): void {
         ]
       );
 
-      // If item is a table, keep table title in sync with tree item title
+      // If item is a table, keep table title in sync with tree item title (support both hyphen and underscore)
       if (item.type === 'table') {
+        const altId = item.id.includes('-') ? item.id.replace(/-/g, '_') : item.id.replace(/_/g, '-');
         dbInstance!.run(
-          `UPDATE tables SET title = ?, updated_at = ? WHERE id = ?;`,
-          [toSqliteParam(item.title), toSqliteParam(item.updatedAt || Date.now()), toSqliteParam(item.id)]
+          `UPDATE tables SET title = ?, updated_at = ? WHERE id = ? OR id = ?;`,
+          [toSqliteParam(item.title), toSqliteParam(item.updatedAt || now), toSqliteParam(item.id), toSqliteParam(altId)]
         );
       }
     });
+
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
     dbInstance.run('COMMIT;');
   } catch (err) {
     dbInstance.run('ROLLBACK;');
     throw err;
   }
 
-  persistDatabase();
-  syncDbToUserDataJson();
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
 }
 
 /**
@@ -994,6 +1082,8 @@ export function saveTree(tree: TreeItem[]): void {
  */
 export function deleteTable(tableId: string): void {
   if (!dbInstance) throw new Error('Database not initialized');
+  const now = Date.now();
+  touchServerUpdate();
   dbInstance.run('BEGIN TRANSACTION;');
   try {
     const ids = Array.from(
@@ -1002,6 +1092,8 @@ export function deleteTable(tableId: string): void {
         tableId.replace(/-/g, '_'),
         tableId.replace(/_/g, '-'),
         tableId.replace(/^table[-_]/, ''),
+        `table_${tableId.replace(/^table[-_]/, '')}`,
+        `table-${tableId.replace(/^table[-_]/, '')}`,
       ])
     );
 
@@ -1044,13 +1136,161 @@ export function deleteTable(tableId: string): void {
       }
     }
 
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
     dbInstance.run('COMMIT;');
   } catch (err) {
     dbInstance.run('ROLLBACK;');
     throw err;
   }
-  persistDatabase();
-  syncDbToUserDataJson();
+
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
+}
+
+/**
+ * Fast direct rename of a table and its associated tree item
+ */
+export function renameTable(tableId: string, newTitle: string): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const now = Date.now();
+  touchServerUpdate();
+  dbInstance.run('BEGIN TRANSACTION;');
+  try {
+    const ids = Array.from(
+      new Set([
+        tableId,
+        tableId.replace(/-/g, '_'),
+        tableId.replace(/_/g, '-'),
+        tableId.replace(/^table[-_]/, ''),
+        `table_${tableId.replace(/^table[-_]/, '')}`,
+        `table-${tableId.replace(/^table[-_]/, '')}`,
+      ])
+    );
+
+    for (const tid of ids) {
+      dbInstance.run(
+        "UPDATE tables SET title = ?, updated_at = ? WHERE id = ?;",
+        [toSqliteParam(newTitle), now, toSqliteParam(tid)]
+      );
+      dbInstance.run(
+        "UPDATE tree_items SET title = ?, updated_at = ? WHERE id = ?;",
+        [toSqliteParam(newTitle), now, toSqliteParam(tid)]
+      );
+    }
+
+    // Crucial: Update workspace_meta.exportedAt so remote clients detect changes immediately
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
+    dbInstance.run('COMMIT;');
+  } catch (err) {
+    dbInstance.run('ROLLBACK;');
+    throw err;
+  }
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
+}
+
+/**
+ * Clean database consistency: Drop orphan tables, unused physical tables, and sync tree
+ */
+export function cleanDatabaseConsistency(keepTableIds?: string[]): { dropped: string[]; kept: string[] } {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const now = Date.now();
+  touchServerUpdate();
+  dbInstance.run('BEGIN TRANSACTION;');
+  const dropped: string[] = [];
+  const kept: string[] = [];
+
+  try {
+    // 1. Get valid table IDs from tree_items
+    const treeRes = dbInstance.exec("SELECT id FROM tree_items WHERE type = 'table';");
+    const validTreeTableIds = new Set<string>();
+    if (treeRes.length > 0 && treeRes[0].values) {
+      treeRes[0].values.forEach(([id]) => validTreeTableIds.add(String(id)));
+    }
+
+    if (Array.isArray(keepTableIds)) {
+      keepTableIds.forEach((id) => validTreeTableIds.add(id));
+    }
+
+    // 2. Remove orphan tables from `tables` that are not present in tree (or all if tree is empty)
+    const tablesRes = dbInstance.exec("SELECT id FROM tables;");
+    if (tablesRes.length > 0 && tablesRes[0].values) {
+      for (const [rawId] of tablesRes[0].values) {
+        const tId = String(rawId);
+        const matchesValid = Array.from(validTreeTableIds).some(
+          (vid) => vid === tId || vid.replace(/_/g, '-') === tId.replace(/_/g, '-')
+        );
+
+        // If table doesn't match any valid tree ID, drop it (even if validTreeTableIds is empty!)
+        if (!matchesValid) {
+          dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [tId]);
+          dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [tId]);
+          dbInstance.run("DELETE FROM calendar_events WHERE table_id = ?;", [tId]);
+          dbInstance.run("DELETE FROM row_images WHERE table_id = ?;", [tId]);
+          dbInstance.run("DELETE FROM tables WHERE id = ?;", [tId]);
+          dropped.push(tId);
+        } else {
+          kept.push(tId);
+        }
+      }
+    }
+
+    // 3. Drop any physical SQLite tables that are not in validTreeTableIds
+    const physRes = dbInstance.exec(`
+      SELECT name FROM sqlite_master 
+      WHERE type='table' 
+        AND (name LIKE 'table\\_%' ESCAPE '\\' OR name LIKE 'tbl\\_%' ESCAPE '\\') 
+        AND name NOT IN ('table_columns', 'table_rows', 'tables', 'workspace_meta', 'tree_items', 'calendar_events', 'document_chunks', 'row_images');
+    `);
+    if (physRes.length > 0 && physRes[0].values) {
+      for (const [rawName] of physRes[0].values) {
+        const ptName = String(rawName);
+        const matchesValid = Array.from(validTreeTableIds).some(
+          (vid) =>
+            vid === ptName ||
+            vid.replace(/-/g, '_') === ptName ||
+            `table_${vid.replace(/^table[-_]/, '')}` === ptName
+        );
+
+        if (!matchesValid) {
+          console.log(`[SQLite Clean] Dropping physical table: ${ptName}`);
+          dbInstance.run(`DROP TABLE IF EXISTS "${ptName}";`);
+          dropped.push(ptName);
+        }
+      }
+    }
+
+    // Update workspace_meta.exportedAt
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
+    dbInstance.run('COMMIT;');
+  } catch (err) {
+    dbInstance.run('ROLLBACK;');
+    throw err;
+  }
+
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
+  return { dropped, kept };
+}
+
+export function getTableCount(): number {
+  if (!dbInstance) return 0;
+  try {
+    const res = dbInstance.exec("SELECT count(*) FROM tables;");
+    return Number(res[0]?.values[0]?.[0] || 0);
+  } catch {
+    return 0;
+  }
+}
+
+export function getTreeCount(): number {
+  if (!dbInstance) return 0;
+  try {
+    const res = dbInstance.exec("SELECT count(*) FROM tree_items;");
+    return Number(res[0]?.values[0]?.[0] || 0);
+  } catch {
+    return 0;
+  }
 }
 
 /**
