@@ -12,6 +12,7 @@ import {
 } from '../../types';
 import { wonbeeDB } from './indexedDb';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
+import { deduplicatedFetchJson } from '../api/requestDeduplicator';
 
 export function mergeWorkspaces(
   current: WorkspaceData,
@@ -235,23 +236,64 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     this.serverUrl = serverUrl;
   }
 
-  async loadWorkspace(): Promise<WorkspaceData> {
+  /**
+   * 2. Initial Loading Flow (Zero 100MB+ dumps):
+   * 1단계: IndexedDB(Dexie)에 데이터가 있으면 즉시 로컬 데이터 획득.
+   * 2단계: /api/workspace/meta 로 메타데이터만 조회 (수 KB 미만).
+   * 3단계: 로컬 last_updated_at과 서버 메타데이터를 비교하여, 서버가 더 최신일 경우에만 /api/notes/sync?since={last_updated_at}를 호출하여 '변경된 차분 데이터만' 머지.
+   */
+  async loadWorkspace(signal?: AbortSignal): Promise<WorkspaceData> {
+    // 1단계: IndexedDB(Dexie) 데이터 로드
+    let localWs = await this.localFallback.loadWorkspace();
+    const hasLocalData = localWs && Object.keys(localWs.tables).length > 0;
+
     try {
-      const res = await fetch(`${this.serverUrl}/workspace`, {
-        cache: 'no-store',
-        headers: {
-          'Content-Type': 'application/json',
-          'Cache-Control': 'no-cache',
-        },
-      });
-      if (!res.ok) throw new Error(`HTTP Error: ${res.status}`);
-      const data = await res.json();
-      // Keep local cache synced in background without blocking
-      this.localFallback.saveWorkspace(data).catch(() => {});
-      return data;
-    } catch (err) {
-      console.warn('Server repository unreachable, loading from local offline cache:', err);
-      return this.localFallback.loadWorkspace();
+      // 2단계: /api/workspace/meta 로 초경량 메타데이터만 조회 (수 KB 미만)
+      const meta = await this.getWorkspaceMeta(signal);
+      if (!meta) return localWs;
+
+      const serverLastUpdated = meta.last_updated_at || 0;
+      const localLastUpdated = localWs.exportedAt || 0;
+
+      // 로컬 IndexedDB에 테이블 구조가 전혀 없는 신규 브라우저의 경우, 메타데이터의 스키마 구조로 1차 초기화
+      if (!hasLocalData && meta.tables) {
+        const skeletonTables: Record<string, TableDocument> = {};
+        Object.values(meta.tables).forEach((t: any) => {
+          skeletonTables[t.id] = {
+            id: t.id,
+            title: t.title,
+            description: t.description,
+            defaultView: t.defaultView || 'grid',
+            columns: t.columns || [],
+            rows: [],
+            createdAt: t.createdAt || Date.now(),
+            updatedAt: t.updatedAt || Date.now(),
+          };
+        });
+
+        localWs = {
+          version: meta.version || '1.0.0',
+          exportedAt: 0, // Set to 0 so next step fetches all initial rows via /api/notes/sync
+          settings: meta.settings,
+          tree: meta.tree || [],
+          tables: skeletonTables,
+        };
+        await this.localFallback.saveWorkspace(localWs);
+      }
+
+      // 3단계: 로컬 last_updated_at과 서버 메타데이터 비교 -> 서버가 더 최신일 때만 차분 데이터 동기화
+      if (serverLastUpdated > (hasLocalData ? localLastUpdated : 0)) {
+        const since = hasLocalData ? localLastUpdated : 0;
+        await this.syncNotes(since, signal);
+        localWs = await this.localFallback.loadWorkspace();
+        localWs.exportedAt = serverLastUpdated;
+      }
+
+      return localWs;
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
+      console.warn('[Repository] Server meta/sync unreachable, using local IndexedDB:', err);
+      return localWs;
     }
   }
 
@@ -276,14 +318,14 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     }
   }
 
-  async getTable(tableId: string): Promise<TableDocument | null> {
+  async getTable(tableId: string, signal?: AbortSignal): Promise<TableDocument | null> {
     try {
-      const res = await fetch(`${this.serverUrl}/tables/${tableId}`, {
+      return await deduplicatedFetchJson<TableDocument>(`${this.serverUrl}/tables/${tableId}`, {
         cache: 'no-store',
+        signal,
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch {
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
       return this.localFallback.getTable(tableId);
     }
   }
@@ -337,40 +379,37 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     }
   }
 
-  async getWorkspaceMeta() {
+  async getWorkspaceMeta(signal?: AbortSignal) {
     try {
-      const res = await fetch(`${this.serverUrl}/workspace/meta`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
+      return await deduplicatedFetchJson(`${this.serverUrl}/workspace/meta`, { signal });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
       return this.localFallback.getWorkspaceMeta();
     }
   }
 
-  async getNotesCursor(cursor?: string, limit: number = 50, tableId?: string) {
+  async getNotesCursor(cursor?: string, limit: number = 50, tableId?: string, signal?: AbortSignal) {
     try {
       let url = `${this.serverUrl}/notes?limit=${limit}`;
       if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
       if (tableId) url += `&tableId=${encodeURIComponent(tableId)}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    } catch (err) {
+      return await deduplicatedFetchJson(url, { signal });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
       return this.localFallback.getNotesCursor(cursor, limit, tableId);
     }
   }
 
-  async syncNotes(since: number) {
+  async syncNotes(since: number, signal?: AbortSignal) {
     try {
-      const res = await fetch(`${this.serverUrl}/notes/sync?since=${since}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await deduplicatedFetchJson<any>(`${this.serverUrl}/notes/sync?since=${since}`, { signal });
       if (Array.isArray(data.data) && data.data.length > 0) {
         // Sync delta notes into Dexie in background
         wonbeeDB.applyDeltaNotes(data.data).catch(() => {});
       }
       return data;
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.name === 'AbortError') throw err;
       return this.localFallback.syncNotes(since);
     }
   }

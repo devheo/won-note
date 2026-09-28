@@ -24,6 +24,7 @@ import { CalendarMacroModal } from './CalendarMacroModal';
 import { CalendarNotificationCenter } from './CalendarNotificationCenter';
 import { getKoreanHoliday } from '../../utils/koreanHolidays';
 import { formatLocalDate } from '../../utils/dateColumnUtils';
+import { deduplicatedFetchJson } from '../../services/api/requestDeduplicator';
 
 interface CalendarViewerProps {
   table: TableDocument;
@@ -87,8 +88,10 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
     }
   });
 
-  // Reload stored events whenever active table changes or on mount
+  // Reload stored events whenever active table changes or on mount with AbortController & Deduplication
   useEffect(() => {
+    const controller = new AbortController();
+
     try {
       const saved = localStorage.getItem(storageKey);
       if (saved) {
@@ -100,10 +103,11 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
       setStoredEvents([]);
     }
 
-    // Also sync from backend SQLite API
-    fetch(`/api/events?tableId=${encodeURIComponent(table.id)}`)
-      .then((res) => (res.ok ? res.json() : []))
-      .then((serverEvents: CalendarEvent[]) => {
+    // Also sync from backend SQLite API with in-flight deduplication
+    deduplicatedFetchJson<CalendarEvent[]>(`/api/events?tableId=${encodeURIComponent(table.id)}`, {
+      signal: controller.signal,
+    })
+      .then((serverEvents) => {
         if (Array.isArray(serverEvents) && serverEvents.length > 0) {
           setStoredEvents((prev) => {
             const map = new Map<string, CalendarEvent>();
@@ -118,8 +122,14 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
         }
       })
       .catch((err) => {
-        console.warn('[CalendarViewer] Backend events fetch fallback:', err);
+        if (err?.name !== 'AbortError') {
+          console.warn('[CalendarViewer] Backend events fetch fallback:', err);
+        }
       });
+
+    return () => {
+      controller.abort();
+    };
   }, [table.id, storageKey]);
 
   const saveStoredEvents = (newEvents: CalendarEvent[]) => {

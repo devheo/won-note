@@ -162,9 +162,9 @@ export type UserData = WorkspaceData;
  * Provides transparent data operations regardless of local IndexedDB or remote API backend.
  */
 export interface IWorkspaceRepository {
-  loadWorkspace(): Promise<WorkspaceData>;
+  loadWorkspace(signal?: AbortSignal): Promise<WorkspaceData>;
   saveWorkspace(data: WorkspaceData): Promise<void>;
-  getTable(tableId: string): Promise<TableDocument | null>;
+  getTable(tableId: string, signal?: AbortSignal): Promise<TableDocument | null>;
   saveTable(table: TableDocument): Promise<void>;
   deleteTable(tableId: string): Promise<void>;
   saveTree(tree: TreeItem[]): Promise<void>;

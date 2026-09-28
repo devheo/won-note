@@ -85,12 +85,7 @@ async function startServer() {
   app.get('/api/workspace/meta', (req, res) => {
     try {
       const meta = getWorkspaceMeta();
-      res.json({
-        last_updated_at: meta.last_updated_at,
-        total_count: meta.total_count,
-        table_count: meta.tableCount,
-        tree_count: meta.treeCount,
-      });
+      res.json(meta);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -1515,12 +1515,17 @@ export function getRowImage(imageId: string): { id: string; mimeType: string; da
 
 /**
  * 1.2. Workspace Metadata API (Replaces 100MB+ full workspace dumps)
+ * Lightweight structural metadata (<5KB) without heavy row/note bodies.
  */
 export function getWorkspaceMeta(): {
   last_updated_at: number;
   total_count: number;
   tableCount: number;
   treeCount: number;
+  version: string;
+  settings: any;
+  tree: TreeItem[];
+  tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; columns: any[]; createdAt: number; updatedAt: number }>;
 } {
   if (!dbInstance) throw new Error('Database not initialized');
   let totalCount = 0;
@@ -1534,11 +1539,88 @@ export function getWorkspaceMeta(): {
     } catch {}
   }
 
+  // Meta
+  const metaRes = dbInstance.exec("SELECT key, value FROM workspace_meta;");
+  let version = '1.0.0';
+  let settings = {};
+  if (metaRes.length > 0) {
+    for (const [k, v] of metaRes[0].values) {
+      if (k === 'version') version = String(v);
+      if (k === 'settings' && typeof v === 'string') {
+        try { settings = JSON.parse(v); } catch {}
+      }
+    }
+  }
+
+  // Lightweight Tree Items
+  const tree: TreeItem[] = [];
+  const treeRes = dbInstance.exec("SELECT id, parent_id, title, type, icon, color, is_expanded, created_at, updated_at FROM tree_items ORDER BY sort_order ASC, created_at ASC;");
+  if (treeRes.length > 0) {
+    for (const val of treeRes[0].values) {
+      tree.push({
+        id: String(val[0]),
+        parentId: val[1] ? String(val[1]) : null,
+        title: String(val[2]),
+        type: val[3] as any,
+        icon: val[4] ? String(val[4]) : undefined,
+        color: val[5] ? String(val[5]) : undefined,
+        isExpanded: Boolean(val[6]),
+        createdAt: Number(val[7]),
+        updatedAt: Number(val[8]),
+      });
+    }
+  }
+
+  // Lightweight Tables with Columns (WITHOUT rows)
+  const tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; columns: any[]; createdAt: number; updatedAt: number }> = {};
+  const tablesRes = dbInstance.exec("SELECT id, title, description, default_view, created_at, updated_at FROM tables;");
+  if (tablesRes.length > 0) {
+    for (const val of tablesRes[0].values) {
+      const tableId = String(val[0]);
+      tables[tableId] = {
+        id: tableId,
+        title: String(val[1]),
+        description: val[2] ? String(val[2]) : undefined,
+        defaultView: (val[3] as any) || 'grid',
+        createdAt: Number(val[4]),
+        updatedAt: Number(val[5]),
+        columns: [],
+      };
+    }
+  }
+
+  const colsRes = dbInstance.exec("SELECT id, table_id, name, type, width, is_primary_key, auto_update_date, options_json, format FROM table_columns ORDER BY sort_order ASC;");
+  if (colsRes.length > 0) {
+    for (const val of colsRes[0].values) {
+      const tableId = String(val[1]);
+      if (tables[tableId]) {
+        let options = undefined;
+        if (val[7] && typeof val[7] === 'string') {
+          try { options = JSON.parse(val[7]); } catch {}
+        }
+        tables[tableId].columns.push({
+          id: String(val[0]),
+          name: String(val[2]),
+          type: (val[3] as any) || 'text',
+          width: Number(val[4]) || 160,
+          isPrimaryKey: Boolean(val[5]),
+          autoUpdateDate: Boolean(val[6]),
+          options,
+          format: val[8] ? String(val[8]) : undefined,
+        });
+      }
+    }
+  }
+
   return {
     last_updated_at: getLastUpdatedTimestamp(),
     total_count: totalCount,
-    tableCount: getTableCount(),
-    treeCount: getTreeCount(),
+    tableCount: Object.keys(tables).length,
+    treeCount: tree.length,
+    version,
+    settings,
+    tree,
+    tables,
   };
 }
 

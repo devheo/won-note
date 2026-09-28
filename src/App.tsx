@@ -18,6 +18,7 @@ import {
 } from './utils/dateColumnUtils';
 import { WorkspaceRepositoryFactory } from './services/storage/repository';
 import { wonbeeDexieDB } from './services/storage/dexieDb';
+import { useWorkspaceInit } from './hooks/useWorkspaceInit';
 import { localFileService } from './services/storage/localFileService';
 import { INITIAL_WORKSPACE_DATA } from './data/initialData';
 import { ensureWorkspaceTree } from './utils/workspaceTreeUtils';
@@ -55,11 +56,35 @@ import {
 } from 'lucide-react';
 
 export default function App() {
-  const [workspace, setWorkspace] = useState<WorkspaceData>(INITIAL_WORKSPACE_DATA);
-  const [activeTableId, setActiveTableId] = useState<string | null>(() => {
-    return localStorage.getItem('wonbee_active_table_id') || Object.keys(INITIAL_WORKSPACE_DATA.tables)[0] || null;
+  // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend (Persisted in localStorage)
+  const [useServer, setUseServer] = useState<boolean>(() => {
+    const saved = localStorage.getItem('wonbee_use_server');
+    return saved !== null ? saved === 'true' : true;
   });
-  const [isLoading, setIsLoading] = useState(true);
+  const [serverUrl, setServerUrl] = useState<string>(() => {
+    return localStorage.getItem('wonbee_server_url') || '/api';
+  });
+
+  // Repository Instance
+  const repository = useMemo(() => {
+    return WorkspaceRepositoryFactory.getRepository({
+      useServer,
+      serverUrl,
+    });
+  }, [useServer, serverUrl]);
+
+  // 3. Single-Root Workspace Initialization Hook
+  // Prevents React StrictMode double invocation via useRef lock + AbortController cleanup
+  const {
+    workspace,
+    setWorkspace,
+    activeTableId,
+    setActiveTableId,
+    isLoading,
+    setIsLoading,
+    loadWorkspaceData,
+    lastLoadedTimestampRef,
+  } = useWorkspaceInit({ repository });
 
   // Local File System Sync State
   const [connectedFileName, setConnectedFileName] = useState<string | null>(() =>
@@ -100,15 +125,6 @@ export default function App() {
       localStorage.setItem('wonbee_active_table_id', tableId);
     }
   };
-
-  // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend (Persisted in localStorage)
-  const [useServer, setUseServer] = useState<boolean>(() => {
-    const saved = localStorage.getItem('wonbee_use_server');
-    return saved !== null ? saved === 'true' : true;
-  });
-  const [serverUrl, setServerUrl] = useState<string>(() => {
-    return localStorage.getItem('wonbee_server_url') || '/api';
-  });
 
   // Modals state
   const [editingRow, setEditingRow] = useState<TableRow | null>(null);
@@ -165,14 +181,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, []);
 
-  // Repository Instance
-  const repository = useMemo(() => {
-    return WorkspaceRepositoryFactory.getRepository({
-      useServer,
-      serverUrl,
-    });
-  }, [useServer, serverUrl]);
-
   // Sync to local file if connected
   const syncToLocalFileIfConnected = useCallback(async (data: WorkspaceData) => {
     if (localFileService.hasConnectedFile()) {
@@ -187,94 +195,7 @@ export default function App() {
     }
   }, []);
 
-  const lastLoadedTimestampRef = useRef<number>(0);
   const lastEtagRef = useRef<string | null>(null);
-
-  // Load initial or background workspace data with Stale-While-Revalidate
-  // isSilent=false shows initial loading screen if no cache; isSilent=true updates state seamlessly without unmounting the UI
-  const loadWorkspaceData = useCallback(async (isSilent = false) => {
-    // 2.2. Stale-While-Revalidate: load cached Dexie data immediately to render in <10ms
-    if (!isSilent) {
-      try {
-        const cached = await wonbeeDexieDB.loadWorkspace();
-        if (cached && Object.keys(cached.tables).length > 0) {
-          setWorkspace(cached);
-          setIsLoading(false); // UI renders instantly from IndexedDB!
-        } else {
-          setIsLoading(true);
-        }
-      } catch {
-        setIsLoading(true);
-      }
-    }
-
-    try {
-      const rawData = await repository.loadWorkspace();
-      const data = ensureWorkspaceTree(rawData);
-
-      // Clean up legacy template welcome richContent if present on any row
-      let needsSave = false;
-      const cleanedTables = { ...data.tables };
-      Object.keys(cleanedTables).forEach((tId) => {
-        let table = cleanedTables[tId];
-        let tableChanged = false;
-        const cleanedRows = table.rows.map((row) => {
-          if (row.richContent && (row.richContent.includes('환영합니다') || row.richContent.includes('새 테이블이 성공적으로 생성되었습니다'))) {
-            tableChanged = true;
-            return { ...row, richContent: '' };
-          }
-          return row;
-        });
-        if (tableChanged) {
-          table = { ...table, rows: cleanedRows };
-          needsSave = true;
-        }
-
-        // Auto-ensure update date column exists and rows are populated
-        const { table: ensuredTable, created } = ensureUpdateDateColumnInTable(table);
-        if (created) {
-          table = ensuredTable;
-          needsSave = true;
-        }
-
-        cleanedTables[tId] = table;
-      });
-      const finalData = needsSave ? { ...data, tables: cleanedTables } : data;
-      setWorkspace(finalData);
-      lastLoadedTimestampRef.current = finalData.exportedAt || Date.now();
-
-      // Only save during manual/initial interactive load; NEVER during background polling to avoid feedback loops!
-      if (needsSave && !isSilent) {
-        repository.saveWorkspace(finalData);
-      }
-
-      const savedTableId = localStorage.getItem('wonbee_active_table_id');
-      const tableKeys = Object.keys(finalData.tables);
-      if (savedTableId && finalData.tables[savedTableId]) {
-        setActiveTableId(savedTableId);
-      } else {
-        // Fallback to activeTableId if valid in loaded tables, otherwise select first available table
-        setActiveTableId((prev) => {
-          if (prev && finalData.tables[prev]) {
-            return prev;
-          }
-          const firstTableId = tableKeys[0] || null;
-          if (firstTableId) {
-            localStorage.setItem('wonbee_active_table_id', firstTableId);
-          }
-          return firstTableId;
-        });
-      }
-    } catch (err) {
-      console.error('Failed to load workspace:', err);
-    } finally {
-      if (!isSilent) setIsLoading(false);
-    }
-  }, [repository]);
-
-  useEffect(() => {
-    loadWorkspaceData(false);
-  }, [loadWorkspaceData]);
 
   // Multi-PC Auto-Sync: Check server for remote changes every 2.5s, on window focus, or tab visibility change
   // Uses HTTP ETag / 304 Not Modified to avoid body transfers and unnecessary polling traffic!
