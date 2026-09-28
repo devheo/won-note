@@ -24,6 +24,7 @@ import {
   getWorkspaceMeta,
   getNotesCursor,
   getNotesSync,
+  pushSyncNotes,
 } from './server/db';
 import {
   checkOllamaStatus,
@@ -154,6 +155,19 @@ async function startServer() {
       const result = getNotesSync(since, limit);
       res.json(result);
     } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- 1.5. Push Synchronization API: UPSERT dirty notes from local IndexedDB into SQLite ---
+  app.post('/api/notes/push-sync', (req, res) => {
+    try {
+      const notes = Array.isArray(req.body) ? req.body : (req.body?.notes || req.body?.data || []);
+      const result = pushSyncNotes(notes);
+      broadcastWorkspaceUpdate({ type: 'push_synced', lastUpdated: result.last_updated_at });
+      res.json(result);
+    } catch (err: any) {
+      console.error('[API] /api/notes/push-sync error:', err);
       res.status(500).json({ error: err.message });
     }
   });

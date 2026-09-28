@@ -1777,3 +1777,107 @@ export function getNotesSync(
   };
 }
 
+/**
+ * 2. Push Sync API: UPSERT dirty notes from local IndexedDB into SQLite (wonbee.sqlite)
+ * Handles offline / serverless modifications when switching to server mode or network reconnect.
+ */
+export function pushSyncNotes(notes: any[]): {
+  success: boolean;
+  upsertedCount: number;
+  last_updated_at: number;
+} {
+  if (!dbInstance) throw new Error('Database not initialized');
+  if (!Array.isArray(notes) || notes.length === 0) {
+    return {
+      success: true,
+      upsertedCount: 0,
+      last_updated_at: getLastUpdatedTimestamp(),
+    };
+  }
+
+  const now = Date.now();
+  dbInstance.run('BEGIN TRANSACTION;');
+  try {
+    let count = 0;
+    for (const note of notes) {
+      if (!note || !note.id) continue;
+      const tableId = String(note.table_id || 'table-default');
+      const nCreated = Number(note.created_at) || now;
+      const nUpdated = Number(note.updated_at) || now;
+      const title = String(note.title || note.id);
+      const richContent = note.rich_content || (note.content && !String(note.content).startsWith('{') ? String(note.content) : null);
+
+      let dataJson = note.data_json;
+      if (!dataJson && note.data) {
+        dataJson = JSON.stringify(note.data);
+      } else if (!dataJson) {
+        dataJson = JSON.stringify({ name: title });
+      }
+
+      // 1. Ensure table exists in tables and tree_items
+      dbInstance.run(
+        `INSERT OR IGNORE INTO tables (id, title, description, default_view, created_at, updated_at)
+         VALUES (?, ?, ?, 'grid', ?, ?);`,
+        [toSqliteParam(tableId), toSqliteParam(tableId), toSqliteParam(''), toSqliteParam(nCreated), toSqliteParam(nUpdated)]
+      );
+
+      dbInstance.run(
+        `INSERT OR IGNORE INTO tree_items (id, parent_id, title, type, is_expanded, created_at, updated_at, sort_order)
+         VALUES (?, null, ?, 'table', 0, ?, ?, 0);`,
+        [toSqliteParam(tableId), toSqliteParam(tableId), toSqliteParam(nCreated), toSqliteParam(nUpdated)]
+      );
+
+      // 2. UPSERT into notes table
+      dbInstance.run(
+        `INSERT OR REPLACE INTO notes (id, table_id, title, content, data_json, rich_content, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
+        [
+          toSqliteParam(note.id),
+          toSqliteParam(tableId),
+          toSqliteParam(title),
+          toSqliteParam(note.content || richContent || dataJson),
+          toSqliteParam(dataJson),
+          toSqliteParam(richContent),
+          toSqliteParam(nCreated),
+          toSqliteParam(nUpdated),
+        ]
+      );
+
+      // 3. UPSERT into table_rows table
+      dbInstance.run(
+        `INSERT OR REPLACE INTO table_rows (id, table_id, data_json, rich_content, stickers_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?);`,
+        [
+          toSqliteParam(note.id),
+          toSqliteParam(tableId),
+          toSqliteParam(dataJson),
+          toSqliteParam(richContent),
+          null,
+          toSqliteParam(nCreated),
+          toSqliteParam(nUpdated),
+        ]
+      );
+
+      count++;
+    }
+
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
+    dbInstance.run('COMMIT;');
+
+    touchServerUpdate();
+    persistDatabase(false);
+    syncDbToUserDataJson(false);
+
+    return {
+      success: true,
+      upsertedCount: count,
+      last_updated_at: getLastUpdatedTimestamp(),
+    };
+  } catch (err) {
+    try { dbInstance.run('ROLLBACK;'); } catch {}
+    console.error('[SQLite] pushSyncNotes failed:', err);
+    throw err;
+  }
+}
+
+

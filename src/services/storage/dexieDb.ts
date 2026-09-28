@@ -33,6 +33,7 @@ export interface DexieTableDoc {
   rows: TableRow[];
   createdAt: number;
   updatedAt: number;
+  is_dirty?: number; // 1 = dirty (un-synced), 0 = clean
 }
 
 export interface DexieNote {
@@ -44,6 +45,7 @@ export interface DexieNote {
   rich_content?: string;
   created_at: number;
   updated_at: number;
+  is_dirty?: number; // 1 = dirty (un-synced), 0 = clean
 }
 
 /**
@@ -63,6 +65,10 @@ export class WonBeeDexieDatabase extends Dexie {
       tree_items: 'id, parentId, sortOrder, updatedAt',
       table_docs: 'id, title, updatedAt',
       notes: 'id, table_id, updated_at, [table_id+updated_at]',
+    });
+    this.version(2).stores({
+      table_docs: 'id, title, updatedAt, is_dirty',
+      notes: 'id, table_id, updated_at, is_dirty, [table_id+updated_at]',
     });
   }
 
@@ -123,7 +129,7 @@ export class WonBeeDexieDatabase extends Dexie {
   /**
    * Save full workspace in a single indexed transaction
    */
-  async saveFullWorkspace(workspace: WorkspaceData): Promise<void> {
+  async saveFullWorkspace(workspace: WorkspaceData, isDirty: number = 1): Promise<void> {
     const ensured = ensureWorkspaceTree(workspace);
     const now = Date.now();
 
@@ -132,7 +138,7 @@ export class WonBeeDexieDatabase extends Dexie {
       await this.workspace_meta.put({
         id: 'root_workspace',
         version: ensured.version || '1.0.0',
-        exportedAt: ensured.exportedAt || now,
+        exportedAt: now,
         author: ensured.author,
         settings: ensured.settings,
       });
@@ -162,32 +168,38 @@ export class WonBeeDexieDatabase extends Dexie {
       const noteEntries: DexieNote[] = [];
 
       Object.values(ensured.tables).forEach((tbl) => {
+        const rowsWithDirty = (tbl.rows || []).map((row) => ({
+          ...row,
+          updatedAt: row.updatedAt || now,
+          is_dirty: row.is_dirty !== undefined ? row.is_dirty : isDirty,
+        }));
+
         tableEntries.push({
           id: tbl.id,
           title: tbl.title,
           description: tbl.description,
           defaultView: tbl.defaultView,
           columns: tbl.columns || [],
-          rows: tbl.rows || [],
+          rows: rowsWithDirty,
           createdAt: tbl.createdAt || now,
           updatedAt: tbl.updatedAt || now,
+          is_dirty: isDirty,
         });
 
-        if (Array.isArray(tbl.rows)) {
-          tbl.rows.forEach((row) => {
-            const rowTitle = row.data?.name || row.data?.title || Object.values(row.data || {})[0] || row.id;
-            noteEntries.push({
-              id: row.id,
-              table_id: tbl.id,
-              title: String(rowTitle),
-              content: row.richContent || JSON.stringify(row.data || {}),
-              data_json: JSON.stringify(row.data || {}),
-              rich_content: row.richContent,
-              created_at: row.createdAt || now,
-              updated_at: row.updatedAt || now,
-            });
+        rowsWithDirty.forEach((row) => {
+          const rowTitle = row.data?.name || row.data?.title || Object.values(row.data || {})[0] || row.id;
+          noteEntries.push({
+            id: row.id,
+            table_id: tbl.id,
+            title: String(rowTitle),
+            content: row.richContent || JSON.stringify(row.data || {}),
+            data_json: JSON.stringify(row.data || {}),
+            rich_content: row.richContent,
+            created_at: row.createdAt || now,
+            updated_at: row.updatedAt || now,
+            is_dirty: row.is_dirty !== undefined ? row.is_dirty : isDirty,
           });
-        }
+        });
       });
 
       await this.table_docs.bulkPut(tableEntries);
@@ -200,24 +212,31 @@ export class WonBeeDexieDatabase extends Dexie {
   /**
    * Save a single table incrementally
    */
-  async saveTable(table: TableDocument): Promise<void> {
+  async saveTable(table: TableDocument, isDirty: number = 1): Promise<void> {
     const now = Date.now();
     await this.transaction('rw', [this.table_docs, this.notes], async () => {
+      const rowsWithDirty = (table.rows || []).map((row) => ({
+        ...row,
+        updatedAt: row.updatedAt || now,
+        is_dirty: row.is_dirty !== undefined ? row.is_dirty : isDirty,
+      }));
+
       await this.table_docs.put({
         id: table.id,
         title: table.title,
         description: table.description,
         defaultView: table.defaultView,
         columns: table.columns || [],
-        rows: table.rows || [],
+        rows: rowsWithDirty,
         createdAt: table.createdAt || now,
-        updatedAt: table.updatedAt || now,
+        updatedAt: now,
+        is_dirty: isDirty,
       });
 
-      // Clear existing notes for this table and re-insert
+      // Clear existing notes for this table and re-insert with dirty flag
       await this.notes.where('table_id').equals(table.id).delete();
-      if (Array.isArray(table.rows) && table.rows.length > 0) {
-        const noteEntries: DexieNote[] = table.rows.map((row) => {
+      if (rowsWithDirty.length > 0) {
+        const noteEntries: DexieNote[] = rowsWithDirty.map((row) => {
           const rowTitle = row.data?.name || row.data?.title || Object.values(row.data || {})[0] || row.id;
           return {
             id: row.id,
@@ -228,6 +247,7 @@ export class WonBeeDexieDatabase extends Dexie {
             rich_content: row.richContent,
             created_at: row.createdAt || now,
             updated_at: row.updatedAt || now,
+            is_dirty: row.is_dirty !== undefined ? row.is_dirty : isDirty,
           };
         });
         await this.notes.bulkPut(noteEntries);
@@ -285,6 +305,7 @@ export class WonBeeDexieDatabase extends Dexie {
         rich_content: d.rich_content,
         created_at: d.created_at || Date.now(),
         updated_at: d.updated_at || Date.now(),
+        is_dirty: 0,
       }));
       await this.notes.bulkPut(noteEntries);
 
@@ -300,7 +321,7 @@ export class WonBeeDexieDatabase extends Dexie {
       for (const [tableId, changedNotes] of tableGroup.entries()) {
         const tbl = await this.table_docs.get(tableId);
         if (tbl) {
-          const rowMap = new Map(tbl.rows.map((r) => [r.id, r]));
+          const rowMap = new Map((tbl.rows || []).map((r) => [r.id, r]));
           changedNotes.forEach((n) => {
             let rowData: any = {};
             if (n.data_json) {
@@ -314,9 +335,82 @@ export class WonBeeDexieDatabase extends Dexie {
               richContent: n.rich_content || undefined,
               createdAt: n.created_at || Date.now(),
               updatedAt: n.updated_at || Date.now(),
+              is_dirty: 0,
             });
           });
           tbl.rows = Array.from(rowMap.values());
+          await this.table_docs.put(tbl);
+        }
+      }
+    });
+  }
+
+  /**
+   * Extract all dirty records (is_dirty: 1) for Push Sync to server
+   */
+  async getDirtyNotes(): Promise<DexieNote[]> {
+    try {
+      const dirty = await this.notes.where('is_dirty').equals(1).toArray();
+      if (dirty.length > 0) return dirty;
+
+      // Fallback: check rows in table_docs
+      const tables = await this.table_docs.toArray();
+      const extracted: DexieNote[] = [];
+      for (const t of tables) {
+        if (Array.isArray(t.rows)) {
+          for (const r of t.rows) {
+            if (r.is_dirty === 1) {
+              const rowTitle = r.data?.name || r.data?.title || Object.values(r.data || {})[0] || r.id;
+              extracted.push({
+                id: r.id,
+                table_id: t.id,
+                title: String(rowTitle),
+                content: r.richContent || JSON.stringify(r.data || {}),
+                data_json: JSON.stringify(r.data || {}),
+                rich_content: r.richContent,
+                created_at: r.createdAt || Date.now(),
+                updated_at: r.updatedAt || Date.now(),
+                is_dirty: 1,
+              });
+            }
+          }
+        }
+      }
+      return extracted;
+    } catch (err) {
+      console.warn('[Dexie] Failed to get dirty notes:', err);
+      return [];
+    }
+  }
+
+  /**
+   * Mark successfully synced notes as clean (is_dirty: 0)
+   */
+  async markNotesClean(noteIds: string[]): Promise<void> {
+    if (!noteIds || noteIds.length === 0) return;
+    const idSet = new Set(noteIds);
+
+    await this.transaction('rw', [this.notes, this.table_docs], async () => {
+      for (const id of noteIds) {
+        await this.notes.update(id, { is_dirty: 0 });
+      }
+
+      const allTables = await this.table_docs.toArray();
+      for (const tbl of allTables) {
+        let changed = false;
+        if (Array.isArray(tbl.rows)) {
+          tbl.rows.forEach((r) => {
+            if (idSet.has(r.id) && r.is_dirty !== 0) {
+              r.is_dirty = 0;
+              changed = true;
+            }
+          });
+        }
+        if (tbl.is_dirty === 1 && (!tbl.rows || tbl.rows.every((r) => r.is_dirty !== 1))) {
+          tbl.is_dirty = 0;
+          changed = true;
+        }
+        if (changed) {
           await this.table_docs.put(tbl);
         }
       }

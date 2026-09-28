@@ -46,6 +46,7 @@ export interface TableRow {
   stickers?: StickerData[];
   createdAt: number;
   updatedAt: number;
+  is_dirty?: number; // 1 = un-synced dirty state, 0 = synced
 }
 
 export interface StickerData {
@@ -118,6 +119,7 @@ export interface TableDocument {
   defaultView?: 'grid' | 'cards' | 'calendar';
   createdAt: number;
   updatedAt: number;
+  is_dirty?: number; // 1 = un-synced dirty state, 0 = synced
 }
 
 export interface WorkspaceData {
@@ -175,6 +177,9 @@ export interface IWorkspaceRepository {
   getWorkspaceMeta?(): Promise<{ last_updated_at: number; total_count: number; table_count?: number; tree_count?: number }>;
   getNotesCursor?(cursor?: string, limit?: number, tableId?: string): Promise<{ data: any[]; pagination: { next_cursor: string | null; has_more: boolean } }>;
   syncNotes?(since: number): Promise<{ data: any[]; since: number; latest_updated_at: number; count: number }>;
+  pushSync?(notes?: any[]): Promise<{ success: boolean; upsertedCount: number; last_updated_at?: number }>;
+  getDirtyNotes?(): Promise<any[]>;
+  markNotesClean?(noteIds: string[]): Promise<void>;
   getEvents?(tableId?: string): Promise<CalendarEvent[]>;
   saveEvent?(event: CalendarEvent, tableId: string): Promise<void>;
   deleteEvent?(eventId: string): Promise<void>;
