@@ -56,6 +56,48 @@ async function startServer() {
     res.json({ status: 'ok', database: 'sqlite3', timestamp: Date.now() });
   });
 
+  // --- Real-time SSE (Server-Sent Events) Stream for Multi-User & Instant Sync ---
+  const sseClients = new Set<express.Response>();
+
+  function broadcastWorkspaceUpdate(payload: { type: string; lastUpdated: number; tableId?: string }) {
+    const message = `data: ${JSON.stringify(payload)}\n\n`;
+    for (const client of sseClients) {
+      try {
+        client.write(message);
+      } catch {
+        sseClients.delete(client);
+      }
+    }
+  }
+
+  app.get('/api/sync/events', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache, no-transform');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders?.();
+
+    const lastUpdated = getLastUpdatedTimestamp();
+    res.write(`data: ${JSON.stringify({ type: 'connected', lastUpdated })}\n\n`);
+
+    sseClients.add(res);
+
+    // Heartbeat every 20 seconds to prevent TCP timeouts
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(': heartbeat\n\n');
+      } catch {
+        clearInterval(heartbeat);
+        sseClients.delete(res);
+      }
+    }, 20000);
+
+    req.on('close', () => {
+      clearInterval(heartbeat);
+      sseClients.delete(res);
+    });
+  });
+
   // --- Multi-PC Version & Change Tracking Endpoint with HTTP ETag / 304 Not Modified Support ---
   app.get('/api/workspace/version', (req, res) => {
     try {
@@ -121,6 +163,7 @@ async function startServer() {
     try {
       const keep = req.body?.keepTableIds;
       const result = cleanDatabaseConsistency(keep);
+      broadcastWorkspaceUpdate({ type: 'workspace_cleaned', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ success: true, ...result });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -141,6 +184,7 @@ async function startServer() {
   app.put('/api/workspace', (req, res) => {
     try {
       saveWorkspaceData(req.body);
+      broadcastWorkspaceUpdate({ type: 'workspace_updated', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ success: true, message: 'Workspace saved to SQLite DB' });
     } catch (err: any) {
       console.error('[API] Failed to save workspace:', err);
@@ -151,6 +195,7 @@ async function startServer() {
   app.post('/api/database/reload', (req, res) => {
     try {
       const ws = reloadDatabaseFromDisk();
+      broadcastWorkspaceUpdate({ type: 'database_reloaded', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ success: true, message: 'Database reloaded successfully', tablesCount: Object.keys(ws.tables).length });
     } catch (err: any) {
       console.error('[API] Failed to reload database:', err);
@@ -167,6 +212,7 @@ async function startServer() {
         return;
       }
       saveTree(tree);
+      broadcastWorkspaceUpdate({ type: 'tree_updated', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ success: true, count: tree.length });
     } catch (err: any) {
       console.error('[API] Failed to save tree:', err);
@@ -191,6 +237,7 @@ async function startServer() {
   app.put('/api/tables/:id', (req, res) => {
     try {
       saveTable(req.body);
+      broadcastWorkspaceUpdate({ type: 'table_updated', lastUpdated: getLastUpdatedTimestamp(), tableId: req.params.id });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -205,6 +252,7 @@ async function startServer() {
         return;
       }
       renameTable(req.params.id, title.trim());
+      broadcastWorkspaceUpdate({ type: 'table_renamed', lastUpdated: getLastUpdatedTimestamp(), tableId: req.params.id });
       res.json({ success: true, title: title.trim() });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -214,6 +262,7 @@ async function startServer() {
   app.delete('/api/tables/:id', (req, res) => {
     try {
       deleteTable(req.params.id);
+      broadcastWorkspaceUpdate({ type: 'table_deleted', lastUpdated: getLastUpdatedTimestamp(), tableId: req.params.id });
       res.json({ success: true });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -255,6 +304,7 @@ async function startServer() {
         return;
       }
       saveCalendarEvent(event, tableId);
+      broadcastWorkspaceUpdate({ type: 'events_updated', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ success: true, event });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -266,6 +316,7 @@ async function startServer() {
       const eventId = req.params.id;
       console.log(`[API] Deleting calendar event with ID: ${eventId}`);
       deleteCalendarEvent(eventId);
+      broadcastWorkspaceUpdate({ type: 'events_updated', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ success: true, deletedId: eventId });
     } catch (err: any) {
       console.error('[API] Delete event error:', err);

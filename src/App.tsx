@@ -197,12 +197,13 @@ export default function App() {
 
   const lastEtagRef = useRef<string | null>(null);
 
-  // Multi-PC Auto-Sync: Check server for remote changes every 2.5s, on window focus, or tab visibility change
-  // Uses HTTP ETag / 304 Not Modified to avoid body transfers and unnecessary polling traffic!
+  // Event-Driven Multi-User Sync (SSE) + Specific Event Triggers (ZERO setInterval polling!)
   useEffect(() => {
     if (!useServer) return;
 
     let isChecking = false;
+
+    // 1-Shot Version Verification with HTTP ETag (304 Not Modified)
     const checkServerVersion = async () => {
       if (isChecking) return;
       // Do not sync while user is actively typing in a header or has a modal open
@@ -217,7 +218,6 @@ export default function App() {
           headers['If-None-Match'] = lastEtagRef.current;
         }
 
-        // 2.1. Removed ?_t= parameter; 2.4. Smart Polling with ETag / 304 Not Modified
         const res = await fetch(`${serverUrl}/workspace/version`, {
           cache: 'no-store',
           headers,
@@ -238,12 +238,12 @@ export default function App() {
 
         // If server was updated after our local state
         if (info.lastUpdated && info.lastUpdated > localTime + 600) {
-          console.log('[Multi-PC Sync] Remote updates detected on server, delta syncing in background...');
+          console.log('[Event Sync] Remote updates detected on server, delta syncing in background...');
           lastLoadedTimestampRef.current = info.lastUpdated;
           if (repository.syncNotes) {
             await repository.syncNotes(localTime);
           }
-          await loadWorkspaceData(true); // SILENT SYNC! Never shows bouncing bee loading overlay!
+          await loadWorkspaceData(true); // SILENT SYNC!
         }
       } catch {
         // Ignore network hiccups during background sync check
@@ -252,21 +252,60 @@ export default function App() {
       }
     };
 
-    const interval = setInterval(checkServerVersion, 2500);
-    const handleFocus = () => checkServerVersion();
-    const handleVisibility = () => {
-      if (document.visibilityState === 'visible') {
-        checkServerVersion();
-      }
+    // Trigger 1: App initial mount (1-time check)
+    checkServerVersion();
+
+    // Trigger 2: Browser tab focus return (window onFocus)
+    const handleFocus = () => {
+      checkServerVersion();
+    };
+
+    // Trigger 3: Network reconnect (online event)
+    const handleOnline = () => {
+      console.log('[Network] Online event detected, performing single-shot version check...');
+      checkServerVersion();
     };
 
     window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('online', handleOnline);
+
+    // Trigger 4: Multi-User Real-time Synchronization via SSE (Server-Sent Events) - Zero polling!
+    let eventSource: EventSource | null = null;
+    try {
+      eventSource = new EventSource(`${serverUrl}/sync/events`);
+
+      eventSource.onmessage = async (e) => {
+        try {
+          const payload = JSON.parse(e.data);
+          if (payload.type === 'connected') return;
+
+          const localTime = Math.max(lastLoadedTimestampRef.current, workspace.exportedAt || 0);
+          if (payload.lastUpdated && payload.lastUpdated > localTime) {
+            console.log('[SSE Multi-User Sync] Real-time mutation event received:', payload.type);
+            lastLoadedTimestampRef.current = payload.lastUpdated;
+            if (repository.syncNotes) {
+              await repository.syncNotes(localTime);
+            }
+            await loadWorkspaceData(true);
+          }
+        } catch (err) {
+          console.warn('[SSE] Failed to parse message:', err);
+        }
+      };
+
+      eventSource.onerror = () => {
+        // Browser EventSource automatically reconnects on disconnections
+      };
+    } catch (err) {
+      console.warn('[SSE] EventSource initialization failed:', err);
+    }
 
     return () => {
-      clearInterval(interval);
       window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('online', handleOnline);
+      if (eventSource) {
+        eventSource.close();
+      }
     };
   }, [
     useServer,
