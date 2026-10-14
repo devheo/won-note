@@ -72,11 +72,16 @@ export function markdownToHtml(markdown: string): string {
     });
   }
 
-  // 2. Add wonbee-rich-table styling class and default all borders
-  if (processedHtml.includes('<table>')) {
+  // 2. Add wonbee-rich-table styling class and preserve all existing table attributes/styles
+  if (/<table[\s>]/i.test(processedHtml)) {
     processedHtml = processedHtml.replace(
-      /<table>/g,
-      '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all">'
+      /<table(\s[^>]*)?>/gi,
+      (match, attrs) => {
+        if (match.includes('class=')) {
+          return match.replace(/class=["']([^"']*)["']/i, 'class="$1 wonbee-rich-table"');
+        }
+        return `<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"${attrs || ''}>`;
+      }
     );
   }
 

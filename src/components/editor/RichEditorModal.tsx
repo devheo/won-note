@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { ReactNodeViewRenderer, useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
-import { TextSelection } from '@tiptap/pm/state';
+import { TextSelection, NodeSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { createLowlight, common } from 'lowlight';
@@ -31,6 +31,7 @@ import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer'
 import { detectLanguage, escapeHtml, formatJavaOrGeneralCode } from '../../utils/codeHighlighter';
 import { delimitedTextToHtmlTable, convertTextDataToEditorContent } from '../../utils/csvParser';
 import { compressAndResizeImage } from '../../utils/imageOptimizer';
+import { wonbeeDexieDB } from '../../services/storage/dexieDb';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import { AiAgentDrawer } from '../agent/AiAgentDrawer';
@@ -79,6 +80,8 @@ import {
   Edit3,
   Database,
   ClipboardPaste,
+  Copy,
+  Scissors,
   AlignLeft,
   AlignCenter,
   AlignRight,
@@ -123,7 +126,7 @@ try {
   baseLowlight.registerAlias('typescript', ['ts', 'tsx']);
   baseLowlight.registerAlias('python', ['py']);
   baseLowlight.registerAlias('bash', ['sh', 'zsh', 'shell']);
-  baseLowlight.registerAlias('c', ['pc', 'h']);
+  baseLowlight.registerAlias('c', ['pc', 'proc', 'h']);
   baseLowlight.registerAlias('cpp', ['cc', 'cxx', 'hpp']);
 } catch (e) {
   console.warn('baseLowlight.registerAlias error:', e);
@@ -218,9 +221,129 @@ const lowlight = {
   },
 };
 
+/**
+ * Sanitizes Excel/MS Office/Web HTML tables before pasting into TipTap editor.
+ * Removes bloat tags (<o:p>, <font>), empty paragraph wrappers (<p><br></p>),
+ * duplicate linebreaks (<br><br>), and normalizes cells into clean HTML tables.
+ */
+function sanitizeExcelTableHtml(htmlData: string): string {
+  if (!htmlData || typeof htmlData !== 'string') return htmlData;
+
+  let clean = htmlData;
+
+  // 1. Remove MS Office bloat, conditional comments, and unnecessary font/meta/style tags
+  clean = clean
+    .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, '')
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<meta[^>]*>/gi, '')
+    .replace(/<\/?o:p[^>]*>/gi, '')
+    .replace(/<\/?font[^>]*>/gi, '');
+
+  // 2. Normalize forced linebreaks (<br>, \r, \n, <p>) inside <td> and <th> cells to a single space " "
+  clean = clean.replace(/<(td|th)([^>]*)>([\s\S]*?)<\/\1>/gi, (match, tag, attrs, content) => {
+    let cleanContent = content
+      // Remove empty <p><br></p> or <p>&nbsp;</p>
+      .replace(/<p[^>]*>(?:\s*<br\s*\/?>|\s|&nbsp;)*<\/p>/gi, '')
+      // Convert internal <p> and <br> tags to a single space
+      .replace(/<\/?p[^>]*>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, ' ')
+      // Convert newlines/carriage returns to space
+      .replace(/[\r\n]+/g, ' ')
+      // Collapse multiple spaces/nbsp into a single clean space
+      .replace(/(?:&nbsp;|\s)+/g, ' ')
+      .trim();
+
+    return `<${tag}${attrs}>${cleanContent}</${tag}>`;
+  });
+
+  // 3. Remove \r\n whitespace bloat between table tags
+  clean = clean.replace(/(<\/(?:tr|td|th|thead|tbody|table)>)\s*[\r\n]+\s*(<(?:tr|td|th|thead|tbody|table)[\s>])/gi, '$1$2');
+
+  // 4. Ensure table gets wonbee-rich-table styling classes and clean attributes
+  clean = clean
+    .replace(/<table([^>]*)>/gi, (match, attrs) => {
+      let cleanAttrs = attrs
+        .replace(/border=["']?0["']?/gi, '')
+        .replace(/style=["'][^"']*border:\s*none[^"']*["']/gi, '');
+      if (cleanAttrs.includes('class=')) {
+        cleanAttrs = cleanAttrs.replace(/class=["']([^"']*)["']/gi, 'class="$1 wonbee-rich-table wonbee-table-border-all"');
+      } else {
+        cleanAttrs = ` class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"${cleanAttrs}`;
+      }
+      return `<table${cleanAttrs}>`;
+    })
+    .replace(/<td([^>]*)>/gi, (match, attrs) => {
+      let cleanAttrs = attrs.replace(/border:\s*none/gi, '');
+      return `<td${cleanAttrs}>`;
+    })
+    .replace(/<th([^>]*)>/gi, (match, attrs) => {
+      let cleanAttrs = attrs.replace(/border:\s*none/gi, '');
+      return `<th${cleanAttrs}>`;
+    });
+
+  return clean;
+}
+
+/**
+ * Saves image asset to Dexie (Offline asset://{id}) or uploads to Express server (/uploads/{filename}).
+ * Prevents raw 100MB+ Base64 strings from polluting note database fields.
+ */
+async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promise<string> {
+  const mimeType = file.type || 'image/png';
+  const ext = mimeType.includes('png')
+    ? 'png'
+    : mimeType.includes('jpeg') || mimeType.includes('jpg')
+    ? 'jpg'
+    : mimeType.includes('webp')
+    ? 'webp'
+    : 'png';
+  const assetId = `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const filename = `${assetId}.${ext}`;
+
+  if (isServerMode) {
+    try {
+      const { dataUrl } = await compressAndResizeImage(file);
+      const res = await fetch('/api/assets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename,
+          blobBase64: dataUrl,
+          mimeType,
+        }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        if (json.url) return json.url;
+      }
+    } catch (err) {
+      console.warn('[Asset] Server asset upload failed, falling back to Dexie storage:', err);
+    }
+  }
+
+  // Offline or Server Fallback -> Save to Dexie assets store as binary Blob
+  const { dataUrl } = await compressAndResizeImage(file);
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+
+  await wonbeeDexieDB.saveAsset({
+    id: assetId,
+    blob,
+    filename,
+    mime_type: mimeType,
+    created_at: Date.now(),
+    is_dirty: 1,
+  });
+
+  return `asset://${assetId}`;
+}
+
 // Helper to compute combined inline styles for table cells/headers
 const formatCellStyles = (attributes: Record<string, any>) => {
   const styles: string[] = [];
+  if (attributes.textAlign) {
+    styles.push(`text-align: ${attributes.textAlign}`);
+  }
   if (attributes.backgroundColor) {
     styles.push(`background-color: ${attributes.backgroundColor}`);
   }
@@ -261,11 +384,22 @@ const formatCellStyles = (attributes: Record<string, any>) => {
   return styles.join('; ');
 };
 
-// Custom TableCell supporting background colors and individual cell borders
+// Custom TableCell supporting background colors, text alignment and individual cell borders
 const CustomTableCell = TableCell.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
+      textAlign: {
+        default: null,
+        parseHTML: (element) => element.style.textAlign || element.getAttribute('align') || element.getAttribute('data-align') || null,
+        renderHTML: (attributes) => {
+          if (!attributes.textAlign) return {};
+          return {
+            style: `text-align: ${attributes.textAlign}`,
+            'data-align': attributes.textAlign,
+          };
+        },
+      },
       backgroundColor: {
         default: null,
         parseHTML: (element) => element.style.backgroundColor || element.getAttribute('data-bg-color') || null,
@@ -293,11 +427,22 @@ const CustomTableCell = TableCell.extend({
   },
 });
 
-// Custom TableHeader supporting background colors and individual cell borders
+// Custom TableHeader supporting background colors, text alignment and individual cell borders
 const CustomTableHeader = TableHeader.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
+      textAlign: {
+        default: null,
+        parseHTML: (element) => element.style.textAlign || element.getAttribute('align') || element.getAttribute('data-align') || null,
+        renderHTML: (attributes) => {
+          if (!attributes.textAlign) return {};
+          return {
+            style: `text-align: ${attributes.textAlign}`,
+            'data-align': attributes.textAlign,
+          };
+        },
+      },
       backgroundColor: {
         default: null,
         parseHTML: (element) => element.style.backgroundColor || element.getAttribute('data-bg-color') || null,
@@ -352,6 +497,7 @@ class CustomTableView extends TableView {
   private resizeHandle: HTMLDivElement | null = null;
   private insertBeforeBtn: HTMLDivElement | null = null;
   private insertAfterBtn: HTMLDivElement | null = null;
+  private selectGripHandle: HTMLDivElement | null = null;
   private isResizing = false;
 
   constructor(node: any, cellMinWidth: number, view?: any, HTMLAttributes: Record<string, any> = {}) {
@@ -360,6 +506,8 @@ class CustomTableView extends TableView {
     this.syncTableAttributes(node);
     this.initResizeHandle();
     this.initInsertButtons();
+    this.initSelectGripHandle();
+    this.initNodeSelectionListeners();
   }
 
   update(node: any) {
@@ -367,8 +515,151 @@ class CustomTableView extends TableView {
     if (updated) {
       this.syncTableAttributes(node);
       this.initInsertButtons();
+      this.initSelectGripHandle();
     }
     return updated;
+  }
+
+  selectNode() {
+    if (this.dom) {
+      this.dom.classList.add('ProseMirror-selectednode', 'wonbee-table-selected');
+    }
+    if (this.table) {
+      this.table.classList.add('wonbee-table-selected');
+    }
+  }
+
+  deselectNode() {
+    if (this.dom) {
+      this.dom.classList.remove('ProseMirror-selectednode', 'wonbee-table-selected');
+    }
+    if (this.table) {
+      this.table.classList.remove('wonbee-table-selected');
+    }
+  }
+
+  private initSelectGripHandle() {
+    if (typeof document === 'undefined' || !this.dom) return;
+    if (this.selectGripHandle) return;
+
+    const grip = document.createElement('div');
+    grip.className = 'wonbee-table-select-grip';
+    grip.setAttribute('contenteditable', 'false');
+    grip.setAttribute('draggable', 'true');
+    grip.setAttribute('data-drag-handle', 'true');
+    grip.setAttribute('title', '클릭: 표 전체 선택 (파란색 블록 지정) / 드래그: 표 위치 이동');
+    grip.innerHTML = `
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="5" r="1.5"></circle><circle cx="15" cy="5" r="1.5"></circle>
+        <circle cx="9" cy="12" r="1.5"></circle><circle cx="15" cy="12" r="1.5"></circle>
+        <circle cx="9" cy="19" r="1.5"></circle><circle cx="15" cy="19" r="1.5"></circle>
+      </svg>
+    `;
+
+    grip.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      if (!this.customView || typeof (this as any).getPos !== 'function') return;
+      try {
+        const pos = (this as any).getPos();
+        if (typeof pos === 'number') {
+          const { state, dispatch } = this.customView;
+          const selection = NodeSelection.create(state.doc, pos);
+          dispatch(state.tr.setSelection(selection));
+          this.selectNode();
+          this.customView.focus();
+        }
+      } catch (err) {
+        console.warn('Table select grip error:', err);
+      }
+    });
+
+    grip.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!this.customView || typeof (this as any).getPos !== 'function') return;
+      try {
+        const pos = (this as any).getPos();
+        if (typeof pos === 'number') {
+          const { state, dispatch } = this.customView;
+          const selection = NodeSelection.create(state.doc, pos);
+          dispatch(state.tr.setSelection(selection));
+          this.selectNode();
+          this.customView.focus();
+        }
+      } catch (err) {
+        console.warn('Table select grip click error:', err);
+      }
+    });
+
+    grip.addEventListener('dragstart', (e) => {
+      if (!this.customView || typeof (this as any).getPos !== 'function') return;
+      try {
+        const pos = (this as any).getPos();
+        if (typeof pos === 'number') {
+          const { state, dispatch } = this.customView;
+          const selection = NodeSelection.create(state.doc, pos);
+          dispatch(state.tr.setSelection(selection));
+          this.selectNode();
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', '[표]');
+          }
+        }
+      } catch (_) {}
+    });
+
+    if (this.dom) {
+      if (this.dom.firstChild) {
+        this.dom.insertBefore(grip, this.dom.firstChild);
+      } else {
+        this.dom.appendChild(grip);
+      }
+      this.selectGripHandle = grip;
+    }
+  }
+
+  private initNodeSelectionListeners() {
+    if (typeof document === 'undefined' || !this.dom) return;
+
+    this.dom.setAttribute('draggable', 'true');
+
+    // Click / Shift+Click / Alt+Click on table outer border selects table node
+    this.dom.addEventListener('mousedown', (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const isCellOrCellContent = target && (target.tagName === 'TD' || target.tagName === 'TH' || target.closest('td, th'));
+
+      if (e.shiftKey || e.altKey || !isCellOrCellContent || target === this.table || target === this.dom) {
+        if (typeof (this as any).getPos === 'function' && this.customView) {
+          try {
+            const pos = (this as any).getPos();
+            if (typeof pos === 'number') {
+              const { state, dispatch } = this.customView;
+              const selection = NodeSelection.create(state.doc, pos);
+              dispatch(state.tr.setSelection(selection));
+              this.customView.focus();
+            }
+          } catch (_) {}
+        }
+      }
+    });
+
+    // Dragging table node triggers ProseMirror NodeSelection DND
+    this.dom.addEventListener('dragstart', (e: DragEvent) => {
+      if (typeof (this as any).getPos === 'function' && this.customView) {
+        try {
+          const pos = (this as any).getPos();
+          if (typeof pos === 'number') {
+            const { state, dispatch } = this.customView;
+            const selection = NodeSelection.create(state.doc, pos);
+            dispatch(state.tr.setSelection(selection));
+            if (e.dataTransfer) {
+              e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/plain', '[표]');
+            }
+          }
+        } catch (_) {}
+      }
+    });
   }
 
   private initInsertButtons() {
@@ -636,6 +927,8 @@ class CustomTableView extends TableView {
 
 // Custom Table supporting borders & styles
 const CustomTable = Table.extend({
+  selectable: true,
+  draggable: true,
   addOptions() {
     return {
       ...this.parent?.(),
@@ -861,6 +1154,39 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
   // Code & Markdown Dialog Tab ('templates' | 'md_paste' | 'tools')
   const [codeDialogTab, setCodeDialogTab] = useState<'templates' | 'md_paste' | 'tools'>('templates');
+
+  // Right-Click Context Menu State
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    isInTable: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+
+    const handleOutsideClick = (e: Event) => {
+      const popupEl = document.getElementById('rich-editor-context-menu');
+      if (popupEl && popupEl.contains(e.target as Node)) {
+        return;
+      }
+      setContextMenu(null);
+    };
+
+    // Attach capture phase listeners to close menu on outside clicks/scrolls
+    const timer = setTimeout(() => {
+      document.addEventListener('pointerdown', handleOutsideClick, true);
+      document.addEventListener('scroll', handleOutsideClick, true);
+      window.addEventListener('contextmenu', handleOutsideClick, true);
+    }, 10);
+
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('pointerdown', handleOutsideClick, true);
+      document.removeEventListener('scroll', handleOutsideClick, true);
+      window.removeEventListener('contextmenu', handleOutsideClick, true);
+    };
+  }, [contextMenu]);
 
   // Markdown & Data (Excel/CSV/TSV/TXT) Paste & Apply Dialog states
   const [mdPasteInputText, setMdPasteInputText] = useState('');
@@ -1184,7 +1510,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }
 
       if (e.key === 'Escape') {
-        if (showExitConfirm) {
+        if (contextMenu) {
+          e.preventDefault();
+          e.stopPropagation();
+          setContextMenu(null);
+        } else if (showExitConfirm) {
           e.preventDefault();
           e.stopPropagation();
           setShowExitConfirm(false);
@@ -1200,7 +1530,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [activeTopDialog, showExitConfirm, handleSave, handleRequestClose]);
+  }, [activeTopDialog, showExitConfirm, contextMenu, handleSave, handleRequestClose]);
 
   // Warn on browser tab close/reload if there are unsaved changes
   useEffect(() => {
@@ -1222,6 +1552,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         codeBlock: false,
       }),
       CodeBlockLowlight.extend({
+        draggable: true,
+        selectable: true,
         addAttributes() {
           return {
             ...this.parent?.(),
@@ -1326,8 +1658,127 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         class:
           'prose dark:prose-invert max-w-none focus:outline-none min-h-[350px] text-sm text-stone-800 dark:text-[#f0f0f0] leading-relaxed font-sans',
       },
+      handleDOMEvents: {
+        contextmenu: (view, event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const target = event.target as HTMLElement;
+
+          // Dual check for table context: DOM element closest + ProseMirror depth check
+          let inTableDom = false;
+          if (target) {
+            inTableDom = Boolean(target.closest('table, td, th, .tableWrapper'));
+          }
+
+          let inTableProse = false;
+          try {
+            const { $from } = view.state.selection;
+            for (let d = $from.depth; d > 0; d--) {
+              if ($from.node(d).type.name === 'table') {
+                inTableProse = true;
+                break;
+              }
+            }
+          } catch (_) {}
+
+          const isInTable = inTableDom || inTableProse;
+
+          setTimeout(() => {
+            setContextMenu({
+              x: event.clientX,
+              y: event.clientY,
+              isInTable,
+            });
+          }, 0);
+          return true;
+        },
+        mousedown: (view, event) => {
+          const target = event.target as HTMLElement;
+          if (!target) return false;
+
+          const isCell = target.tagName === 'TD' || target.tagName === 'TH';
+          const isCellContent = target.closest('td, th');
+          const tableEl = target.closest('table') || target.closest('.tableWrapper');
+
+          if (tableEl && (event.shiftKey || event.altKey || (!isCell && !isCellContent))) {
+            try {
+              const pos = view.posAtDOM(tableEl, 0);
+              if (typeof pos === 'number' && pos >= 0) {
+                const { state, dispatch } = view;
+                const $pos = state.doc.resolve(pos);
+                for (let d = $pos.depth; d >= 0; d--) {
+                  const node = $pos.node(d);
+                  if (node && node.type.name === 'table') {
+                    const tablePos = $pos.before(d);
+                    const selection = NodeSelection.create(state.doc, tablePos);
+                    dispatch(state.tr.setSelection(selection));
+                    view.focus();
+                    event.preventDefault();
+                    event.stopPropagation();
+                    return true;
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+          return false;
+        },
+      },
+      transformPastedHTML: (html) => {
+        if (
+          html &&
+          (html.includes('<table') ||
+            html.includes('xmlns:x="urn:schemas-microsoft-com:office:excel"') ||
+            (html.includes('<tr') && html.includes('<td')))
+        ) {
+          return sanitizeExcelTableHtml(html);
+        }
+        return html;
+      },
       handleKeyDown: (view, event) => {
-        // Tab key support: insert 4 spaces for code indenting instead of losing focus
+        const { state, dispatch } = view;
+        const { selection } = state;
+
+        // 1. Backspace key handling: when inside an empty paragraph before a block node
+        if (event.key === 'Backspace' && selection.empty) {
+          const { $from } = selection;
+          const parent = $from.parent;
+
+          if (parent.type.name === 'paragraph' && parent.content.size === 0) {
+            const nextNode = $from.nodeAfter || state.doc.nodeAt($from.after());
+            if (
+              nextNode &&
+              (nextNode.type.name === 'table' ||
+                nextNode.type.name === 'codeBlock' ||
+                nextNode.type.name === 'image')
+            ) {
+              event.preventDefault();
+              const tr = state.tr.delete($from.before(), $from.after());
+              dispatch(tr);
+              return true;
+            }
+          }
+        }
+
+        // 2. Delete key handling: when at the end of a paragraph right before a block node
+        if (event.key === 'Delete' && selection.empty) {
+          const { $from } = selection;
+          const nextNode = $from.nodeAfter;
+          if (
+            nextNode &&
+            (nextNode.type.name === 'table' ||
+              nextNode.type.name === 'codeBlock' ||
+              nextNode.type.name === 'image')
+          ) {
+            event.preventDefault();
+            const blockPos = $from.pos;
+            const tr = state.tr.setSelection(NodeSelection.create(state.doc, blockPos));
+            dispatch(tr);
+            return true;
+          }
+        }
+
+        // 3. Tab key support: insert 4 spaces for code indenting instead of losing focus
         if (event.key === 'Tab') {
           event.preventDefault();
           view.dispatch(view.state.tr.insertText('    '));
@@ -1384,26 +1835,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
         if (isHtmlTable) {
           event.preventDefault();
-          // Normalize and apply full crisp borders to pasted tables
-          let cleanTableHtml = htmlData
-            .replace(/<table([^>]*)>/gi, (match, attrs) => {
-              let cleanAttrs = attrs
-                .replace(/border=["']?0["']?/gi, '')
-                .replace(/style=["'][^"']*border:\s*none[^"']*["']/gi, '');
-              return `<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"${cleanAttrs}>`;
-            })
-            .replace(/<td([^>]*)>/gi, (match, attrs) => {
-              let cleanAttrs = attrs.replace(/border:\s*none/gi, '');
-              return `<td${cleanAttrs}>`;
-            })
-            .replace(/<th([^>]*)>/gi, (match, attrs) => {
-              let cleanAttrs = attrs.replace(/border:\s*none/gi, '');
-              return `<th${cleanAttrs}>`;
-            });
+          const cleanTableHtml = sanitizeExcelTableHtml(htmlData);
 
           if (ed) {
             ed.chain().focus().insertContent(cleanTableHtml).run();
-            setToastMessage('✓ 엑셀/스프레드시트 표 데이터(테두리 적용) 붙여넣기 완료');
+            setToastMessage('✓ 엑셀/스프레드시트 표 데이터(정제 완료) 붙여넣기 완료');
             setTimeout(() => setToastMessage(null), 2500);
             return true;
           }
@@ -1431,15 +1867,16 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             const file = item.getAsFile();
             if (file) {
               event.preventDefault();
-              compressAndResizeImage(file).then(({ dataUrl }) => {
+              const isServerMode = localStorage.getItem('wonbee_use_server') !== 'false';
+              saveOrUploadImageAsset(file, isServerMode).then((imgSrc) => {
                 const targetEd = editorRef.current || (view as any).editor;
                 if (targetEd) {
                   targetEd.chain().focus().setImage({
-                    src: dataUrl,
+                    src: imgSrc,
                     alt: 'Pasted Image',
                     ...({ width: '50%', layout: 'inline' } as any),
                   }).run();
-                  setToastMessage('✓ 이미지가 삽입되었습니다 (크기 조절 및 나란히 배치 지원).');
+                  setToastMessage('✓ 이미지가 안전하게 스토리지에 저장되어 삽입되었습니다.');
                   setTimeout(() => setToastMessage(null), 2500);
                 }
               });
@@ -1686,6 +2123,91 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     setActiveTopDialog(null);
   }, [editor]);
 
+  const getSelectedText = useCallback((): string => {
+    if (!editor) return '';
+    const { state } = editor;
+    const { from, to, empty } = state.selection;
+    if (empty) return '';
+    return state.doc.textBetween(from, to, '\n');
+  }, [editor]);
+
+  // Right-Click Context Menu Clipboard & Selection Actions
+  const handleContextCopy = useCallback(() => {
+    if (!editor) return;
+    editor.commands.focus();
+    const selectedText = getSelectedText();
+    if (selectedText && selectedText.trim() !== '') {
+      navigator.clipboard.writeText(selectedText).then(() => {
+        setToastMessage('✓ 선택 영역이 클립보드에 복사되었습니다.');
+      }).catch(() => {
+        try {
+          document.execCommand('copy');
+          setToastMessage('✓ 선택 영역이 복사되었습니다.');
+        } catch (_) {
+          setToastMessage('⚠ 복사 실패 (Ctrl+C를 이용하세요)');
+        }
+      });
+    } else if (contextMenu?.isInTable) {
+      const cellText = editor.getAttributes('tableCell').textContent || editor.getAttributes('tableHeader').textContent || '';
+      if (cellText) {
+        navigator.clipboard.writeText(cellText).then(() => {
+          setToastMessage('✓ 표 셀 데이터가 복사되었습니다.');
+        }).catch(() => {
+          setToastMessage('⚠ 복사 실패');
+        });
+      }
+    }
+    setContextMenu(null);
+    setTimeout(() => setToastMessage(null), 2000);
+  }, [editor, getSelectedText, contextMenu]);
+
+  const handleContextCut = useCallback(() => {
+    if (!editor) return;
+    editor.commands.focus();
+    const selectedText = getSelectedText();
+    if (selectedText && selectedText.trim() !== '') {
+      navigator.clipboard.writeText(selectedText).then(() => {
+        editor.chain().focus().deleteSelection().run();
+        setToastMessage('✓ 잘라내기 완료.');
+      }).catch(() => {
+        try {
+          document.execCommand('cut');
+          setToastMessage('✓ 잘라내기 완료.');
+        } catch (_) {
+          editor.chain().focus().deleteSelection().run();
+          setToastMessage('✓ 선택 영역이 삭제되었습니다.');
+        }
+      });
+    }
+    setContextMenu(null);
+    setTimeout(() => setToastMessage(null), 2000);
+  }, [editor, getSelectedText]);
+
+  const handleContextPaste = useCallback(async () => {
+    if (!editor) return;
+    editor.commands.focus();
+    try {
+      const text = await navigator.clipboard.readText();
+      if (text) {
+        editor.chain().focus().insertContent(text).run();
+        setToastMessage('✓ 클립보드 내용 붙여넣기 완료.');
+      } else {
+        setToastMessage('💡 클립보드 붙여넣기는 에디터에서 [Ctrl+V]를 눌러주세요.');
+      }
+    } catch (err) {
+      setToastMessage('💡 붙여넣기는 에디터 내부에서 단축키 [Ctrl+V]를 눌러주세요!');
+    }
+    setContextMenu(null);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, [editor]);
+
+  const handleContextDeleteSelection = useCallback(() => {
+    if (!editor) return;
+    editor.commands.focus();
+    editor.chain().focus().deleteSelection().run();
+    setContextMenu(null);
+  }, [editor]);
+
   // High-performance direct content loader for editor
   const loadContentWithProgress = useCallback(
     (targetId: string, rawDataToLoad?: string) => {
@@ -1847,15 +2369,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       editor.chain().focus().insertSticker({ color }).run();
     }
   };
-
-  // Helper to extract currently selected text in editor
-  const getSelectedText = useCallback((): string => {
-    if (!editor) return '';
-    const { state } = editor;
-    const { from, to, empty } = state.selection;
-    if (empty) return '';
-    return state.doc.textBetween(from, to, '\n');
-  }, [editor]);
 
   // Insert a new table safely with multi-layer fallback to guarantee creation
   const handleInsertNewTable = useCallback((rows: number, cols: number, withHeader: boolean = true) => {
@@ -3169,80 +3682,91 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               {/* DIALOG 2: 코드 & MD 통합 대화상자 (Unified Code & Markdown Dialog) */}
               {(activeTopDialog === 'code' || activeTopDialog === 'md_paste') && (() => {
                 const currentTab = activeTopDialog === 'md_paste' ? 'md_paste' : codeDialogTab;
+                const parsedData = mdPasteInputText.trim()
+                  ? convertTextDataToEditorContent(mdPasteInputText, {
+                      format: dataPasteFormat,
+                      delimiter: dataPasteDelimiter,
+                      hasHeader: dataPasteHasHeader,
+                      outputType: dataPasteOutputType,
+                      tableWidth: dataPasteTableWidth,
+                    })
+                  : null;
+
                 return (
-                <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                        <Code className="w-5 h-5" />
+                  <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
+                    {/* 헤더 영역 */}
+                    <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                          <Code className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
+                            코드 & 마크다운(MD) 통합 도구
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 font-mono font-medium">C · SQL · Java · MD</span>
+                          </h3>
+                          <p className="text-[11px] text-stone-500 dark:text-stone-400">
+                            언어별 코드 블록 삽입, 마크다운 붙여넣기/미리보기 및 파일 가져오기를 한곳에서 처리합니다
+                          </p>
+                        </div>
                       </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                          코드 & 마크다운(MD) 통합 도구
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 font-mono font-medium">C · SQL · Java · MD</span>
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          언어별 코드 블록 삽입, 마크다운 붙여넣기/미리보기 및 파일 가져오기를 한곳에서 처리합니다
-                        </p>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTopDialog(null)}
+                        className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
 
                   {/* Unified Navigation Tabs */}
                   <div className="flex rounded-xl bg-stone-100 dark:bg-[#141414] p-1 gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCodeDialogTab('templates');
-                        if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
-                      }}
-                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                        currentTab === 'templates'
-                          ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                      }`}
-                    >
-                      <Code className="w-3.5 h-3.5" />
-                      <span>주요 언어 템플릿</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCodeDialogTab('md_paste');
-                        if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
-                      }}
-                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                        currentTab === 'md_paste'
-                          ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                      }`}
-                    >
-                      <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
-                      <span>MD · 엑셀(CSV) · TXT 붙여넣기</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCodeDialogTab('tools');
-                        if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
-                      }}
-                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                        currentTab === 'tools'
-                          ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                      }`}
-                    >
-                      <FileText className="w-3.5 h-3.5 text-sky-500" />
-                      <span>문서 & 파일 도구</span>
-                    </button>
-                  </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCodeDialogTab('templates');
+                              if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
+                            }}
+                            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                              currentTab === 'templates'
+                                ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
+                                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                            }`}
+                          >
+                            <Code className="w-3.5 h-3.5" />
+                            <span>주요 언어 템플릿</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCodeDialogTab('md_paste');
+                              if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
+                            }}
+                            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                              currentTab === 'md_paste'
+                                ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
+                                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                            }`}
+                          >
+                            <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
+                            <span>MD · 엑셀(CSV) · TXT 붙여넣기</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCodeDialogTab('tools');
+                              if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
+                            }}
+                            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
+                              currentTab === 'tools'
+                                ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
+                                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
+                            }`}
+                          >
+                            <FileText className="w-3.5 h-3.5 text-sky-500" />
+                            <span>문서 & 파일 도구</span>
+                          </button>
+                        </div>
 
                   {/* TAB 1: 주요 언어 템플릿 */}
                   {currentTab === 'templates' && (
@@ -6147,6 +6671,322 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             }
           }}
         />
+
+        {/* Right-Click Context Menu Popup */}
+        {contextMenu && (
+          <div
+            id="rich-editor-context-menu"
+            className="fixed z-[9999] w-72 bg-white/95 dark:bg-[#202020]/95 backdrop-blur-md rounded-2xl shadow-2xl border border-stone-200/80 dark:border-stone-700/80 p-2 text-xs text-stone-800 dark:text-stone-200 animate-in fade-in zoom-in-95 select-none pointer-events-auto"
+            style={{
+              top: Math.max(10, Math.min(contextMenu.y, window.innerHeight - 520)),
+              left: Math.max(10, Math.min(contextMenu.x, window.innerWidth - 300)),
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="px-3 py-2 border-b border-stone-200/60 dark:border-stone-800 flex items-center justify-between mb-1">
+              <div className="flex items-center gap-2 font-bold text-stone-800 dark:text-stone-100">
+                <div className="p-1 rounded-lg bg-amber-500/15 text-amber-600 dark:text-amber-400">
+                  <Sparkles className="w-3.5 h-3.5" />
+                </div>
+                <span>서식 & 편집 메뉴</span>
+              </div>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-semibold">
+                TipTap
+              </span>
+            </div>
+
+            <div className="space-y-1">
+              {/* Section 1: Clipboard Operations */}
+              <div className="py-0.5 space-y-0.5 border-b border-stone-200/60 dark:border-stone-800">
+                <div className="px-2.5 py-0.5 text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+                  클립보드
+                </div>
+                <button
+                  type="button"
+                  onClick={handleContextCopy}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
+                >
+                  <span className="flex items-center gap-2 font-medium">
+                    <Copy className="w-3.5 h-3.5 text-stone-400 group-hover:text-amber-500 transition-colors" />
+                    <span>복사 (Copy)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400">Ctrl+C</kbd>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleContextCut}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
+                >
+                  <span className="flex items-center gap-2 font-medium">
+                    <Scissors className="w-3.5 h-3.5 text-stone-400 group-hover:text-amber-500 transition-colors" />
+                    <span>잘라내기 (Cut)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400">Ctrl+X</kbd>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleContextPaste}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
+                >
+                  <span className="flex items-center gap-2 font-medium">
+                    <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
+                    <span>붙여넣기 (Paste)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400">Ctrl+V</kbd>
+                </button>
+              </div>
+
+              {/* Section 2: Paragraph Styles */}
+              <div className="py-0.5 space-y-0.5 border-b border-stone-200/60 dark:border-stone-800">
+                <div className="px-2.5 py-0.5 text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+                  문단 스타일
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().setParagraph().run(); setContextMenu(null); }}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
+                >
+                  <span className="flex items-center gap-2 font-medium">
+                    <Type className="w-3.5 h-3.5 text-stone-400 group-hover:text-amber-500 transition-colors" />
+                    <span>본문 (Paragraph)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400">Ctrl+Alt+0</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().toggleHeading({ level: 1 }).run(); setContextMenu(null); }}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left font-bold group"
+                >
+                  <span className="flex items-center gap-2">
+                    <Heading1 className="w-3.5 h-3.5 text-amber-500" />
+                    <span>제목 1 (H1)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400 font-normal">Ctrl+Alt+1</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().toggleHeading({ level: 2 }).run(); setContextMenu(null); }}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left font-bold group"
+                >
+                  <span className="flex items-center gap-2">
+                    <Heading2 className="w-3.5 h-3.5 text-amber-500" />
+                    <span>제목 2 (H2)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400 font-normal">Ctrl+Alt+2</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().toggleHeading({ level: 3 }).run(); setContextMenu(null); }}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left font-bold group"
+                >
+                  <span className="flex items-center gap-2">
+                    <Heading3 className="w-3.5 h-3.5 text-amber-500" />
+                    <span>제목 3 (H3)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400 font-normal">Ctrl+Alt+3</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().toggleBlockquote().run(); setContextMenu(null); }}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left italic group"
+                >
+                  <span className="flex items-center gap-2 font-medium">
+                    <Quote className="w-3.5 h-3.5 text-stone-400 group-hover:text-amber-500 transition-colors" />
+                    <span>인용구 (Blockquote)</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400 not-italic">Ctrl+Shift+B</kbd>
+                </button>
+              </div>
+
+              {/* Section 3: Text Formatting */}
+              <div className="py-0.5 space-y-0.5 border-b border-stone-200/60 dark:border-stone-800">
+                <div className="px-2.5 py-0.5 text-[10px] font-bold text-stone-400 uppercase tracking-wider">
+                  텍스트 서식
+                </div>
+                <div className="grid grid-cols-2 gap-1 px-1">
+                  <button
+                    type="button"
+                    onClick={() => { editor?.chain().focus().toggleBold().run(); setContextMenu(null); }}
+                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-xl font-bold transition-all ${
+                      editor?.isActive('bold')
+                        ? 'bg-amber-500 text-stone-950 shadow-xs'
+                        : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    <Bold className="w-3.5 h-3.5" />
+                    <span>굵게</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { editor?.chain().focus().toggleItalic().run(); setContextMenu(null); }}
+                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-xl italic transition-all ${
+                      editor?.isActive('italic')
+                        ? 'bg-amber-500 text-stone-950 shadow-xs'
+                        : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    <Italic className="w-3.5 h-3.5" />
+                    <span>기울임</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { editor?.chain().focus().toggleStrike().run(); setContextMenu(null); }}
+                    className={`flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-xl line-through transition-all ${
+                      editor?.isActive('strike')
+                        ? 'bg-amber-500 text-stone-950 shadow-xs'
+                        : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
+                    }`}
+                  >
+                    <Strikethrough className="w-3.5 h-3.5" />
+                    <span>취소선</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { editor?.chain().focus().toggleHighlight().run(); setContextMenu(null); }}
+                    className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-xl bg-amber-500/20 text-amber-800 dark:text-amber-300 hover:bg-amber-500/30 transition-all font-medium"
+                  >
+                    <Highlighter className="w-3.5 h-3.5 text-amber-500" />
+                    <span>형광펜</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Section 4: Table Operations (Conditionally rendered when inside table) */}
+              {contextMenu.isInTable && (
+                <div className="py-0.5 space-y-1 border-b border-stone-200/60 dark:border-stone-800">
+                  <div className="px-2.5 py-0.5 text-[10px] font-bold text-amber-600 dark:text-amber-400 flex items-center justify-between uppercase tracking-wider">
+                    <span className="flex items-center gap-1">
+                      <TableIcon className="w-3.5 h-3.5" />
+                      <span>표(Table) 조작 메뉴</span>
+                    </span>
+                    <span className="px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-600 text-[9px] font-mono">
+                      Cell Mode
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1 px-1">
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().addRowBefore().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-colors text-left"
+                    >
+                      <ArrowUp className="w-3.5 h-3.5 text-amber-500" />
+                      <span>위에 행 추가</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().addRowAfter().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-colors text-left"
+                    >
+                      <ArrowDown className="w-3.5 h-3.5 text-amber-500" />
+                      <span>아래 행 추가</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().addColumnBefore().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-colors text-left"
+                    >
+                      <Columns className="w-3.5 h-3.5 text-amber-500" />
+                      <span>왼쪽 열 추가</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().addColumnAfter().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-colors text-left"
+                    >
+                      <Columns className="w-3.5 h-3.5 text-amber-500 rotate-180" />
+                      <span>오른쪽 열 추가</span>
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1 px-1 border-t border-stone-200/40 dark:border-stone-800/60 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().deleteRow().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 transition-colors text-left"
+                    >
+                      <Rows className="w-3.5 h-3.5" />
+                      <span>현재 행 삭제</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().deleteColumn().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 transition-colors text-left"
+                    >
+                      <Columns className="w-3.5 h-3.5" />
+                      <span>현재 열 삭제</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().mergeCells().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors text-left"
+                    >
+                      <Combine className="w-3.5 h-3.5 text-indigo-500" />
+                      <span>선택 셀 병합</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().splitCell().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors text-left"
+                    >
+                      <Split className="w-3.5 h-3.5 text-sky-500" />
+                      <span>병합 셀 분할</span>
+                    </button>
+                  </div>
+
+                  <div className="flex gap-1 px-1 border-t border-stone-200/40 dark:border-stone-800/60 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().toggleHeaderRow().run(); setContextMenu(null); }}
+                      className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors text-[11px] font-medium"
+                    >
+                      <span>제목 헤더 행 토글</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { editor?.chain().focus().deleteTable().run(); setContextMenu(null); }}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 transition-colors text-[11px] font-semibold"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>표 삭제</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Section 5: Delete & Clear Formatting */}
+              <div className="py-0.5 space-y-0.5 border-t border-stone-200/60 dark:border-stone-800">
+                <button
+                  type="button"
+                  onClick={handleContextDeleteSelection}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 transition-all font-medium group"
+                >
+                  <span className="flex items-center gap-2">
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>선택 데이터/노드 삭제</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400">Del</kbd>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().unsetAllMarks().clearNodes().run(); setContextMenu(null); }}
+                  className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-all font-medium"
+                >
+                  <span className="flex items-center gap-2">
+                    <RemoveFormatting className="w-3.5 h-3.5 text-stone-400" />
+                    <span>서식 및 노드 초기화</span>
+                  </span>
+                  <kbd className="font-mono text-[10px] text-stone-400">Clear</kbd>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

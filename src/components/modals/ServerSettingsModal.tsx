@@ -261,7 +261,7 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
               disabled={isRefreshing}
               className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs transition-colors"
             >
-              {isRefreshing ? '적용 중...' : '설정 저장 &amp; 반영'}
+              {isRefreshing ? '적용 중...' : '설정 저장 & 반영'}
             </button>
           </div>
         </div>

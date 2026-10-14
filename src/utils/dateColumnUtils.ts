@@ -162,7 +162,7 @@ export function applyAutoUpdateDateToRow(
     return r;
   });
 
-  // If row not found (e.g. newly created row being added)
+  // If row not found (e.g. newly created row being added), append it to updatedRows
   if (!updatedRow) {
     updatedRow = {
       id: rowId,
@@ -171,6 +171,7 @@ export function applyAutoUpdateDateToRow(
       updatedAt: Date.now(),
       ...extraRowFields,
     };
+    updatedRows.push(updatedRow);
   }
 
   const updatedTable: TableDocument = {

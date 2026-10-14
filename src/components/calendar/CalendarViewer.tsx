@@ -103,22 +103,17 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
       setStoredEvents([]);
     }
 
-    // Also sync from backend SQLite API with in-flight deduplication
-    deduplicatedFetchJson<CalendarEvent[]>(`/api/events?tableId=${encodeURIComponent(table.id)}`, {
+    // Also sync all workspace calendar events from backend SQLite API (bypassing deduplication for fresh fetch)
+    deduplicatedFetchJson<CalendarEvent[]>(`/api/events`, {
       signal: controller.signal,
+      bypassDeduplication: true,
     })
       .then((serverEvents) => {
-        if (Array.isArray(serverEvents) && serverEvents.length > 0) {
-          setStoredEvents((prev) => {
-            const map = new Map<string, CalendarEvent>();
-            prev.forEach((e) => map.set(e.id, e));
-            serverEvents.forEach((e) => map.set(e.id, e));
-            const merged = Array.from(map.values());
-            try {
-              localStorage.setItem(storageKey, JSON.stringify(merged));
-            } catch {}
-            return merged;
-          });
+        if (Array.isArray(serverEvents)) {
+          setStoredEvents(serverEvents);
+          try {
+            localStorage.setItem(storageKey, JSON.stringify(serverEvents));
+          } catch {}
         }
       })
       .catch((err) => {
@@ -313,6 +308,15 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
       updated = [saved, ...storedEvents];
     }
     saveStoredEvents(updated);
+
+    // Persist calendar event to backend SQLite API
+    fetch('/api/events', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ event: saved, tableId: table.id }),
+    }).catch((err) => {
+      console.warn('[CalendarViewer] Failed to persist calendar event to server:', err);
+    });
   };
 
   const handleDeleteEvent = async (eventId: string) => {
@@ -366,12 +370,26 @@ export const CalendarViewer: React.FC<CalendarViewerProps> = ({
   const handleAddMacroEvents = (newEvents: CalendarEvent[]) => {
     const updated = [...newEvents, ...storedEvents];
     saveStoredEvents(updated);
+    newEvents.forEach((event) => {
+      fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, tableId: table.id }),
+      }).catch(() => {});
+    });
   };
 
   const handleUpdateMacroEvents = (updatedEvents: CalendarEvent[]) => {
     const map = new Map(updatedEvents.map((e) => [e.id, e]));
     const updated = storedEvents.map((e) => (map.has(e.id) ? map.get(e.id)! : e));
     saveStoredEvents(updated);
+    updatedEvents.forEach((event) => {
+      fetch('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event, tableId: table.id }),
+      }).catch(() => {});
+    });
   };
 
   const handleDeleteMacroEvents = (eventIds: string[]) => {

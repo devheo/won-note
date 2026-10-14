@@ -21,6 +21,7 @@ import {
 } from 'lucide-react';
 import { TableDocument, TableColumn, TableRow, ColumnOption } from '../../types';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
+import { LazyImage } from '../common/LazyImage';
 import { getAllStickersFromRow } from '../../utils/stickerUtils';
 import { applyAutoUpdateDateToRow } from '../../utils/dateColumnUtils';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
@@ -766,11 +767,10 @@ export const KanbanBoardViewer: React.FC<KanbanBoardViewerProps> = ({
                       {/* Image Thumbnail Preview */}
                       {firstImg && (
                         <div className="mb-2 w-full h-24 rounded-lg overflow-hidden bg-stone-100 dark:bg-[#1a1a1a] border border-stone-200/50 dark:border-[#333333]">
-                          <img
+                          <LazyImage
                             src={firstImg}
                             alt=""
                             className="w-full h-full object-cover"
-                            loading="lazy"
                           />
                         </div>
                       )}

@@ -82,7 +82,8 @@ export function cleanTextValue(val: any): string {
     // Replace <img> tags with clean [이미지] indicator before stripping tags
     str = str.replace(/<img[^>]*>/gi, (imgTag) => {
       const altMatch = imgTag.match(/alt=["']([^"']*)["']/i);
-      const altText = altMatch && altMatch[1] && altMatch[1] !== 'thumb' ? altMatch[1] : '';
+      const rawAlt = altMatch && altMatch[1] ? altMatch[1].trim() : '';
+      const altText = rawAlt && rawAlt !== 'thumb' && rawAlt !== 'Pasted Image' && rawAlt !== '이미지' ? rawAlt : '';
       return altText ? ` [이미지: ${altText}] ` : ' [이미지] ';
     });
 

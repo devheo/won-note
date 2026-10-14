@@ -100,9 +100,11 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
   const rawCode = extractRawCode(code);
   const detected = detectLanguage(rawCode);
   const lang = explicitLanguage || (detected.isCode ? detected.language : 'sql');
+  const isBash = lang === 'bash' || lang === 'sh' || lang === 'zsh' || lang === 'shell';
 
   const highlightedHtml = highlightCode(rawCode, lang);
-  const lineCount = rawCode.split('\n').length;
+  const lines = rawCode.split('\n');
+  const lineCount = lines.length;
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -111,7 +113,22 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy code', err);
+      console.error('Failed to copy code, trying fallback', err);
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = rawCode;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (fallbackErr) {
+        console.error('Fallback copy failed', fallbackErr);
+      }
     }
   };
 
@@ -222,16 +239,18 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
           )}
 
           {/* Highlighted Code */}
-          <pre
-            className={`m-0 p-0 bg-transparent overflow-visible font-mono text-[11.5px] leading-relaxed flex-1 transition-colors duration-150 ${
-              isDark ? 'text-[#f1f5f9]' : 'text-[#0f172a]'
-            }`}
-          >
-            <code
-              className={`language-${lang}`}
-              dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-            />
-          </pre>
+          <div className="flex-1 min-w-0 overflow-x-auto">
+            <pre
+              className={`m-0 p-0 bg-transparent overflow-visible font-mono text-[11.5px] leading-relaxed transition-colors duration-150 ${
+                isDark ? 'text-[#f1f5f9]' : 'text-[#0f172a]'
+              }`}
+            >
+              <code
+                className={`language-${lang}`}
+                dangerouslySetInnerHTML={{ __html: highlightedHtml }}
+              />
+            </pre>
+          </div>
         </div>
       </div>
     </div>

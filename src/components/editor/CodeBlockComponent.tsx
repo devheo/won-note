@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { NodeViewWrapper, NodeViewContent, ReactNodeViewProps } from '@tiptap/react';
-import { TextSelection } from '@tiptap/pm/state';
+import { TextSelection, NodeSelection } from '@tiptap/pm/state';
 import {
   Copy,
   Check,
@@ -17,6 +17,8 @@ import {
   Plus,
   ArrowUp,
   ArrowDown,
+  GripVertical,
+  Terminal,
 } from 'lucide-react';
 import { formatJavaOrGeneralCode, detectLanguage } from '../../utils/codeHighlighter';
 
@@ -286,13 +288,33 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
 
   const effectiveLang = rawLang === 'auto' ? detectedInfo.language : rawLang;
 
-  const handleCopy = async () => {
+  const handleCopy = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const textToCopy = node?.textContent || '';
     try {
-      await navigator.clipboard.writeText(node?.textContent || '');
+      await navigator.clipboard.writeText(textToCopy);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy code', err);
+      console.error('Failed to copy code, trying fallback', err);
+      try {
+        const textarea = document.createElement('textarea');
+        textarea.value = textToCopy;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.focus();
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      } catch (fallbackErr) {
+        console.error('Fallback copy failed', fallbackErr);
+      }
     }
   };
 
@@ -362,11 +384,41 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
         }`}
       >
         <div className="flex flex-wrap items-center gap-2">
-          {/* macOS window dot decor */}
-          <div className="flex items-center gap-1.5 mr-1">
-            <div className="w-2.5 h-2.5 rounded-full bg-[#ff5f56]" />
-            <div className="w-2.5 h-2.5 rounded-full bg-[#ffbd2e]" />
-            <div className="w-2.5 h-2.5 rounded-full bg-[#27c93f]" />
+          {/* Notion/Excel-style 6-dot Drag Handle for Node Selection & Drag-and-Drop */}
+          <div
+            contentEditable={false}
+            draggable="true"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (typeof getPos === 'function' && editor) {
+                const pos = getPos();
+                if (typeof pos === 'number') {
+                  const { state, dispatch } = editor.view;
+                  const selection = NodeSelection.create(state.doc, pos);
+                  dispatch(state.tr.setSelection(selection));
+                  editor.view.focus();
+                }
+              }
+            }}
+            onDragStart={(e) => {
+              if (typeof getPos === 'function' && editor) {
+                const pos = getPos();
+                if (typeof pos === 'number') {
+                  const { state, dispatch } = editor.view;
+                  const selection = NodeSelection.create(state.doc, pos);
+                  dispatch(state.tr.setSelection(selection));
+                  if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', '[코드 블록]');
+                  }
+                }
+              }
+            }}
+            className="p-1 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-400 hover:text-amber-500 rounded cursor-grab active:cursor-grabbing transition-colors mr-0.5"
+            title="클릭하여 코드 블록 전체 선택 / 드래그하여 다른 위치로 이동"
+          >
+            <GripVertical className="w-3.5 h-3.5" />
           </div>
 
           <FileCode className="w-3.5 h-3.5 text-amber-500" />
@@ -606,19 +658,6 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
       >
         <NodeViewContent as={'code' as any} className={`language-${effectiveLang} block whitespace-pre`} />
       </pre>
-
-      {/* Quick insert line after code block */}
-      <div
-        contentEditable={false}
-        onClick={handleInsertParagraphAfter}
-        title="코드 블록 아래에 빈 본문 줄(단락) 삽입하여 텍스트/데이터 입력 (단축키: Ctrl+Enter)"
-        className="w-full h-4 flex items-center justify-center opacity-0 group-hover:opacity-100 hover:opacity-100 transition-opacity cursor-pointer z-10 select-none bg-amber-500/10 hover:bg-amber-500/20 border-t border-amber-500/30"
-      >
-        <span className="text-[10px] font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1">
-          <Plus className="w-3 h-3" />
-          <span>코드 블록 아래에 빈 줄 삽입</span>
-        </span>
-      </div>
 
       {/* Interactive Corner Resize Handle (Width & Height) */}
       <div

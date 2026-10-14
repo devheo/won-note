@@ -1,8 +1,11 @@
 import React, { useRef, useState, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { useTruncatedTooltip } from '../../hooks/useTruncatedTooltip';
 import { Maximize2, Sparkles, Copy, Check, Image as ImageIcon, Pin, Code } from 'lucide-react';
 import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent, highlightCode } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from './CodeBlockViewer';
+import { LazyImage } from './LazyImage';
+import { RichHtmlRenderer } from './RichHtmlRenderer';
 import { cleanTextValue, extractFirstImageSrc } from '../../utils/textSanitizer';
 import { HighlightText } from './HighlightText';
 import { isLikelyMarkdown, markdownToHtml, cleanMarkdownForPreview, extractMarkdownCellPreview } from '../../utils/markdownHelper';
@@ -156,46 +159,36 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
     const popoverWidth = Math.min(Math.max(340, isRich || isMarkdown ? 440 : 360), 560);
     const estimatedHeight = Math.min(360, isRich || isMarkdown || displayPlainText.length > 80 ? 280 : 160);
 
-    // Standard position: anchored to the RIGHT of the mouse cursor
-    let isRightOfCursor = true;
-    let left = clientX + 16;
+    // Requirement 2: left = clientX + 12, top = clientY - 10
+    let left = clientX + 12;
+    let top = clientY - 10;
 
-    // Viewport right edge check: if overflowing, flip to the left of the cursor
-    if (left + popoverWidth > window.innerWidth - 16) {
-      left = clientX - popoverWidth - 16;
-      isRightOfCursor = false;
+    // Requirement 3: Viewport bounds handling
+    // Right boundary check
+    if (left + popoverWidth > window.innerWidth - 12) {
+      left = clientX - popoverWidth - 12;
     }
-    // Prevent left edge overflow
     if (left < 12) {
-      left = Math.max(12, window.innerWidth - popoverWidth - 16);
+      left = Math.max(12, window.innerWidth - popoverWidth - 12);
     }
 
-    // Vertical position: slightly below cursor tip
-    let isAbove = false;
-    let top = clientY + 8;
-
-    // Viewport bottom edge check: if overflowing bottom, flip to above cursor
-    if (top + estimatedHeight > window.innerHeight - 16) {
-      top = clientY - estimatedHeight - 12;
-      isAbove = true;
+    // Bottom boundary check
+    if (top + estimatedHeight > window.innerHeight - 12) {
+      top = Math.max(12, window.innerHeight - estimatedHeight - 12);
     }
-    // Prevent top edge overflow
     if (top < 12) {
-      top = Math.max(12, window.innerHeight - estimatedHeight - 16);
+      top = 12;
     }
 
-    const maxHeight = Math.max(
-      160,
-      Math.min(420, isAbove ? Math.max(160, clientY - 24) : window.innerHeight - top - 24)
-    );
+    const maxHeight = Math.max(160, Math.min(420, window.innerHeight - top - 24));
 
     setPopoverPos({
       top,
       left,
       width: popoverWidth,
       maxHeight,
-      isAbove,
-      isRightOfCursor,
+      isAbove: false,
+      isRightOfCursor: true,
     });
   };
 
@@ -287,9 +280,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
     >
       {/* Visible Cell Content (Truncated to maximum 3 lines with ellipsis, or fully wrapped if isWrapCells is true) */}
       {(() => {
-        const clampClass = isWrapCells
-          ? 'break-words whitespace-pre-wrap leading-snug'
-          : 'line-clamp-3 break-words whitespace-pre-wrap leading-snug';
+        const clampClass = 'line-clamp-3 overflow-hidden text-ellipsis break-words whitespace-pre-wrap leading-snug';
 
         return (
           <div
@@ -303,7 +294,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
             ) : hasImage ? (
               <div className="flex items-center gap-1.5 min-w-0">
                 {firstImageSrc ? (
-                  <img
+                  <LazyImage
                     src={firstImageSrc}
                     alt="미리보기"
                     onClick={(e) => {
@@ -402,8 +393,8 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
         </button>
       )}
 
-      {/* Truncation-only Hover Preview Floating Popover */}
-      {isHovered && popoverPos && shouldShowTooltipPopover && (
+      {/* Truncation-only Hover Preview Floating Popover (Rendered via React Portal directly onto document.body to escape parent transform/zoom CSS contexts) */}
+      {isHovered && popoverPos && shouldShowTooltipPopover && createPortal(
         <div
           style={{
             position: 'fixed',
@@ -411,7 +402,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
             left: `${popoverPos.left}px`,
             maxWidth: `${popoverPos.width}px`,
             maxHeight: `${popoverPos.maxHeight}px`,
-            zIndex: 9999,
+            zIndex: 99999,
           }}
           onMouseEnter={onPopoverMouseEnter}
           onMouseLeave={onPopoverMouseLeave}
@@ -422,7 +413,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
             if (onOpenEditor) onOpenEditor();
           }}
           title={onOpenEditor ? "더블 클릭하여 에디터에서 열기" : undefined}
-          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-white/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-800 dark:text-stone-100 rounded-xl shadow-2xl border border-stone-200/90 dark:border-stone-700/60 text-xs pointer-events-auto cursor-pointer flex flex-col shadow-stone-400/20 dark:shadow-black/60"
+          className="animate-in fade-in zoom-in-95 duration-150 p-3.5 bg-white/95 dark:bg-[#1c1c1c]/98 backdrop-blur-md text-stone-800 dark:text-stone-100 rounded-xl shadow-2xl border border-stone-200/90 dark:border-stone-700/60 text-xs pointer-events-none cursor-pointer flex flex-col shadow-stone-400/20 dark:shadow-black/60"
         >
           <div className="flex items-center justify-between gap-2 pb-1.5 mb-2 border-b border-stone-200 dark:border-stone-800 text-[11px] text-stone-500 dark:text-stone-400 font-medium shrink-0">
             <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
@@ -460,9 +451,9 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 maxHeight="max-h-64"
               />
             ) : isMarkdown ? (
-              <div
+              <RichHtmlRenderer
+                html={markdownHtml}
                 className="max-h-72 leading-relaxed text-stone-800 dark:text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table wonbee-markdown-content tiptap [&_p]:mb-1.5 [&_p]:leading-relaxed"
-                dangerouslySetInnerHTML={{ __html: markdownHtml }}
               />
             ) : hasImage && firstImageSrc ? (
               <div className="flex flex-col gap-2">
@@ -477,7 +468,7 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                   }}
                   title="클릭하여 원본 크기로 보기"
                 >
-                  <img
+                  <LazyImage
                     src={firstImageSrc}
                     alt="미리보기"
                     className="max-h-60 max-w-full rounded object-contain group-hover/imgprev:scale-102 transition-transform"
@@ -490,9 +481,9 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 )}
               </div>
             ) : isRich ? (
-              <div
+              <RichHtmlRenderer
+                html={highlightedRichHtml}
                 className="max-h-64 leading-relaxed text-stone-800 dark:text-stone-200 font-sans text-xs prose dark:prose-invert wonbee-rendered-table tiptap"
-                dangerouslySetInnerHTML={{ __html: highlightedRichHtml }}
               />
             ) : detectedCode.isCode ? (
               <CodeBlockViewer
@@ -522,7 +513,8 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
               </button>
             </div>
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

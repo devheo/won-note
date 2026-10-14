@@ -28,7 +28,7 @@ export interface DexieTableDoc {
   id: string;
   title: string;
   description?: string;
-  defaultView?: 'grid' | 'cards' | 'calendar';
+  defaultView?: 'grid' | 'cards' | 'calendar' | 'memo';
   columns: any[];
   rows: TableRow[];
   createdAt: number;
@@ -48,6 +48,15 @@ export interface DexieNote {
   is_dirty?: number; // 1 = dirty (un-synced), 0 = clean
 }
 
+export interface DexieAsset {
+  id: string; // e.g. 'asset-{uuid}'
+  blob: Blob;
+  filename: string; // e.g. 'asset_{uuid}.png'
+  mime_type: string; // e.g. 'image/png'
+  created_at: number;
+  is_dirty?: number; // 1 = dirty (un-synced to server), 0 = clean
+}
+
 /**
  * High-performance Dexie.js Client Database
  * Replaces 5MB localStorage and un-indexed IDB with indexed storage for 1000MB+ environments.
@@ -57,6 +66,7 @@ export class WonBeeDexieDatabase extends Dexie {
   tree_items!: Table<DexieTreeItem, string>;
   table_docs!: Table<DexieTableDoc, string>;
   notes!: Table<DexieNote, string>;
+  assets!: Table<DexieAsset, string>;
 
   constructor() {
     super('wonbee_dexie_db');
@@ -70,6 +80,22 @@ export class WonBeeDexieDatabase extends Dexie {
       table_docs: 'id, title, updatedAt, is_dirty',
       notes: 'id, table_id, updated_at, is_dirty, [table_id+updated_at]',
     });
+    this.version(3).stores({
+      assets: 'id, created_at, is_dirty',
+    });
+  }
+
+  /**
+   * Check if Dexie DB has real saved workspace data (vs fresh uninitialized state)
+   */
+  async hasRealLocalData(): Promise<boolean> {
+    try {
+      const meta = await this.workspace_meta.get('root_workspace');
+      const tableCount = await this.table_docs.count();
+      return Boolean(meta) && tableCount > 0;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -84,7 +110,13 @@ export class WonBeeDexieDatabase extends Dexie {
       ]);
 
       if (!tablesList || tablesList.length === 0) {
-        return INITIAL_WORKSPACE_DATA;
+        return {
+          version: meta?.version || '1.0.0',
+          exportedAt: meta?.exportedAt || 0,
+          settings: meta?.settings || { theme: 'light', zoom: 100, useServer: true },
+          tree: [],
+          tables: {},
+        };
       }
 
       const tablesMap: Record<string, TableDocument> = {};
@@ -319,28 +351,45 @@ export class WonBeeDexieDatabase extends Dexie {
       });
 
       for (const [tableId, changedNotes] of tableGroup.entries()) {
-        const tbl = await this.table_docs.get(tableId);
-        if (tbl) {
-          const rowMap = new Map((tbl.rows || []).map((r) => [r.id, r]));
-          changedNotes.forEach((n) => {
-            let rowData: any = {};
-            if (n.data_json) {
-              try { rowData = JSON.parse(n.data_json); } catch {}
-            } else if (n.data) {
-              rowData = n.data;
-            }
-            rowMap.set(n.id, {
-              id: n.id,
-              data: rowData,
-              richContent: n.rich_content || undefined,
-              createdAt: n.created_at || Date.now(),
-              updatedAt: n.updated_at || Date.now(),
-              is_dirty: 0,
-            });
-          });
-          tbl.rows = Array.from(rowMap.values());
-          await this.table_docs.put(tbl);
+        let tbl = await this.table_docs.get(tableId);
+        if (!tbl) {
+          // Auto-create skeleton table document if missing in Dexie so incoming notes are never discarded!
+          const firstNote = changedNotes[0];
+          const tableTitle = firstNote?.table_title || tableId;
+          tbl = {
+            id: tableId,
+            title: tableTitle,
+            columns: [
+              { id: 'col-name', name: '이름 / 항목명', type: 'text', width: 220, isPrimaryKey: true },
+              { id: 'col-note', name: '상세 노트', type: 'richText', width: 320 },
+              { id: 'col-updated-at', name: '수정일', type: 'date', width: 155, autoUpdateDate: true },
+            ],
+            rows: [],
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+            is_dirty: 0,
+          };
         }
+
+        const rowMap = new Map((tbl.rows || []).map((r) => [r.id, r]));
+        changedNotes.forEach((n) => {
+          let rowData: any = {};
+          if (n.data_json) {
+            try { rowData = JSON.parse(n.data_json); } catch {}
+          } else if (n.data) {
+            rowData = n.data;
+          }
+          rowMap.set(n.id, {
+            id: n.id,
+            data: rowData,
+            richContent: n.rich_content || undefined,
+            createdAt: n.created_at || Date.now(),
+            updatedAt: n.updated_at || Date.now(),
+            is_dirty: 0,
+          });
+        });
+        tbl.rows = Array.from(rowMap.values());
+        await this.table_docs.put(tbl);
       }
     });
   }
@@ -348,14 +397,24 @@ export class WonBeeDexieDatabase extends Dexie {
   /**
    * Extract all dirty records (is_dirty: 1) for Push Sync to server
    */
-  async getDirtyNotes(): Promise<DexieNote[]> {
+  async getDirtyNotes(): Promise<(DexieNote & { table_title?: string })[]> {
     try {
       const dirty = await this.notes.where('is_dirty').equals(1).toArray();
-      if (dirty.length > 0) return dirty;
+      const tables = await this.table_docs.toArray();
+      const tableMap = new Map(tables.map((t) => [t.id, t]));
+
+      if (dirty.length > 0) {
+        return dirty.map((n) => {
+          const tDoc = tableMap.get(n.table_id);
+          return {
+            ...n,
+            table_title: tDoc?.title || n.table_id,
+          };
+        });
+      }
 
       // Fallback: check rows in table_docs
-      const tables = await this.table_docs.toArray();
-      const extracted: DexieNote[] = [];
+      const extracted: (DexieNote & { table_title?: string })[] = [];
       for (const t of tables) {
         if (Array.isArray(t.rows)) {
           for (const r of t.rows) {
@@ -371,6 +430,7 @@ export class WonBeeDexieDatabase extends Dexie {
                 created_at: r.createdAt || Date.now(),
                 updated_at: r.updatedAt || Date.now(),
                 is_dirty: 1,
+                table_title: t.title || t.id,
               });
             }
           }
@@ -456,16 +516,43 @@ export class WonBeeDexieDatabase extends Dexie {
   }
 
   async getStorageStats(): Promise<{ totalItems: number; sizeEstimatedBytes: number }> {
-    const [noteCount, tableCount, treeCount] = await Promise.all([
+    const [noteCount, tableCount, treeCount, assetCount] = await Promise.all([
       this.notes.count(),
       this.table_docs.count(),
       this.tree_items.count(),
+      this.assets.count(),
     ]);
 
     return {
-      totalItems: noteCount + tableCount + treeCount,
-      sizeEstimatedBytes: (noteCount * 1024) + (tableCount * 4096),
+      totalItems: noteCount + tableCount + treeCount + assetCount,
+      sizeEstimatedBytes: (noteCount * 1024) + (tableCount * 4096) + (assetCount * 50000),
     };
+  }
+
+  // --- Asset Storage CRUD Methods ---
+  async saveAsset(asset: DexieAsset): Promise<void> {
+    await this.assets.put(asset);
+  }
+
+  async getAsset(id: string): Promise<DexieAsset | undefined> {
+    return this.assets.get(id);
+  }
+
+  async getDirtyAssets(): Promise<DexieAsset[]> {
+    try {
+      return await this.assets.where('is_dirty').equals(1).toArray();
+    } catch {
+      return [];
+    }
+  }
+
+  async markAssetsClean(ids: string[]): Promise<void> {
+    if (!ids || ids.length === 0) return;
+    await this.transaction('rw', [this.assets], async () => {
+      for (const id of ids) {
+        await this.assets.update(id, { is_dirty: 0 });
+      }
+    });
   }
 }
 

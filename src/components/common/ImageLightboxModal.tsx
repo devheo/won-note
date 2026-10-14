@@ -207,6 +207,8 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
         <img
           src={imageUrl}
           alt={altText}
+          loading="lazy"
+          decoding="async"
           style={{
             transform: `translate(${position.x}px, ${position.y}px) scale(${zoom}) rotate(${rotation}deg)`,
             transition: isDragging ? 'none' : 'transform 0.15s ease-out',

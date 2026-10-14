@@ -30,8 +30,8 @@ interface CommandPaletteModalProps {
   onSelectTable: (tableId: string) => void;
   onOpenAddRowModal: () => void;
   onToggleViewMode?: () => void;
-  onChangeViewMode?: (mode: 'table' | 'kanban' | 'calendar') => void;
-  currentViewMode?: 'table' | 'kanban' | 'calendar';
+  onChangeViewMode?: (mode: 'table' | 'kanban' | 'calendar' | 'memo') => void;
+  currentViewMode?: 'table' | 'kanban' | 'calendar' | 'memo';
   isDarkMode: boolean;
   onToggleDarkMode: () => void;
   onOpenDataPortability: () => void;

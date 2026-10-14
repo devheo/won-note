@@ -126,7 +126,9 @@
 }
 
 .ProseMirror-selectednode {
-  outline: 2px solid #f59e0b;
+  outline: 2px solid #f59e0b !important;
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* ProseMirror Gapcursor: enables cursor navigation & clicking between adjacent tables, code blocks, and block boundaries */
@@ -354,11 +356,52 @@
 .wonbee-rendered-table table,
 .wonbee-rich-table {
   border-collapse: collapse !important;
-  table-layout: auto;
+  table-layout: fixed !important;
+  width: 100%;
   max-width: 100%;
-  margin: 1.25rem 0;
+  margin: 6px 0 !important;
   border-radius: 4px;
   position: relative;
+}
+
+/* Cell Text Alignment Support (left, center, right, justify) */
+.tiptap td[style*="text-align: right"],
+.tiptap th[style*="text-align: right"],
+.wonbee-rendered-table td[style*="text-align: right"],
+.wonbee-rendered-table th[style*="text-align: right"],
+.prose td[style*="text-align: right"],
+.prose th[style*="text-align: right"],
+td[style*="text-align: right"],
+th[style*="text-align: right"],
+td[align="right"],
+th[align="right"] {
+  text-align: right !important;
+}
+
+.tiptap td[style*="text-align: center"],
+.tiptap th[style*="text-align: center"],
+.wonbee-rendered-table td[style*="text-align: center"],
+.wonbee-rendered-table th[style*="text-align: center"],
+.prose td[style*="text-align: center"],
+.prose th[style*="text-align: center"],
+td[style*="text-align: center"],
+th[style*="text-align: center"],
+td[align="center"],
+th[align="center"] {
+  text-align: center !important;
+}
+
+.tiptap td[style*="text-align: left"],
+.tiptap th[style*="text-align: left"],
+.wonbee-rendered-table td[style*="text-align: left"],
+.wonbee-rendered-table th[style*="text-align: left"],
+.prose td[style*="text-align: left"],
+.prose th[style*="text-align: left"],
+td[style*="text-align: left"],
+th[style*="text-align: left"],
+td[align="left"],
+th[align="left"] {
+  text-align: left !important;
 }
 
 /* Explicit Table Width Controls */
@@ -430,6 +473,24 @@
   position: relative;
   font-size: 0.85rem;
   line-height: 1.45;
+  white-space: normal !important;
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+/* Zero Margin & Padding for Paragraphs inside Table Cells to prevent Excel paste empty row gaps */
+.tiptap table td p,
+.tiptap table th p,
+.wonbee-rendered-table table td p,
+.wonbee-rendered-table table th p,
+.wonbee-rich-table td p,
+.wonbee-rich-table th p {
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1.45;
+  white-space: normal !important;
+  word-break: keep-all;
+  overflow-wrap: break-word;
 }
 
 /* Explicit Table Border Color Priority */

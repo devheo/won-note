@@ -41,8 +41,20 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '50mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+  app.use(express.json({ limit: '500mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '500mb' }));
+
+  // CORS Middleware for Multi-PC / Cross-Origin Client Connections
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
 
   // Prevent browser caching on all API responses for instant multi-PC sync
   app.use('/api', (req, res, next) => {
@@ -53,6 +65,8 @@ async function startServer() {
   });
 
   // API Routes
+  app.get('/favicon.ico', (req, res) => res.status(204).end());
+
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok', database: 'sqlite3', timestamp: Date.now() });
   });

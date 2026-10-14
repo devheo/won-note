@@ -35,8 +35,11 @@ import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
 import { SettingsMenuDropdown } from './components/common/SettingsMenuDropdown';
+import { PrettyJsonModal } from './components/modals/PrettyJsonModal';
+import { EncodingConverterModal } from './components/modals/EncodingConverterModal';
 import { PerformanceSettingsModal } from './components/modals/PerformanceSettingsModal';
 import { DeleteTreeItemModal } from './components/modals/DeleteTreeItemModal';
+import { SampleConfirmModal } from './components/modals/SampleConfirmModal';
 import {
   PerformanceOptions,
   loadPerformanceOptions,
@@ -53,6 +56,8 @@ import {
   Table as TableIcon,
   ChevronRight,
   Search,
+  Code2,
+  RefreshCw,
 } from 'lucide-react';
 
 export default function App() {
@@ -82,7 +87,10 @@ export default function App() {
     setActiveTableId,
     isLoading,
     setIsLoading,
+    syncError,
+    syncStatus,
     loadWorkspaceData,
+    retryWorkspaceLoad,
     lastLoadedTimestampRef,
   } = useWorkspaceInit({ repository });
 
@@ -126,6 +134,28 @@ export default function App() {
     }
   };
 
+  useEffect(() => {
+    if (activeTableId) {
+      localStorage.setItem('wonbee_active_table_id', activeTableId);
+    }
+  }, [activeTableId]);
+
+  // Safety guard: Ensure activeTableId is never null if tables exist in workspace
+  useEffect(() => {
+    if (!activeTableId && workspace?.tables) {
+      const keys = Object.keys(workspace.tables);
+      if (keys.length > 0) {
+        const saved = localStorage.getItem('wonbee_active_table_id');
+        if (saved && workspace.tables[saved]) {
+          setActiveTableId(saved);
+        } else {
+          setActiveTableId(keys[0]);
+          localStorage.setItem('wonbee_active_table_id', keys[0]);
+        }
+      }
+    }
+  }, [workspace?.tables, activeTableId]);
+
   // Modals state
   const [editingRow, setEditingRow] = useState<TableRow | null>(null);
   const [editingTargetColId, setEditingTargetColId] = useState<string | null>(null);
@@ -137,11 +167,14 @@ export default function App() {
   const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isAiAgentOpen, setIsAiAgentOpen] = useState(false);
+  const [isPrettyJsonOpen, setIsPrettyJsonOpen] = useState(false);
+  const [isEncodingConverterOpen, setIsEncodingConverterOpen] = useState(false);
   const [aiAgentInitialTab, setAiAgentInitialTab] = useState<'data' | 'editor' | 'rag' | 'diagram' | 'action'>('data');
   const [aiAgentActiveRow, setAiAgentActiveRow] = useState<TableRow | null>(null);
   const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
   const [headerTitleInput, setHeaderTitleInput] = useState('');
   const [treeItemToDelete, setTreeItemToDelete] = useState<TreeItem | null>(null);
+  const [isSampleConfirmOpen, setIsSampleConfirmOpen] = useState(false);
 
   // Performance Optimization Options State
   const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
@@ -152,12 +185,12 @@ export default function App() {
     savePerformanceOptions(newOpts);
   };
 
-  // View Mode: 'table' vs 'kanban' vs 'calendar' (Persisted in localStorage)
-  const [viewMode, setViewMode] = useState<'table' | 'kanban' | 'calendar'>(() => {
-    return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban' | 'calendar') || 'table';
+  // View Mode: 'table' vs 'kanban' vs 'calendar' vs 'memo' (Persisted in localStorage)
+  const [viewMode, setViewMode] = useState<'table' | 'kanban' | 'calendar' | 'memo'>(() => {
+    return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban' | 'calendar' | 'memo') || 'table';
   });
 
-  const handleViewModeChange = (mode: 'table' | 'kanban' | 'calendar') => {
+  const handleViewModeChange = (mode: 'table' | 'kanban' | 'calendar' | 'memo') => {
     setViewMode(mode);
     localStorage.setItem('wonbee_view_mode', mode);
   };
@@ -524,7 +557,13 @@ export default function App() {
 
     setWorkspace(updatedWs);
     setActiveTableId(newTableId);
-    await repository.saveWorkspace(updatedWs);
+    localStorage.setItem('wonbee_active_table_id', newTableId);
+    try {
+      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+      await repository.saveWorkspace(updatedWs);
+    } catch (err) {
+      console.warn('Failed to save new table:', err);
+    }
     await syncToLocalFileIfConnected(updatedWs);
   };
 
@@ -664,8 +703,14 @@ export default function App() {
 
     setWorkspace(updatedWs);
     setActiveTableId(newTableId);
+    localStorage.setItem('wonbee_active_table_id', newTableId);
     handleViewModeChange('kanban'); // 바로 칸반보드 뷰로 보여주기
-    await repository.saveWorkspace(updatedWs);
+    try {
+      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+      await repository.saveWorkspace(updatedWs);
+    } catch (err) {
+      console.warn('Failed to save new Kanban board:', err);
+    }
     await syncToLocalFileIfConnected(updatedWs);
   };
 
@@ -800,8 +845,96 @@ export default function App() {
 
     setWorkspace(updatedWs);
     setActiveTableId(newTableId);
+    localStorage.setItem('wonbee_active_table_id', newTableId);
     handleViewModeChange('calendar'); // 바로 캘린더 뷰로 보여주기
-    await repository.saveWorkspace(updatedWs);
+    try {
+      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+      await repository.saveWorkspace(updatedWs);
+    } catch (err) {
+      console.warn('Failed to save new Calendar board:', err);
+    }
+    await syncToLocalFileIfConnected(updatedWs);
+  };
+
+  // Add new Memo Board (📌 스티커 메모 보드)
+  const handleAddMemoBoard = async (parentId: string | null = null, title = '스티커 메모 보드') => {
+    const newTableId = `table-${Date.now().toString(36)}`;
+    const newTableTitle = `📌 ${title}`;
+
+    const newTable: TableDocument = {
+      id: newTableId,
+      title: newTableTitle,
+      description: '자유 드래그 & 리사이즈 스티커 메모 보드입니다.',
+      defaultView: 'memo',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      columns: [
+        { id: 'col-memo-title', name: '메모 제목', type: 'text', width: 220, isPrimaryKey: true },
+        { id: 'col-memo-content', name: '메모 내용', type: 'richText', width: 320 },
+        {
+          id: 'col-memo-category',
+          name: '구분',
+          type: 'select',
+          width: 130,
+          options: [
+            { id: 'work', label: '업무', color: '#F59E0B' },
+            { id: 'personal', label: '개인', color: '#10B981' },
+            { id: 'urgent', label: '긴급', color: '#EF4444' },
+          ],
+        },
+        {
+          id: 'col-updated-at',
+          name: '수정일',
+          type: 'date',
+          width: 155,
+          autoUpdateDate: true,
+        },
+      ],
+      rows: [
+        {
+          id: `row_${Date.now()}_1`,
+          data: {
+            'col-memo-title': '환영합니다! 🐝 스티커 메모 보드',
+            'col-memo-content': '보드 빈 곳을 더블 클릭하거나 드래그하여 메모를 자유롭게 배치하세요!',
+            'col-memo-category': '업무',
+            'col-updated-at': formatDateTime(Date.now()),
+          },
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        },
+      ],
+    };
+
+    const newTreeItem: TreeItem = {
+      id: newTableId,
+      parentId,
+      title: newTableTitle,
+      type: 'table',
+      icon: 'sticky-note',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+
+    const updatedWs: WorkspaceData = {
+      ...workspace,
+      tree: [...workspace.tree, newTreeItem],
+      tables: {
+        ...workspace.tables,
+        [newTableId]: newTable,
+      },
+      exportedAt: Date.now(),
+    };
+
+    setWorkspace(updatedWs);
+    setActiveTableId(newTableId);
+    localStorage.setItem('wonbee_active_table_id', newTableId);
+    handleViewModeChange('memo');
+    try {
+      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+      await repository.saveWorkspace(updatedWs);
+    } catch (err) {
+      console.warn('Failed to save new Memo board:', err);
+    }
     await syncToLocalFileIfConnected(updatedWs);
   };
 
@@ -963,22 +1096,89 @@ export default function App() {
   };
 
   // Load Sample Templates (Roadmap, Sprint, SQL Dict, Feedback)
-  const handleLoadSampleTemplates = async () => {
+  const handleLoadSampleTemplates = () => {
+    setIsSampleConfirmOpen(true);
+  };
+
+  const handleConfirmAddSampleTemplates = async () => {
     try {
       setIsLoading(true);
       const res = await fetch('/wonbee_data.json');
-      if (res.ok) {
-        const sampleData: WorkspaceData = await res.json();
-        const completeData = ensureWorkspaceTree(sampleData);
-        setWorkspace(completeData);
-        lastLoadedTimestampRef.current = completeData.exportedAt || Date.now();
-        await repository.saveWorkspace(completeData);
-        const firstTableId = Object.keys(completeData.tables)[0] || null;
-        if (firstTableId) {
-          setActiveTableId(firstTableId);
-          localStorage.setItem('wonbee_active_table_id', firstTableId);
-        }
+      if (!res.ok) throw new Error('샘플 데이터를 불러올 수 없습니다.');
+
+      const sampleData: WorkspaceData = await res.json();
+      const now = Date.now();
+
+      // 1. Build ID Mapping for Sample Tree & Tables (guarantees fresh non-colliding IDs)
+      const idMap = new Map<string, string>();
+      sampleData.tree.forEach((item) => {
+        idMap.set(item.id, `${item.id}_sample_${now.toString(36)}_${Math.random().toString(36).substring(2, 6)}`);
+      });
+
+      // 2. Map sample tree items with new IDs and parent ID references
+      const newTreeItems: TreeItem[] = sampleData.tree.map((item) => {
+        const newId = idMap.get(item.id)!;
+        const newParentId = item.parentId ? (idMap.get(item.parentId) || item.parentId) : null;
+        return {
+          ...item,
+          id: newId,
+          parentId: newParentId,
+          createdAt: now,
+          updatedAt: now,
+        };
+      });
+
+      // 3. Map sample tables with new IDs, row IDs, timestamps, and is_dirty: 1
+      const newTables: Record<string, TableDocument> = {};
+      Object.entries(sampleData.tables).forEach(([oldTableId, tableDoc]) => {
+        const newTableId = idMap.get(oldTableId) || `${oldTableId}_sample_${now.toString(36)}_${Math.random().toString(36).substring(2, 6)}`;
+
+        const newRows: TableRow[] = (tableDoc.rows || []).map((r) => ({
+          ...r,
+          id: `row_sample_${now.toString(36)}_${Math.random().toString(36).substring(2, 8)}`,
+          createdAt: now,
+          updatedAt: now,
+          is_dirty: 1,
+        }));
+
+        newTables[newTableId] = {
+          ...tableDoc,
+          id: newTableId,
+          createdAt: now,
+          updatedAt: now,
+          rows: newRows,
+        };
+      });
+
+      // 4. Merge into current Workspace preserving ALL existing data
+      const mergedTree = [...workspace.tree, ...newTreeItems];
+      const mergedTables = { ...workspace.tables, ...newTables };
+
+      const updatedWs = ensureWorkspaceTree({
+        ...workspace,
+        tree: mergedTree,
+        tables: mergedTables,
+        exportedAt: now,
+      });
+
+      setWorkspace(updatedWs);
+      lastLoadedTimestampRef.current = now;
+
+      // 5. Persist to Dexie (with is_dirty: 1 on new items) and Sync if Server Mode
+      if (useServer && repository.pushSync) {
+        await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+        await repository.pushSync();
+      } else {
+        await repository.saveWorkspace(updatedWs);
       }
+
+      // Activate first newly appended sample table
+      const firstNewTableId = Object.keys(newTables)[0];
+      if (firstNewTableId) {
+        setActiveTableId(firstNewTableId);
+        localStorage.setItem('wonbee_active_table_id', firstNewTableId);
+      }
+      setIsSampleConfirmOpen(false);
     } catch (err) {
       console.error('Failed to load sample templates:', err);
     } finally {
@@ -1136,6 +1336,7 @@ export default function App() {
         onAddTable={handleAddTable}
         onAddTodoBoard={handleAddTodoBoard}
         onAddCalendarTable={handleAddCalendarBoard}
+        onAddMemoBoard={handleAddMemoBoard}
         onAddFolder={handleAddFolder}
         onDeleteTreeItem={handleDeleteTreeItem}
         onDuplicateTable={handleDuplicateTable}
@@ -1245,6 +1446,28 @@ export default function App() {
               zoomLevel={zoomLevel}
               onChangeZoom={handleZoomChange}
             />
+
+            {/* Pretty JSON Utility Button */}
+            <button
+              type="button"
+              onClick={() => setIsPrettyJsonOpen(true)}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="JSON 문자열 실시간 파싱 및 정렬 포매터 열기"
+            >
+              <Code2 className="w-3.5 h-3.5 text-amber-500" />
+              <span>Pretty JSON</span>
+            </button>
+
+            {/* Encoding Converter Utility Button */}
+            <button
+              type="button"
+              onClick={() => setIsEncodingConverterOpen(true)}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="EUC-KR 및 레거시 인코딩 텍스트/파일 디코딩 및 UTF-8 변환"
+            >
+              <RefreshCw className="w-3.5 h-3.5 text-amber-500" />
+              <span>인코딩 변환</span>
+            </button>
           </div>
 
           {/* Top Right Action Items */}
@@ -1285,7 +1508,39 @@ export default function App() {
             }}
             className="transition-transform duration-150 ease-out"
           >
-            {activeTable ? (
+            {syncError ? (
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+                <div className="p-3.5 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-400 mb-3 border border-rose-500/20">
+                  <TableIcon className="w-8 h-8" />
+                </div>
+                <h3 className="text-base font-bold text-stone-900 dark:text-stone-100">
+                  초기 데이터 동기화 실패
+                </h3>
+                <p className="text-xs text-stone-500 dark:text-stone-400 mt-1.5 max-w-md leading-relaxed font-mono bg-stone-100 dark:bg-stone-900 p-2.5 rounded-xl border border-stone-200 dark:border-stone-800">
+                  {syncError}
+                </p>
+                <button
+                  type="button"
+                  onClick={retryWorkspaceLoad}
+                  className="mt-5 px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-xl text-xs transition-colors flex items-center gap-2 shadow-md cursor-pointer active:scale-98"
+                >
+                  <Loader2 className="w-4 h-4 animate-spin text-stone-950" />
+                  <span>동기화 다시 시도 (Retry)</span>
+                </button>
+              </div>
+            ) : isLoading && (!workspace || Object.keys(workspace.tables || {}).length === 0) ? (
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+                <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center mb-3 animate-pulse border border-amber-500/30">
+                  <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
+                </div>
+                <h3 className="text-base font-bold text-stone-900 dark:text-stone-100">
+                  🐝 초기 데이터 동기화 중...
+                </h3>
+                <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 max-w-sm leading-relaxed">
+                  서버에서 최신 데이터베이스 스키마와 테이블을 안전하게 내려받고 있습니다.
+                </p>
+              </div>
+            ) : activeTable ? (
               <DataTableViewer
                 table={activeTable}
                 onUpdateTable={handleUpdateTable}
@@ -1380,6 +1635,7 @@ export default function App() {
         }}
         onDeleteRow={(rowId) => {
           if (!activeTable) return;
+          if (!window.confirm('정말 이 행을 삭제하시겠습니까?')) return;
           const remainingRows = activeTable.rows.filter((r) => r.id !== rowId);
           setSelectedDetailRow(null);
           handleUpdateTable({
@@ -1387,6 +1643,7 @@ export default function App() {
             rows: remainingRows,
             updatedAt: Date.now(),
           });
+          fetch(`/api/events/row_evt_${rowId}`, { method: 'DELETE' }).catch(() => {});
         }}
       />
 
@@ -1571,6 +1828,18 @@ export default function App() {
         />
       )}
 
+      {/* 14. Pretty JSON Modal */}
+      <PrettyJsonModal
+        isOpen={isPrettyJsonOpen}
+        onClose={() => setIsPrettyJsonOpen(false)}
+      />
+
+      {/* 15. Encoding Converter Modal */}
+      <EncodingConverterModal
+        isOpen={isEncodingConverterOpen}
+        onClose={() => setIsEncodingConverterOpen(false)}
+      />
+
       {/* 14. Workspace Tree Item Deletion Confirmation Modal */}
       <DeleteTreeItemModal
         isOpen={Boolean(treeItemToDelete)}
@@ -1579,6 +1848,14 @@ export default function App() {
         tables={workspace.tables}
         onConfirm={handleConfirmDeleteTreeItem}
         onClose={() => setTreeItemToDelete(null)}
+      />
+
+      {/* 15. Sample Template Add Confirmation Modal */}
+      <SampleConfirmModal
+        isOpen={isSampleConfirmOpen}
+        onClose={() => setIsSampleConfirmOpen(false)}
+        onConfirm={handleConfirmAddSampleTemplates}
+        isLoading={isLoading}
       />
     </div>
   );

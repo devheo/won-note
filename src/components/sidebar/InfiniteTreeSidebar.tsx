@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { TreeItem, ItemType } from '../../types';
 import {
   Folder,
@@ -17,6 +17,7 @@ import {
   Sparkles,
   Layers,
   Calendar,
+  StickyNote,
 } from 'lucide-react';
 
 interface InfiniteTreeSidebarProps {
@@ -27,6 +28,7 @@ interface InfiniteTreeSidebarProps {
   onAddTable: (parentId: string | null, title?: string) => void;
   onAddTodoBoard?: (parentId: string | null, title?: string) => void;
   onAddCalendarTable?: (parentId: string | null, title?: string) => void;
+  onAddMemoBoard?: (parentId: string | null, title?: string) => void;
   onAddFolder: (parentId: string | null, title?: string) => void;
   onDeleteTreeItem: (itemId: string) => void;
   onDuplicateTable: (tableId: string) => void;
@@ -43,6 +45,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   onAddTable,
   onAddTodoBoard,
   onAddCalendarTable,
+  onAddMemoBoard,
   onAddFolder,
   onDeleteTreeItem,
   onDuplicateTable,
@@ -54,6 +57,18 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => {
+    // Default expand folders that contain active table
+    const expanded = new Set<string>();
+    tree.forEach((t) => {
+      if (t.type === 'folder' && t.isExpanded !== false) {
+        expanded.add(t.id);
+      }
+    });
+    return expanded;
+  });
+
+  const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
 
   // Resizable Sidebar width state (persisted in localStorage)
   const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
@@ -61,7 +76,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     return saved ? Math.max(180, Math.min(520, parseInt(saved, 10))) : 260;
   });
 
-  const isResizingRef = React.useRef(false);
+  const isResizingRef = useRef(false);
 
   const handleResizeMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -87,112 +102,99 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     window.addEventListener('mouseup', handleMouseUp);
   };
 
-  // Drag and Drop state
-  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
-  const [dropPosition, setDropPosition] = useState<'inside' | 'before' | 'after' | null>(null);
-
-  // 2.5. Tree UI Expand/Collapse Isolation:
-  // Decoupled from server persistence. Stored strictly in local client state and localStorage.
-  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => {
-    try {
-      const saved = localStorage.getItem('wonbee_expanded_tree_folders');
-      if (saved) {
-        const arr = JSON.parse(saved);
-        if (Array.isArray(arr)) return new Set(arr);
-      }
-    } catch {}
-    return new Set(tree.filter((t) => t.isExpanded !== false).map((t) => t.id));
-  });
-
-  const toggleFolder = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const toggleFolder = (folderId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     setExpandedFolderIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
+      if (next.has(folderId)) {
+        next.delete(folderId);
       } else {
-        next.add(id);
+        next.add(folderId);
       }
-      try {
-        localStorage.setItem('wonbee_expanded_tree_folders', JSON.stringify(Array.from(next)));
-      } catch {}
       return next;
     });
   };
 
-  const handleStartRename = (item: TreeItem, e: React.MouseEvent) => {
-    e.stopPropagation();
+  // Inline renaming
+  const handleStartRename = (item: TreeItem, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
     setEditingItemId(item.id);
     setEditingTitle(item.title);
     setMenuOpenId(null);
   };
 
   const handleFinishRename = (itemId: string) => {
-    if (editingTitle.trim()) {
-      onUpdateTree(
-        tree.map((item) =>
-          item.id === itemId ? { ...item, title: editingTitle.trim(), updatedAt: Date.now() } : item
-        )
-      );
+    if (!editingTitle.trim()) {
+      setEditingItemId(null);
+      return;
     }
+
+    const updatedTree = tree.map((item) => {
+      if (item.id === itemId) {
+        return {
+          ...item,
+          title: editingTitle.trim(),
+          updatedAt: Date.now(),
+        };
+      }
+      return item;
+    });
+
+    onUpdateTree(updatedTree);
     setEditingItemId(null);
   };
 
-  // Drag and Drop Handlers for Infinite Tree
+  // Drag and Drop reordering state
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [dropPosition, setDropPosition] = useState<'before' | 'after' | 'inside' | null>(null);
+
   const handleDragStart = (e: React.DragEvent, item: TreeItem) => {
+    e.stopPropagation();
+    setDraggedItemId(item.id);
     e.dataTransfer.setData('text/plain', item.id);
     e.dataTransfer.effectAllowed = 'move';
-    setDraggedItemId(item.id);
   };
 
   const handleDragOver = (e: React.DragEvent, targetItem: TreeItem) => {
     e.preventDefault();
+    e.stopPropagation();
+
     if (!draggedItemId || draggedItemId === targetItem.id) return;
-
-    // Check circular reference if dragging folder into its own descendant
-    const isDescendant = (parent: string, child: string): boolean => {
-      const children = tree.filter((t) => t.parentId === parent);
-      for (const c of children) {
-        if (c.id === child || isDescendant(c.id, child)) return true;
-      }
-      return false;
-    };
-
-    if (isDescendant(draggedItemId, targetItem.id)) {
-      return;
-    }
 
     const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const offsetY = e.clientY - rect.top;
     const height = rect.height;
 
-    let position: 'inside' | 'before' | 'after' = 'inside';
     if (targetItem.type === 'folder') {
-      if (offsetY < height * 0.25) position = 'before';
-      else if (offsetY > height * 0.75) position = 'after';
-      else position = 'inside';
+      if (offsetY < height * 0.25) {
+        setDropPosition('before');
+      } else if (offsetY > height * 0.75) {
+        setDropPosition('after');
+      } else {
+        setDropPosition('inside');
+      }
     } else {
-      position = offsetY < height * 0.5 ? 'before' : 'after';
+      if (offsetY < height * 0.5) {
+        setDropPosition('before');
+      } else {
+        setDropPosition('after');
+      }
     }
 
     setDropTargetId(targetItem.id);
-    setDropPosition(position);
   };
 
-  const handleDragLeave = () => {
-    setDropTargetId(null);
-    setDropPosition(null);
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
   };
 
   const handleDrop = (e: React.DragEvent, targetItem: TreeItem) => {
     e.preventDefault();
-    if (!draggedItemId || draggedItemId === targetItem.id) {
-      setDraggedItemId(null);
-      setDropTargetId(null);
-      setDropPosition(null);
-      return;
-    }
+    e.stopPropagation();
+
+    if (!draggedItemId || !dropTargetId || !dropPosition) return;
 
     const dragged = tree.find((t) => t.id === draggedItemId);
     if (!dragged) return;
@@ -202,7 +204,6 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
       newParentId = targetItem.id;
     }
 
-    // Reorder tree array
     const filteredTree = tree.filter((t) => t.id !== draggedItemId);
     const targetIndex = filteredTree.findIndex((t) => t.id === targetItem.id);
 
@@ -217,7 +218,6 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
       insertIndex = targetIndex + 1;
     } else if (dropPosition === 'inside') {
       insertIndex = targetIndex + 1;
-      // Auto expand the folder
       const targetInFiltered = filteredTree.find((t) => t.id === targetItem.id);
       if (targetInFiltered) targetInFiltered.isExpanded = true;
     }
@@ -230,6 +230,32 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     setDropPosition(null);
   };
 
+  // Helper for type-specific icon rendering
+  const getItemIcon = (item: TreeItem, isSelected: boolean) => {
+    if (item.type === 'folder') {
+      return expandedFolderIds.has(item.id) ? (
+        <FolderOpen className="w-4 h-4 text-amber-500 dark:text-amber-400 shrink-0" />
+      ) : (
+        <Folder className="w-4 h-4 text-amber-500/80 dark:text-amber-400/80 shrink-0" />
+      );
+    }
+
+    const iconType = item.icon || '';
+    const title = item.title || '';
+
+    if (iconType === 'sticky-note' || title.includes('📌') || title.includes('메모')) {
+      return <StickyNote className={`w-4 h-4 shrink-0 ${isSelected ? 'text-amber-600 dark:text-amber-400' : 'text-amber-500 dark:text-amber-400'}`} />;
+    }
+    if (iconType === 'kanban' || title.includes('📋') || title.includes('칸반') || title.includes('TO-DO')) {
+      return <Layers className={`w-4 h-4 shrink-0 ${isSelected ? 'text-emerald-600 dark:text-emerald-400' : 'text-emerald-500 dark:text-emerald-400'}`} />;
+    }
+    if (iconType === 'calendar' || title.includes('📅') || title.includes('캘린더') || title.includes('일정')) {
+      return <Calendar className={`w-4 h-4 shrink-0 ${isSelected ? 'text-purple-600 dark:text-purple-400' : 'text-purple-500 dark:text-purple-400'}`} />;
+    }
+
+    return <Table className={`w-4 h-4 shrink-0 ${isSelected ? 'text-blue-600 dark:text-blue-400' : 'text-blue-500/80 dark:text-blue-400/80'}`} />;
+  };
+
   // Render Infinite Depth Recursive Tree Nodes
   const renderTreeNodes = (parentId: string | null = null, depth: number = 0) => {
     const isRoot = parentId === null || parentId === '' || parentId === undefined;
@@ -240,7 +266,6 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
       return item.parentId === parentId;
     });
 
-    // Apply search filter if searching
     const filteredNodes = searchQuery.trim()
       ? nodes.filter((n) => n.title.toLowerCase().includes(searchQuery.toLowerCase()) || hasMatchingChild(n.id))
       : nodes;
@@ -273,9 +298,9 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
               }
             }}
             style={{ paddingLeft: `${Math.max(8, depth * 14 + 10)}px` }}
-            className={`flex items-center justify-between py-1.5 pr-2 rounded-lg text-xs font-medium cursor-pointer transition-all duration-150 relative ${
+            className={`flex items-center justify-between py-1.5 pr-2 rounded-xl text-xs font-medium cursor-pointer transition-all duration-150 relative ${
               isSelected
-                ? 'bg-amber-100/90 dark:bg-amber-950/60 text-amber-900 dark:text-amber-200 font-semibold shadow-xs'
+                ? 'bg-amber-500/15 dark:bg-amber-500/20 text-amber-950 dark:text-amber-200 font-bold shadow-2xs border border-amber-500/30 dark:border-amber-500/40 before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-1 before:bg-amber-500 before:rounded-r-full'
                 : 'text-stone-700 dark:text-stone-300 hover:bg-stone-200/60 dark:hover:bg-stone-800/60'
             } ${isDragging ? 'opacity-40 scale-98' : ''} ${
               isTarget && dropPosition === 'inside'
@@ -286,34 +311,26 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
             <div className="flex items-center gap-1.5 min-w-0 flex-1">
               <GripVertical className="w-3 h-3 opacity-0 group-hover/tree-item:opacity-40 hover:opacity-100 flex-shrink-0 cursor-grab" />
 
-              {/* Folder Expand/Collapse Icon */}
+              {/* Folder Expand/Collapse Chevron Icon */}
               {isFolder ? (
                 <button
                   type="button"
                   onClick={(e) => toggleFolder(item.id, e)}
-                  className="p-0.5 rounded hover:bg-black/10 transition-colors flex-shrink-0"
+                  className="p-0.5 rounded hover:bg-black/10 dark:hover:bg-white/10 transition-colors flex-shrink-0"
                 >
-                  {expandedFolderIds.has(item.id) ? (
-                    <ChevronDown className="w-3.5 h-3.5 text-stone-500" />
-                  ) : (
-                    <ChevronRight className="w-3.5 h-3.5 text-stone-500" />
-                  )}
+                  <ChevronRight
+                    className={`w-3.5 h-3.5 text-stone-400 transition-transform duration-200 ${
+                      expandedFolderIds.has(item.id) ? 'rotate-90 text-amber-500' : ''
+                    }`}
+                  />
                 </button>
               ) : (
                 <div className="w-3.5" />
               )}
 
               {/* Item Type Icon */}
-              <div className="flex-shrink-0">
-                {isFolder ? (
-                  expandedFolderIds.has(item.id) ? (
-                    <FolderOpen className="w-4 h-4 text-amber-500 dark:text-amber-400" />
-                  ) : (
-                    <Folder className="w-4 h-4 text-amber-500/80 dark:text-amber-400/80" />
-                  )
-                ) : (
-                  <Table className={`w-4 h-4 ${isSelected ? 'text-amber-600 dark:text-amber-400' : 'text-stone-400 dark:text-stone-500'}`} />
-                )}
+              <div className="flex-shrink-0 flex items-center justify-center">
+                {getItemIcon(item, isSelected)}
               </div>
 
               {/* Item Title / Inline Rename Input */}
@@ -329,7 +346,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                   }}
                   autoFocus
                   onClick={(e) => e.stopPropagation()}
-                  className="bg-white dark:bg-stone-900 px-1.5 py-0.5 rounded border border-amber-500 outline-none text-xs w-full text-stone-900 dark:text-stone-100"
+                  className="bg-white dark:bg-stone-900 px-1.5 py-0.5 rounded border border-amber-500 outline-none text-xs w-full text-stone-900 dark:text-stone-100 font-bold"
                 />
               ) : (
                 <span className="truncate flex-1 select-none" title={item.title}>
@@ -366,11 +383,11 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                   <MoreVertical className="w-3 h-3" />
                 </button>
 
-                {/* Dropdown Menu */}
+                {/* Dropdown Context Menu */}
                 {menuOpenId === item.id && (
                   <div
                     onClick={(e) => e.stopPropagation()}
-                    className="absolute right-0 top-6 z-50 w-36 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-xl shadow-xl py-1 text-xs animate-in fade-in"
+                    className="absolute right-0 top-6 z-50 w-44 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-xl shadow-xl py-1 text-xs animate-in fade-in"
                   >
                     {isFolder && (
                       <>
@@ -379,19 +396,55 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                             onAddTable(item.id);
                             setMenuOpenId(null);
                           }}
-                          className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300"
+                          className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
                         >
-                          <Plus className="w-3.5 h-3.5 text-amber-500" />
-                          새 테이블 추가
+                          <Table className="w-3.5 h-3.5 text-blue-500" />
+                          새 데이터 테이블
                         </button>
+                        {onAddTodoBoard && (
+                          <button
+                            onClick={() => {
+                              onAddTodoBoard(item.id);
+                              setMenuOpenId(null);
+                            }}
+                            className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
+                          >
+                            <Layers className="w-3.5 h-3.5 text-emerald-500" />
+                            새 TO-DO 칸반보드
+                          </button>
+                        )}
+                        {onAddCalendarTable && (
+                          <button
+                            onClick={() => {
+                              onAddCalendarTable(item.id);
+                              setMenuOpenId(null);
+                            }}
+                            className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
+                          >
+                            <Calendar className="w-3.5 h-3.5 text-purple-500" />
+                            새 일정 캘린더
+                          </button>
+                        )}
+                        {onAddMemoBoard && (
+                          <button
+                            onClick={() => {
+                              onAddMemoBoard(item.id);
+                              setMenuOpenId(null);
+                            }}
+                            className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
+                          >
+                            <StickyNote className="w-3.5 h-3.5 text-amber-500" />
+                            새 스티커 메모보드
+                          </button>
+                        )}
                         <button
                           onClick={() => {
                             onAddFolder(item.id);
                             setMenuOpenId(null);
                           }}
-                          className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300"
+                          className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
                         >
-                          <Folder className="w-3.5 h-3.5 text-amber-500" />
+                          <Folder className="w-3.5 h-3.5 text-stone-400" />
                           하위 폴더 추가
                         </button>
                         <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
@@ -404,7 +457,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                           onDuplicateTable(item.id);
                           setMenuOpenId(null);
                         }}
-                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300"
+                        className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
                       >
                         <Copy className="w-3.5 h-3.5 text-blue-500" />
                         테이블 복제
@@ -413,7 +466,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
 
                     <button
                       onClick={(e) => handleStartRename(item, e)}
-                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300"
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
                     >
                       <Edit2 className="w-3.5 h-3.5 text-stone-500" />
                       이름 변경
@@ -424,7 +477,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                         onDeleteTreeItem(item.id);
                         setMenuOpenId(null);
                       }}
-                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400"
+                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 font-medium"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                       삭제
@@ -517,59 +570,99 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
         </div>
       </div>
 
-      {/* Action Buttons: Add Table, Add TO-DO Board, Add Folder */}
-      <div className="px-3 py-1.5 flex flex-col gap-1.5">
-        <div className="flex items-center gap-1.5">
-          <button
-            id="btn-add-root-table"
-            onClick={() => onAddTable(null)}
-            className="flex-1 py-1.5 px-2 bg-amber-400/90 hover:bg-amber-400 text-stone-950 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all active:scale-98"
-            title="기본 데이터 그리드 표 생성"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            새 테이블
-          </button>
-          <button
-            id="btn-add-root-folder"
-            onClick={() => onAddFolder(null)}
-            className="py-1.5 px-2.5 bg-white dark:bg-[#252525] hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] text-xs font-medium rounded-lg flex items-center justify-center gap-1 transition-colors"
-            title="새 폴더 만들기"
-          >
-            <Folder className="w-3.5 h-3.5" />
-          </button>
-        </div>
-        <div className="flex flex-col gap-1.5">
-          {onAddTodoBoard && (
+      {/* Unified Quick Creation Bar */}
+      <div className="px-3 py-1.5">
+        <div className="relative">
+          <div className="flex items-center gap-1.5">
             <button
-              id="btn-add-todo-board"
-              onClick={() => onAddTodoBoard(null)}
-              className="w-full py-1.5 px-2.5 bg-white dark:bg-[#222222] hover:bg-amber-50 dark:hover:bg-[#2a261a] text-amber-700 dark:text-amber-400 border border-amber-300/80 dark:border-amber-600/40 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all hover:border-amber-400 active:scale-98"
-              title="드래그 앤 드롭으로 관리하는 TO-DO 칸반보드 생성"
+              id="btn-add-root-table"
+              onClick={() => onAddTable(null)}
+              className="flex-1 py-1.5 px-3 bg-amber-400 hover:bg-amber-500 text-stone-950 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-2xs transition-all active:scale-98 cursor-pointer"
+              title="새 데이터 테이블 만들기"
             >
-              <Layers className="w-3.5 h-3.5 text-amber-500" />
-              <span>📋 새 TO-DO 칸반보드</span>
+              <Plus className="w-3.5 h-3.5" />
+              <span>새 테이블</span>
             </button>
-          )}
-          {onAddCalendarTable && (
+
             <button
-              id="btn-add-calendar-board"
-              onClick={() => onAddCalendarTable(null)}
-              className="w-full py-1.5 px-2.5 bg-white dark:bg-[#222222] hover:bg-amber-50 dark:hover:bg-[#2a261a] text-amber-700 dark:text-amber-400 border border-amber-300/80 dark:border-amber-600/40 text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 shadow-2xs transition-all hover:border-amber-400 active:scale-98"
-              title="오프라인 월간/주간/일간 캘린더 및 일정 매크로 보드 생성"
+              type="button"
+              onClick={() => setIsCreateMenuOpen(!isCreateMenuOpen)}
+              className="p-1.5 bg-white dark:bg-[#252525] hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border border-stone-200 dark:border-[#383838] rounded-xl flex items-center justify-center transition-colors shadow-2xs cursor-pointer"
+              title="다양한 유형의 보드/폴더 생성 메뉴 열기"
             >
-              <Calendar className="w-3.5 h-3.5 text-amber-500" />
-              <span>📅 새 일정 캘린더</span>
+              <MoreVertical className="w-4 h-4" />
             </button>
+          </div>
+
+          {/* Quick Add Popover Dropdown */}
+          {isCreateMenuOpen && (
+            <div
+              className="absolute left-0 right-0 top-9 z-50 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-2xl shadow-2xl p-1 text-xs animate-in fade-in zoom-in-95"
+              onClick={() => setIsCreateMenuOpen(false)}
+            >
+              <button
+                type="button"
+                onClick={() => onAddTable(null)}
+                className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+              >
+                <Table className="w-4 h-4 text-blue-500" />
+                <span>📋 새 데이터 테이블</span>
+              </button>
+
+              {onAddTodoBoard && (
+                <button
+                  type="button"
+                  onClick={() => onAddTodoBoard(null)}
+                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                >
+                  <Layers className="w-4 h-4 text-emerald-500" />
+                  <span>🎯 새 TO-DO 칸반보드</span>
+                </button>
+              )}
+
+              {onAddCalendarTable && (
+                <button
+                  type="button"
+                  onClick={() => onAddCalendarTable(null)}
+                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                >
+                  <Calendar className="w-4 h-4 text-purple-500" />
+                  <span>📅 새 일정 캘린더</span>
+                </button>
+              )}
+
+              {onAddMemoBoard && (
+                <button
+                  type="button"
+                  onClick={() => onAddMemoBoard(null)}
+                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                >
+                  <StickyNote className="w-4 h-4 text-amber-500" />
+                  <span>📌 새 스티커 메모보드</span>
+                </button>
+              )}
+
+              <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
+
+              <button
+                type="button"
+                onClick={() => onAddFolder(null)}
+                className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
+              >
+                <Folder className="w-4 h-4 text-stone-400" />
+                <span>📁 새 폴더</span>
+              </button>
+            </div>
           )}
         </div>
       </div>
 
       {/* Infinite Depth Tree Container */}
       <div className="flex-1 overflow-y-auto px-2 py-2 space-y-0.5 custom-scrollbar">
-        <div className="flex items-center justify-between px-2 py-1 text-[11px] font-semibold text-stone-400 dark:text-[#888888] uppercase tracking-wider">
-          <span>워크스페이스 트리</span>
-          <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400">
-            {totalTablesCount}개 테이블
+        <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold tracking-wider text-stone-400 dark:text-[#888888] uppercase">
+          <span>WORKSPACES</span>
+          <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.2 rounded bg-amber-500/10">
+            {totalTablesCount}
           </span>
         </div>
 

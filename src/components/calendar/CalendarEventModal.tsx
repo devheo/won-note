@@ -246,7 +246,18 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
                   <input
                     type="time"
                     value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
+                    onChange={(e) => {
+                      const newStart = e.target.value;
+                      setStartTime(newStart);
+                      // Auto-adjust end time if end time is <= new start time
+                      if (newStart && endTime && newStart >= endTime) {
+                        const [h, m] = newStart.split(':').map(Number);
+                        const nextH = (h + 1) % 24;
+                        const nextHStr = String(nextH).padStart(2, '0');
+                        const mStr = String(m || 0).padStart(2, '0');
+                        setEndTime(`${nextHStr}:${mStr}`);
+                      }
+                    }}
                     className="w-full px-2.5 py-1.5 rounded-lg border border-stone-300 dark:border-[#3a3a3a] bg-white dark:bg-[#282828] text-stone-800 dark:text-stone-200 font-mono"
                   />
                 </div>
@@ -257,6 +268,7 @@ export const CalendarEventModal: React.FC<CalendarEventModalProps> = ({
                   <input
                     type="time"
                     value={endTime}
+                    min={startTime}
                     onChange={(e) => setEndTime(e.target.value)}
                     className="w-full px-2.5 py-1.5 rounded-lg border border-stone-300 dark:border-[#3a3a3a] bg-white dark:bg-[#282828] text-stone-800 dark:text-stone-200 font-mono"
                   />

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useEffect, useDeferredValue } from 'react';
+import React, { useState, useRef, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
 import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
@@ -69,6 +69,8 @@ import {
 } from 'lucide-react';
 import { KanbanBoardViewer } from '../kanban/KanbanBoardViewer';
 import { CalendarViewer } from '../calendar/CalendarViewer';
+import { MemoBoardView } from '../memo/MemoBoardView';
+import { boardLayoutStore } from '../../services/storage/boardLayoutStore';
 import {
   isUpdateDateColumn,
   findUpdateDateColumn,
@@ -83,8 +85,8 @@ interface DataTableViewerProps {
   onOpenRowEditor: (row: TableRow, targetColId?: string) => void;
   onOpenRowDetail: (row: TableRow, index: number, targetColId?: string) => void;
   onImportCsvToNewTable?: (fileName: string, columns: TableColumn[], rows: TableRow[]) => void;
-  viewMode?: 'table' | 'kanban' | 'calendar';
-  onViewModeChange?: (mode: 'table' | 'kanban' | 'calendar') => void;
+  viewMode?: 'table' | 'kanban' | 'calendar' | 'memo';
+  onViewModeChange?: (mode: 'table' | 'kanban' | 'calendar' | 'memo') => void;
   perfOptions?: PerformanceOptions;
   onUpdatePerfOptions?: (newOpts: PerformanceOptions) => void;
   onOpenPerfModal?: () => void;
@@ -105,10 +107,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   onOpenAiDataAssistant,
   onOpenAiRowAssistant,
 }) => {
-  // View Mode: Table (Grid) vs Kanban (Board) vs Calendar
-  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban' | 'calendar'>('table');
+  // View Mode: Table (Grid) vs Kanban (Board) vs Calendar vs Memo Board
+  const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban' | 'calendar' | 'memo'>('table');
   const activeViewMode = viewMode ?? internalViewMode;
-  const setViewMode = (mode: 'table' | 'kanban' | 'calendar') => {
+  const setViewMode = (mode: 'table' | 'kanban' | 'calendar' | 'memo') => {
     setInternalViewMode(mode);
     onViewModeChange?.(mode);
   };
@@ -328,9 +330,43 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     localStorage.setItem('wonbee_row_density', density);
   };
 
-  // Column Manager Modal State
+  // Column Manager Modal State with localStorage persistence per table
   const [isColumnManagerOpen, setIsColumnManagerOpen] = useState(false);
-  const [hiddenColumnIds, setHiddenColumnIds] = useState<Set<string>>(new Set());
+  const [hiddenColumnIds, setHiddenColumnIds] = useState<Set<string>>(() => {
+    try {
+      const saved = localStorage.getItem(`wonbee_hidden_cols_${table.id}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) return new Set(parsed);
+      }
+    } catch {}
+    return new Set();
+  });
+
+  // Reload hidden columns when table.id changes
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(`wonbee_hidden_cols_${table.id}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          setHiddenColumnIds(new Set(parsed));
+          return;
+        }
+      }
+    } catch {
+      setHiddenColumnIds(new Set());
+    }
+  }, [table.id]);
+
+  // Persist hidden columns to localStorage whenever hiddenColumnIds changes
+  useEffect(() => {
+    try {
+      localStorage.setItem(`wonbee_hidden_cols_${table.id}`, JSON.stringify(Array.from(hiddenColumnIds)));
+    } catch (err) {
+      console.error('Failed to save hidden column IDs to localStorage:', err);
+    }
+  }, [table.id, hiddenColumnIds]);
 
   // Add Row Modal State (Opens popup instead of just inserting empty row)
   const [isAddRowModalOpen, setIsAddRowModalOpen] = useState(false);
@@ -483,18 +519,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     return map;
   });
 
-  // Sync column widths if table columns or active table changes
+  // Sync column widths from envService whenever active table or columns change
   useEffect(() => {
     const envWidths = envService.getEnv().columnWidths[table.id] || {};
-    setColumnWidths((prev) => {
-      const next = { ...prev };
-      table.columns.forEach((c) => {
-        if (!next[c.id]) {
-          next[c.id] = envWidths[c.id] || c.width || 180;
-        }
-      });
-      return next;
+    const map: Record<string, number> = {};
+    table.columns.forEach((c) => {
+      map[c.id] = envWidths[c.id] || c.width || 180;
     });
+    setColumnWidths(map);
   }, [table.id, table.columns]);
 
   // Handle Column Resize mouse events: Keeps minimum cell width (60px) and ensures independent resizing
@@ -654,7 +686,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   // Delete Selected Rows
   const handleDeleteSelectedRows = () => {
     if (selectedRowIds.size === 0) return;
+    if (!window.confirm(`선택한 ${selectedRowIds.size}개의 행을 정말 삭제하시겠습니까?`)) return;
     const remainingRows = table.rows.filter((r) => !selectedRowIds.has(r.id));
+    selectedRowIds.forEach((rowId) => {
+      fetch(`/api/events/row_evt_${rowId}`, { method: 'DELETE' }).catch(() => {});
+    });
     onUpdateTable({
       ...table,
       rows: remainingRows,
@@ -666,7 +702,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
   // Delete Single Row (e.g. from Kanban card)
   const handleDeleteSingleRow = (rowId: string) => {
+    if (!window.confirm('정말 이 행을 삭제하시겠습니까?')) return;
     const remainingRows = table.rows.filter((r) => r.id !== rowId);
+    fetch(`/api/events/row_evt_${rowId}`, { method: 'DELETE' }).catch(() => {});
     onUpdateTable({
       ...table,
       rows: remainingRows,
@@ -678,6 +716,55 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       setSelectedRowIds(nextSet);
     }
   };
+
+  const handleAddNewRowWithPosition = useCallback((position?: { x: number; y: number }) => {
+    const newRowId = `row_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+    const initialData: Record<string, any> = {};
+    const primaryCol = table.columns[0];
+    if (primaryCol) {
+      initialData[primaryCol.id] = '새 스티커 메모';
+    }
+    const newRow: TableRow = {
+      id: newRowId,
+      data: initialData,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    const { updatedTable } = applyAutoUpdateDateToRow(
+      table,
+      newRow.id,
+      newRow.data,
+      undefined,
+      { richContent: '', stickers: [] }
+    );
+    onUpdateTable(updatedTable);
+
+    const initialX = position ? position.x : 40 + (table.rows.length % 5) * 50;
+    const initialY = position ? position.y : 40 + (table.rows.length % 5) * 35;
+
+    boardLayoutStore.saveLayout(table.id, {
+      rowId: newRowId,
+      x: initialX,
+      y: initialY,
+      width: 280,
+      height: 220,
+      zIndex: 250,
+      bgColor: 'amber',
+      isPinned: false,
+      updatedAt: Date.now(),
+    });
+  }, [table, onUpdateTable]);
+
+  const handleUpdateRowDirectly = useCallback((updatedRow: TableRow) => {
+    const { updatedTable } = applyAutoUpdateDateToRow(
+      table,
+      updatedRow.id,
+      updatedRow.data,
+      undefined,
+      { richContent: updatedRow.richContent, stickers: updatedRow.stickers }
+    );
+    onUpdateTable(updatedTable);
+  }, [table, onUpdateTable]);
 
   // Reorder Row by Index (Drag & Drop or Manual Swap)
   const handleReorderRow = (sourceRowId: string, targetRowId: string, position: 'above' | 'below') => {
@@ -1167,8 +1254,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
   return (
     <div className="flex-1 h-screen flex flex-col overflow-hidden bg-white dark:bg-[#181818] select-none transition-colors">
-      {/* Table Action Bar */}
-      <div className="px-4 sm:px-6 py-2.5 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/70 dark:bg-[#1e1e1e]/60 flex items-center justify-between gap-2.5 sm:gap-3.5 flex-wrap">
+      {/* Table Action Bar (Sticky Top Pinned) */}
+      <div className="px-4 sm:px-6 py-2.5 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/90 dark:bg-[#1e1e1e]/90 backdrop-blur-md flex items-center justify-between gap-2.5 sm:gap-3.5 flex-wrap shrink-0 sticky top-0 z-20">
         {/* Search Input, View Mode Switcher & Active Sort Notification */}
         <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap flex-1 min-w-0">
           {/* View Mode Switcher Pill (Table vs Kanban vs Calendar) */}
@@ -1211,6 +1298,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             >
               <Calendar className={`w-3.5 h-3.5 ${activeViewMode === 'calendar' ? 'text-amber-500' : ''}`} />
               <span>캘린더</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('memo')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                activeViewMode === 'memo'
+                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
+                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
+              }`}
+              title="자유 드래그 & 리사이즈 스티커 메모 보드 보기"
+            >
+              <Sparkles className={`w-3.5 h-3.5 ${activeViewMode === 'memo' ? 'text-amber-500' : ''}`} />
+              <span>메모 보드</span>
             </button>
           </div>
 
@@ -1758,7 +1858,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         </div>
       )}
 
-      {/* View Content: Kanban Board vs Calendar View vs Virtualized Table Grid */}
+      {/* View Content: Kanban Board vs Calendar View vs Memo Board vs Virtualized Table Grid */}
       {activeViewMode === 'kanban' ? (
         <KanbanBoardViewer
           table={table}
@@ -1776,12 +1876,21 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           onOpenRowDetail={onOpenRowDetail}
           onOpenRowEditor={onOpenRowEditor}
         />
+      ) : activeViewMode === 'memo' ? (
+        <MemoBoardView
+          table={table}
+          onUpdateTable={onUpdateTable}
+          onOpenRichEditor={onOpenRowEditor}
+          onAddNewRow={handleAddNewRowWithPosition}
+          onDeleteRow={handleDeleteSingleRow}
+          onUpdateRow={handleUpdateRowDirectly}
+        />
       ) : (
         <>
           {/* Main Grid View Container with TanStack Virtual Scrolling */}
           <div
             ref={tableContainerRef}
-            className="flex-1 overflow-auto custom-scrollbar relative"
+            className="flex-1 overflow-auto custom-scrollbar relative max-h-[calc(100vh-150px)] table-container"
           >
         <table className="table-fixed min-w-full border-collapse text-left text-xs font-sans">
           {/* Table Header Columns Width Mapping */}
@@ -2424,12 +2533,25 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                   colSpan={visibleColumns.length + 3}
                   className="py-12 text-center text-stone-400 dark:text-[#888888] text-xs bg-white dark:bg-[#181818]"
                 >
-                  <p className="text-sm font-medium text-stone-600 dark:text-[#cccccc] mb-1">
-                    데이터 행이 없습니다.
-                  </p>
-                  <p className="text-[11px] text-stone-400 dark:text-[#777777] mb-3">
-                    새로운 행을 직접 추가하거나, 엑셀/스프레드시트에서 복사한 데이터를 붙여넣으세요.
-                  </p>
+                  {searchQuery.trim() ? (
+                    <>
+                      <p className="text-sm font-semibold text-stone-700 dark:text-[#f0f0f0] mb-1">
+                        검색하신 <span className="text-amber-600 dark:text-amber-400 font-bold">"{searchQuery.trim()}"</span> 데이터가 없습니다.
+                      </p>
+                      <p className="text-[11px] text-stone-400 dark:text-[#777777] mb-3">
+                        검색어를 확인하시거나 다른 조건으로 검색을 시도해 주세요.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium text-stone-600 dark:text-[#cccccc] mb-1">
+                        데이터 행이 없습니다.
+                      </p>
+                      <p className="text-[11px] text-stone-400 dark:text-[#777777] mb-3">
+                        새로운 행을 직접 추가하거나, 엑셀/스프레드시트에서 복사한 데이터를 붙여넣으세요.
+                      </p>
+                    </>
+                  )}
                   <div className="flex items-center justify-center gap-2">
                     <button
                       onClick={() => handleOpenAddRowModal('bottom')}

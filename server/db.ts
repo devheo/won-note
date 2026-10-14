@@ -1802,6 +1802,7 @@ export function pushSyncNotes(notes: any[]): {
     for (const note of notes) {
       if (!note || !note.id) continue;
       const tableId = String(note.table_id || 'table-default');
+      const tableTitle = String(note.table_title || note.table_id || 'table-default');
       const nCreated = Number(note.created_at) || now;
       const nUpdated = Number(note.updated_at) || now;
       const title = String(note.title || note.id);
@@ -1818,14 +1819,25 @@ export function pushSyncNotes(notes: any[]): {
       dbInstance.run(
         `INSERT OR IGNORE INTO tables (id, title, description, default_view, created_at, updated_at)
          VALUES (?, ?, ?, 'grid', ?, ?);`,
-        [toSqliteParam(tableId), toSqliteParam(tableId), toSqliteParam(''), toSqliteParam(nCreated), toSqliteParam(nUpdated)]
+        [toSqliteParam(tableId), toSqliteParam(tableTitle), toSqliteParam(''), toSqliteParam(nCreated), toSqliteParam(nUpdated)]
       );
 
       dbInstance.run(
         `INSERT OR IGNORE INTO tree_items (id, parent_id, title, type, is_expanded, created_at, updated_at, sort_order)
          VALUES (?, null, ?, 'table', 0, ?, ?, 0);`,
-        [toSqliteParam(tableId), toSqliteParam(tableId), toSqliteParam(nCreated), toSqliteParam(nUpdated)]
+        [toSqliteParam(tableId), toSqliteParam(tableTitle), toSqliteParam(nCreated), toSqliteParam(nUpdated)]
       );
+
+      if (note.table_title) {
+        dbInstance.run(
+          `UPDATE tables SET title = ? WHERE id = ? AND (title = id OR title IS NULL OR title = '');`,
+          [toSqliteParam(note.table_title), toSqliteParam(tableId)]
+        );
+        dbInstance.run(
+          `UPDATE tree_items SET title = ? WHERE id = ? AND (title = id OR title IS NULL OR title = '');`,
+          [toSqliteParam(note.table_title), toSqliteParam(tableId)]
+        );
+      }
 
       // 2. UPSERT into notes table
       dbInstance.run(

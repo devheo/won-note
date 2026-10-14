@@ -1,5 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { NodeViewWrapper, ReactNodeViewProps } from '@tiptap/react';
+import { NodeSelection } from '@tiptap/pm/state';
+import { wonbeeDexieDB } from '../../services/storage/dexieDb';
 import {
   AlignLeft,
   AlignCenter,
@@ -10,6 +12,7 @@ import {
   Minimize2,
   Move,
   GripHorizontal,
+  GripVertical,
 } from 'lucide-react';
 
 export const ImageComponent: React.FC<ReactNodeViewProps> = ({
@@ -17,11 +20,54 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
   updateAttributes,
   deleteNode,
   selected,
+  getPos,
+  editor,
 }) => {
   const src = (node.attrs.src as string) || '';
   const alt = (node.attrs.alt as string) || '';
   const currentWidth = (node.attrs.width as string) || 'auto';
   const layout = (node.attrs.layout as 'inline' | 'center' | 'left' | 'right') || 'inline';
+
+  const [resolvedSrc, setResolvedSrc] = useState<string>(src);
+
+  useEffect(() => {
+    let isMounted = true;
+    let objectUrl: string | null = null;
+
+    async function loadAsset() {
+      if (!src) {
+        setResolvedSrc('');
+        return;
+      }
+      if (src.startsWith('asset://')) {
+        const assetId = src.replace('asset://', '');
+        try {
+          const asset = await wonbeeDexieDB.getAsset(assetId);
+          if (asset && asset.blob && isMounted) {
+            objectUrl = URL.createObjectURL(asset.blob);
+            setResolvedSrc(objectUrl);
+            return;
+          }
+        } catch (err) {
+          console.warn('Failed to load Dexie asset for image:', err);
+        }
+      }
+      if (isMounted) {
+        setResolvedSrc(src);
+      }
+    }
+
+    loadAsset();
+
+    return () => {
+      isMounted = false;
+      if (objectUrl) {
+        try {
+          URL.revokeObjectURL(objectUrl);
+        } catch (_) {}
+      }
+    };
+  }, [src]);
 
   const [isHovered, setIsHovered] = useState(false);
   const [isResizing, setIsResizing] = useState(false);
@@ -117,8 +163,44 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
       {showToolbar && (
         <div
           contentEditable={false}
-          className="absolute -top-12 left-0 z-50 flex items-center flex-nowrap gap-1 bg-white/95 dark:bg-[#1e1e1e]/95 text-stone-800 dark:text-white px-2.5 py-1 rounded-xl shadow-2xl border border-stone-200/90 dark:border-stone-600/80 backdrop-blur-sm text-xs select-none whitespace-nowrap min-w-max pointer-events-auto"
+          className="absolute top-full mt-2 left-0 z-50 flex items-center flex-nowrap gap-1 bg-white/95 dark:bg-[#1e1e1e]/95 text-stone-800 dark:text-white px-2.5 py-1 rounded-xl shadow-2xl border border-stone-200/90 dark:border-stone-600/80 backdrop-blur-sm text-xs select-none whitespace-nowrap min-w-max pointer-events-auto"
         >
+          {/* Notion/Excel-style 6-dot Drag Handle */}
+          <div
+            contentEditable={false}
+            draggable="true"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (typeof getPos === 'function' && editor) {
+                const pos = getPos();
+                if (typeof pos === 'number') {
+                  const { state, dispatch } = editor.view;
+                  const selection = NodeSelection.create(state.doc, pos);
+                  dispatch(state.tr.setSelection(selection));
+                  editor.view.focus();
+                }
+              }
+            }}
+            onDragStart={(e) => {
+              if (typeof getPos === 'function' && editor) {
+                const pos = getPos();
+                if (typeof pos === 'number') {
+                  const { state, dispatch } = editor.view;
+                  const selection = NodeSelection.create(state.doc, pos);
+                  dispatch(state.tr.setSelection(selection));
+                  if (e.dataTransfer) {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', '[이미지]');
+                  }
+                }
+              }
+            }}
+            className="p-1 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-400 hover:text-amber-500 rounded cursor-grab active:cursor-grabbing transition-colors mr-0.5"
+            title="클릭하여 이미지 전체 선택 / 드래그하여 다른 위치로 이동"
+          >
+            <GripVertical className="w-3.5 h-3.5" />
+          </div>
           {/* Quick Width Presets */}
           <div className="flex items-center gap-0.5 border-r border-stone-200 dark:border-stone-700 pr-1.5 mr-0.5 shrink-0">
             {[
@@ -210,7 +292,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
 
       {/* Main Image: Scales 100% with the wrapper dimensions without arbitrary container blank space */}
       <img
-        src={src}
+        src={resolvedSrc}
         alt={alt}
         className={`rounded-xl shadow-md border border-stone-200 dark:border-[#383838] transition-all block w-full h-auto ${
           selected ? 'ring-2 ring-amber-500 ring-offset-2 dark:ring-offset-stone-900' : ''

@@ -116,7 +116,7 @@ export interface TableDocument {
   description?: string;
   columns: TableColumn[];
   rows: TableRow[];
-  defaultView?: 'grid' | 'cards' | 'calendar';
+  defaultView?: 'grid' | 'cards' | 'calendar' | 'memo';
   createdAt: number;
   updatedAt: number;
   is_dirty?: number; // 1 = un-synced dirty state, 0 = synced

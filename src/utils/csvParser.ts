@@ -356,12 +356,16 @@ function inferColumnType(colName: string, values: string[], colIndex: number): C
 }
 
 export function escapeHtmlForTable(str: string): string {
+  if (!str) return '';
   return str
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
+    .replace(/'/g, '&#039;')
+    .trim();
 }
 
 /**

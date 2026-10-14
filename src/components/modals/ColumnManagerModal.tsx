@@ -58,9 +58,6 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
   const [editColType, setEditColType] = useState<ColumnType>('text');
   const [saveToast, setSaveToast] = useState(false);
 
-  // Dedicated Column Delete Confirmation Modal State
-  const [columnToDelete, setColumnToDelete] = useState<TableColumn | null>(null);
-
   if (!isOpen) return null;
 
   const handleAddNew = (e: React.FormEvent) => {
@@ -106,14 +103,6 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
     next.splice(targetIndex, 0, moved);
     onReorderColumns(next);
     triggerToast();
-  };
-
-  const confirmDeleteColumn = () => {
-    if (columnToDelete) {
-      onDeleteColumn(columnToDelete.id);
-      setColumnToDelete(null);
-      triggerToast();
-    }
   };
 
   const getColIcon = (type: ColumnType) => {
@@ -397,7 +386,13 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
                       {/* Delete Column (Protected for primary key) */}
                       {!col.isPrimaryKey && (
                         <button
-                          onClick={() => setColumnToDelete(col)}
+                          type="button"
+                          onClick={() => {
+                            if (window.confirm(`정말 '${col.name}' 열을 삭제하시겠습니까?\n해당 열에 입력된 모든 데이터가 테이블에서 영구적으로 삭제됩니다.`)) {
+                              onDeleteColumn(col.id);
+                              triggerToast();
+                            }
+                          }}
                           className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950/40 text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 transition-colors"
                           title="열 삭제"
                         >
@@ -425,49 +420,6 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
             저장 및 완료
           </button>
         </div>
-
-        {/* Dedicated Delete Confirmation Dialog */}
-        {columnToDelete && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-6 z-50 animate-in fade-in duration-150">
-            <div className="bg-white dark:bg-[#222222] rounded-2xl border border-rose-200 dark:border-rose-900/60 shadow-2xl p-5 max-w-sm w-full animate-in zoom-in-95 duration-150 text-stone-900 dark:text-[#f0f0f0]">
-              <div className="flex items-center gap-3 mb-3 text-rose-600 dark:text-rose-400">
-                <div className="p-2 rounded-xl bg-rose-100 dark:bg-rose-950/60">
-                  <AlertTriangle className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="font-bold text-sm">열(Column) 삭제 확인</h3>
-                  <p className="text-[11px] text-stone-500 dark:text-[#a0a0a0]">
-                    되돌릴 수 없는 작업입니다.
-                  </p>
-                </div>
-              </div>
-
-              <p className="text-xs text-stone-600 dark:text-[#cccccc] mb-4 leading-relaxed bg-stone-50 dark:bg-[#181818] p-3 rounded-xl border border-stone-200 dark:border-[#333333]">
-                정말 <strong className="text-rose-600 dark:text-rose-400">'{columnToDelete.name}'</strong> 열을 삭제하시겠습니까?
-                <br />
-                해당 열에 입력된 모든 데이터가 테이블에서 영구적으로 삭제됩니다.
-              </p>
-
-              <div className="flex items-center justify-end gap-2 text-xs">
-                <button
-                  type="button"
-                  onClick={() => setColumnToDelete(null)}
-                  className="px-3.5 py-1.5 rounded-lg border border-stone-200 dark:border-[#383838] text-stone-600 dark:text-[#cccccc] hover:bg-stone-100 dark:hover:bg-[#2c2c2c] font-medium transition-colors"
-                >
-                  취소
-                </button>
-                <button
-                  type="button"
-                  onClick={confirmDeleteColumn}
-                  className="px-3.5 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold transition-all shadow-sm flex items-center gap-1.5"
-                >
-                  <Trash2 className="w-3.5 h-3.5" />
-                  열 삭제하기
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

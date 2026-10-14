@@ -21,6 +21,8 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
   const [workspace, setWorkspace] = useState<WorkspaceData>(INITIAL_WORKSPACE_DATA);
   const [activeTableId, setActiveTableId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<'loading' | 'success' | 'error'>('loading');
 
   const lastLoadedTimestampRef = useRef<number>(0);
   const isFetchingRef = useRef<boolean>(false);
@@ -34,6 +36,10 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
         return;
       }
       isFetchingRef.current = true;
+      if (!isSilent) {
+        setSyncError(null);
+        setSyncStatus('loading');
+      }
 
       // 1. Stale-While-Revalidate: load cached Dexie IndexedDB data immediately (<10ms)
       if (!isSilent) {
@@ -90,30 +96,37 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
 
         const finalData = needsSave ? { ...data, tables: cleanedTables } : data;
         setWorkspace(finalData);
+        setSyncStatus('success');
+        setSyncError(null);
         lastLoadedTimestampRef.current = finalData.exportedAt || Date.now();
 
         if (needsSave && !isSilent) {
           repository.saveWorkspace(finalData).catch(() => {});
         }
 
-        // Active table restoration
+        // Active table restoration with guaranteed fallback
         const savedTableId = localStorage.getItem('wonbee_active_table_id');
         const tableKeys = Object.keys(finalData.tables);
+
+        let targetTableId: string | null = null;
         if (savedTableId && finalData.tables[savedTableId]) {
-          setActiveTableId(savedTableId);
+          targetTableId = savedTableId;
+        } else if (tableKeys.length > 0) {
+          targetTableId = tableKeys[0];
+        }
+
+        if (targetTableId) {
+          setActiveTableId(targetTableId);
+          localStorage.setItem('wonbee_active_table_id', targetTableId);
         } else {
-          setActiveTableId((prev) => {
-            if (prev && finalData.tables[prev]) return prev;
-            const firstTableId = tableKeys[0] || null;
-            if (firstTableId) {
-              localStorage.setItem('wonbee_active_table_id', firstTableId);
-            }
-            return firstTableId;
-          });
+          setActiveTableId(null);
         }
       } catch (err: any) {
         if (err?.name !== 'AbortError') {
           console.error('[useWorkspaceInit] Failed to load workspace:', err);
+          const errMsg = err?.message || '서버 데이터베이스 동기화 연결에 실패했습니다.';
+          setSyncError(errMsg);
+          setSyncStatus('error');
         }
       } finally {
         isFetchingRef.current = false;
@@ -123,20 +136,18 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
     [repository]
   );
 
-  // Unified single root mount effect with AbortController and StrictMode double-call guard
+  const retryWorkspaceLoad = useCallback(() => {
+    initialFetchDoneRef.current = false;
+    isFetchingRef.current = false;
+    loadWorkspaceData(false);
+  }, [loadWorkspaceData]);
+
+  // Unified single root mount effect with StrictMode double-call guard
   useEffect(() => {
-    // If already initiated on this mount lifecycle, skip duplicate StrictMode trigger
     if (initialFetchDoneRef.current) return;
     initialFetchDoneRef.current = true;
 
-    const controller = new AbortController();
-
-    loadWorkspaceData(false, controller.signal);
-
-    return () => {
-      // Abort in-flight requests if unmounted early
-      controller.abort();
-    };
+    loadWorkspaceData(false);
   }, [loadWorkspaceData]);
 
   return {
@@ -146,7 +157,10 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
     setActiveTableId,
     isLoading,
     setIsLoading,
+    syncError,
+    syncStatus,
     loadWorkspaceData,
+    retryWorkspaceLoad,
     lastLoadedTimestampRef,
   };
 }

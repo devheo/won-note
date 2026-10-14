@@ -11,6 +11,7 @@ import {
   CalendarEvent,
 } from '../../types';
 import { wonbeeDB } from './indexedDb';
+import { wonbeeDexieDB } from './dexieDb';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 import { deduplicatedFetchJson } from '../api/requestDeduplicator';
 
@@ -223,6 +224,18 @@ export class IndexedDBWorkspaceRepository implements IWorkspaceRepository {
       count: changed.length,
     };
   }
+
+  async getDirtyNotes() {
+    return wonbeeDexieDB.getDirtyNotes();
+  }
+
+  async markNotesClean(noteIds: string[]) {
+    return wonbeeDexieDB.markNotesClean(noteIds);
+  }
+
+  async pushSync(notes?: any[]) {
+    return { success: true, upsertedCount: 0 };
+  }
 }
 
 /**
@@ -236,64 +249,164 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     this.serverUrl = serverUrl;
   }
 
-  /**
-   * 2. Initial Loading Flow (Zero 100MB+ dumps):
-   * 1단계: IndexedDB(Dexie)에 데이터가 있으면 즉시 로컬 데이터 획득.
-   * 2단계: /api/workspace/meta 로 메타데이터만 조회 (수 KB 미만).
-   * 3단계: 로컬 last_updated_at과 서버 메타데이터를 비교하여, 서버가 더 최신일 경우에만 /api/notes/sync?since={last_updated_at}를 호출하여 '변경된 차분 데이터만' 머지.
-   */
-  async loadWorkspace(signal?: AbortSignal): Promise<WorkspaceData> {
-    // 1단계: IndexedDB(Dexie) 데이터 로드
-    let localWs = await this.localFallback.loadWorkspace();
-    const hasLocalData = localWs && Object.keys(localWs.tables).length > 0;
+  async getDirtyNotes() {
+    return wonbeeDexieDB.getDirtyNotes();
+  }
 
+  async markNotesClean(noteIds: string[]) {
+    return wonbeeDexieDB.markNotesClean(noteIds);
+  }
+
+  async pushSync(notes?: any[]): Promise<{ success: boolean; upsertedCount: number; last_updated_at?: number }> {
     try {
-      // 2단계: /api/workspace/meta 로 초경량 메타데이터만 조회 (수 KB 미만)
-      const meta = await this.getWorkspaceMeta(signal);
-      if (!meta) return localWs;
-
-      const serverLastUpdated = meta.last_updated_at || 0;
-      const localLastUpdated = localWs.exportedAt || 0;
-
-      // 로컬 IndexedDB에 테이블 구조가 전혀 없는 신규 브라우저의 경우, 메타데이터의 스키마 구조로 1차 초기화
-      if (!hasLocalData && meta.tables) {
-        const skeletonTables: Record<string, TableDocument> = {};
-        Object.values(meta.tables).forEach((t: any) => {
-          skeletonTables[t.id] = {
-            id: t.id,
-            title: t.title,
-            description: t.description,
-            defaultView: t.defaultView || 'grid',
-            columns: t.columns || [],
-            rows: [],
-            createdAt: t.createdAt || Date.now(),
-            updatedAt: t.updatedAt || Date.now(),
-          };
-        });
-
-        localWs = {
-          version: meta.version || '1.0.0',
-          exportedAt: 0, // Set to 0 so next step fetches all initial rows via /api/notes/sync
-          settings: meta.settings,
-          tree: meta.tree || [],
-          tables: skeletonTables,
-        };
-        await this.localFallback.saveWorkspace(localWs);
+      const dirtyNotes = notes && notes.length > 0 ? notes : await wonbeeDexieDB.getDirtyNotes();
+      if (!dirtyNotes || dirtyNotes.length === 0) {
+        return { success: true, upsertedCount: 0 };
       }
 
-      // 3단계: 로컬 last_updated_at과 서버 메타데이터 비교 -> 서버가 더 최신일 때만 차분 데이터 동기화
-      if (serverLastUpdated > (hasLocalData ? localLastUpdated : 0)) {
-        const since = hasLocalData ? localLastUpdated : 0;
-        await this.syncNotes(since, signal);
+      let totalUpserted = 0;
+      const BATCH_SIZE = 100;
+
+      for (let i = 0; i < dirtyNotes.length; i += BATCH_SIZE) {
+        const batch = dirtyNotes.slice(i, i + BATCH_SIZE);
+        const res = await fetch(`${this.serverUrl}/notes/push-sync`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(batch),
+        });
+
+        if (!res.ok) {
+          throw new Error(`Push sync HTTP ${res.status}`);
+        }
+
+        const result = await res.json();
+        if (result.success) {
+          totalUpserted += result.upsertedCount || batch.length;
+          const batchIds = batch.map((n: any) => n.id);
+          await wonbeeDexieDB.markNotesClean(batchIds);
+        }
+      }
+
+      return { success: true, upsertedCount: totalUpserted };
+    } catch (err) {
+      console.warn('[Repository] pushSync failed:', err);
+      return { success: false, upsertedCount: 0 };
+    }
+  }
+
+  /**
+   * 2. Initial Loading Flow (Zero 100MB+ dumps):
+   * 1단계: 신규 클라이언트 브라우저일 경우 서버에서 전체 워크스페이스(/api/workspace)를 동기화 받음.
+   * 2단계: 기존 로컬 캐시가 존재하는 경우 오프라인 미동기화 변경사항 Push Sync 실행.
+   * 3단계: /api/workspace/meta 및 Pull Sync 실행하여 최신 차분 데이터 머지.
+   */
+  /**
+   * 2. Initial Loading Flow (Zero 100MB+ dumps):
+   * 1단계: Cold Start (신규 브라우저/시크릿 창) 감지 - 스키마 및 전체 데이터 Bootstrap 실행.
+   * 2단계: 기존 로컬 캐시 존재 시 오프라인 미동기화 변경사항 Push Sync 실행.
+   * 3단계: /api/workspace/meta 및 차분(Delta) Sync 실행하여 최신 변경사항 머지.
+   */
+  async loadWorkspace(signal?: AbortSignal): Promise<WorkspaceData> {
+    const isRealLocal = await wonbeeDexieDB.hasRealLocalData();
+    const lastSyncStr = localStorage.getItem('wonbee_last_sync_timestamp');
+    const isColdStart = !isRealLocal || !lastSyncStr;
+    let localWs = await this.localFallback.loadWorkspace();
+
+    try {
+      // 1. Cold Start (최초 동기화) 로직: 스키마 골격 및 초기 데이터베이스 Bootstrap
+      if (isColdStart) {
+        console.log('[Repository] Cold start detected. Initializing full workspace bootstrap...');
+        try {
+          // 1단계: 전체 워크스페이스 직접 수신 시도 (bypassing deduplication for cold start)
+          const serverWs = await deduplicatedFetchJson<WorkspaceData>(`${this.serverUrl}/workspace`, {
+            cache: 'no-store',
+            bypassDeduplication: true,
+            signal,
+          });
+
+          if (serverWs && Object.keys(serverWs.tables || {}).length > 0) {
+            const ensuredServerWs = ensureWorkspaceTree(serverWs);
+            await wonbeeDexieDB.saveFullWorkspace(ensuredServerWs, 0);
+            const syncTime = ensuredServerWs.exportedAt || Date.now();
+            localStorage.setItem('wonbee_last_sync_timestamp', String(syncTime));
+            return ensuredServerWs;
+          }
+        } catch (fetchErr: any) {
+          if (fetchErr?.name === 'AbortError') throw fetchErr;
+          console.warn('[Repository] Full workspace fetch fallback, trying meta + notes bootstrap:', fetchErr);
+        }
+
+        // 2단계: 메타데이터 수신 및 테이블 스키마 골격 사전 빌드
+        const meta = await this.getWorkspaceMeta(signal);
+        if (meta && meta.tables) {
+          const skeletonTables: Record<string, TableDocument> = {};
+          Object.values(meta.tables).forEach((t: any) => {
+            skeletonTables[t.id] = {
+              id: t.id,
+              title: t.title,
+              description: t.description,
+              defaultView: t.defaultView || 'grid',
+              columns: t.columns || [],
+              rows: [],
+              createdAt: t.createdAt || Date.now(),
+              updatedAt: t.updatedAt || Date.now(),
+            };
+          });
+
+          const initialWs: WorkspaceData = {
+            version: meta.version || '1.0.0',
+            exportedAt: meta.last_updated_at || Date.now(),
+            settings: meta.settings,
+            tree: meta.tree || [],
+            tables: skeletonTables,
+          };
+
+          await wonbeeDexieDB.saveFullWorkspace(initialWs, 0);
+          await this.syncNotes(0, signal);
+
+          localWs = await this.localFallback.loadWorkspace();
+          const syncTime = meta.last_updated_at || Date.now();
+          localStorage.setItem('wonbee_last_sync_timestamp', String(syncTime));
+          localWs.exportedAt = syncTime;
+          return localWs;
+        }
+      }
+
+      // 2. 기존 로컬 캐시가 존재하는 경우 오프라인 변경 사항(is_dirty: 1) Push Sync
+      await this.pushSync();
+
+      // 3. /api/workspace/meta 조회 및 권위 있는 서버 트리(tree) 구조 동기화
+      const meta = await this.getWorkspaceMeta(signal);
+      if (meta) {
+        if (meta.tree && Array.isArray(meta.tree)) {
+          await this.localFallback.saveTree(meta.tree);
+          localWs.tree = meta.tree;
+        }
+      } else {
+        return localWs;
+      }
+
+      const serverLastUpdated = meta.last_updated_at || 0;
+      const lastSyncTimestamp = Number(localStorage.getItem('wonbee_last_sync_timestamp') || localWs.exportedAt || 0);
+
+      // 4. 차분(Delta) Mode Sync 실행 (서버 노트/행 변경사항 로컬 머지)
+      if (serverLastUpdated > lastSyncTimestamp) {
+        await this.syncNotes(lastSyncTimestamp, signal);
         localWs = await this.localFallback.loadWorkspace();
-        localWs.exportedAt = serverLastUpdated;
+        localWs.exportedAt = Math.max(serverLastUpdated, Date.now());
+        localStorage.setItem('wonbee_last_sync_timestamp', String(serverLastUpdated));
+      }
+
+      // Ensure tree is up-to-date with meta.tree
+      if (meta.tree && Array.isArray(meta.tree)) {
+        localWs.tree = meta.tree;
       }
 
       return localWs;
     } catch (err: any) {
       if (err?.name === 'AbortError') throw err;
-      console.warn('[Repository] Server meta/sync unreachable, using local IndexedDB:', err);
-      return localWs;
+      console.error('[Repository] Server loadWorkspace error:', err);
+      throw err; // Rethrow so hook handles retry UI
     }
   }
 

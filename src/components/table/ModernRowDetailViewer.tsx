@@ -35,6 +35,8 @@ import {
 } from 'lucide-react';
 import { detectLanguage, highlightHtmlCodeBlocks, extractCodeBlockFromContent } from '../../utils/codeHighlighter';
 import { CodeBlockViewer } from '../common/CodeBlockViewer';
+import { LazyImage } from '../common/LazyImage';
+import { RichHtmlRenderer } from '../common/RichHtmlRenderer';
 import { cleanTextValue, extractFirstImageSrc, isImageValue } from '../../utils/textSanitizer';
 import { isLikelyMarkdown, markdownToHtml } from '../../utils/markdownHelper';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
@@ -889,7 +891,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                       onClick={() => setLightboxImg(imgSrc)}
                                       title="클릭하여 원본 크기로 확대"
                                     >
-                                      <img
+                                      <LazyImage
                                         src={imgSrc}
                                         alt="이미지 미리보기"
                                         className="max-h-64 max-w-full rounded-lg object-contain group-hover:scale-[1.02] transition-transform duration-200"
@@ -918,7 +920,8 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               const parsedHtml = markdownToHtml(strVal);
                               const highlightedHtml = highlightHtmlCodeBlocks(parsedHtml);
                               return (
-                                <div
+                                <RichHtmlRenderer
+                                  html={highlightedHtml}
                                   className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table wonbee-markdown-content cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed overflow-y-auto ${heightLimitClass}`}
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
@@ -927,7 +930,6 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                       if (src) setLightboxImg(src);
                                     }
                                   }}
-                                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
                                 />
                               );
                             }
@@ -946,7 +948,8 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                             if (isRichHtml) {
                               const highlightedHtml = highlightHtmlCodeBlocks(strVal);
                               return (
-                                <div
+                                <RichHtmlRenderer
+                                  html={highlightedHtml}
                                   className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed overflow-y-auto ${heightLimitClass}`}
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
@@ -955,7 +958,6 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                                       if (src) setLightboxImg(src);
                                     }
                                   }}
-                                  dangerouslySetInnerHTML={{ __html: highlightedHtml }}
                                 />
                               );
                             }
