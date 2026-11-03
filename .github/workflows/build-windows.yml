@@ -44,6 +44,6 @@ jobs:
           releaseName: "WonBee v__VERSION__"
           releaseBody: "Windows 64-bit release build"
           releaseDraft: true
-	  packageManager: npm
           prerelease: false
+	        packageManager: npm
           args: --target x86_64-pc-windows-msvc
