@@ -34,9 +34,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "wix": {
-        "language": ["ko-KR"],
-        "template": null
+    "windows": {
+      "nsis": {
+        "languages": ["Korean"]
+      }
     }
   }
 }
