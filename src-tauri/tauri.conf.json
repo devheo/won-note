@@ -37,7 +37,7 @@
     "windows": {
       "webviewInstallMode": {
         "type": "fixedRuntime",
-        "path": "./Microsoft.WebView2.FixedVersionRuntime.119.0.2149.3.x64"
+        "path": "./Microsoft.WebView2.FixedVersionRuntime.156.0.4314.58.x64"
       },
       "nsis": {
         "languages": ["Korean", "English"]
