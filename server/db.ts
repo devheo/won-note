@@ -1200,7 +1200,6 @@ export function deleteDocument(documentId: string): void {
 export function deleteTable(tableId: string): void {
   if (!dbInstance) throw new Error('Database not initialized');
   const now = Date.now();
-  touchServerUpdate();
   dbInstance.run('BEGIN TRANSACTION;');
   try {
     const ids = Array.from(
@@ -1262,6 +1261,7 @@ export function deleteTable(tableId: string): void {
     throw err;
   }
 
+  touchServerUpdate();
   persistDatabase(false);
   syncDbToUserDataJson(false);
 }
@@ -1951,42 +1951,4 @@ export function pushSyncNotes(notes: any[]): {
     throw err;
   }
 }
-
-/**
- * Delete table from SQLite tables, columns, rows, tree_items, notes, and drop the physical SQLite table if it exists
- */
-export function deleteTable(tableId: string): void {
-  if (!dbInstance) throw new Error('Database not initialized');
-
-  dbInstance.run('BEGIN TRANSACTION;');
-  try {
-    const cleanId = tableId.replace(/^table[-_]/, '');
-    const altIds = [tableId, `table_${cleanId}`, `table-${cleanId}`, cleanId, cleanId.replace(/-/g, '_'), cleanId.replace(/_/g, '-')];
-
-    altIds.forEach((id) => {
-      dbInstance!.run("DELETE FROM tables WHERE id = ?;", [toSqliteParam(id)]);
-      dbInstance!.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(id)]);
-      dbInstance!.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(id)]);
-      dbInstance!.run("DELETE FROM notes WHERE table_id = ?;", [toSqliteParam(id)]);
-      dbInstance!.run("DELETE FROM tree_items WHERE id = ?;", [toSqliteParam(id)]);
-      dbInstance!.run("DELETE FROM row_images WHERE table_id = ?;", [toSqliteParam(id)]);
-      dbInstance!.run("DELETE FROM calendar_events WHERE table_id = ?;", [toSqliteParam(id)]);
-
-      try {
-        dbInstance!.run(`DROP TABLE IF EXISTS "table_${id}";`);
-        dbInstance!.run(`DROP TABLE IF EXISTS "${id}";`);
-      } catch (_) {}
-    });
-
-    dbInstance.run('COMMIT;');
-  } catch (err) {
-    try { dbInstance.run('ROLLBACK;'); } catch {}
-    throw err;
-  }
-
-  touchServerUpdate();
-  persistDatabase(false);
-  syncDbToUserDataJson(false);
-}
-
 
