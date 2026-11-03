@@ -34,8 +34,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "android": {
-      "debugApplicationIdSuffix": ".debug"
+    "wix": {
+        "language": ["ko-KR"],
+        "template": null
     }
   }
 }
