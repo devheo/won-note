@@ -45,5 +45,5 @@ jobs:
           releaseBody: "Windows 64-bit release build"
           releaseDraft: true
           prerelease: false
-          tauriScript: npm tauri
+          tauriScript: npx tauri
           args: --target x86_64-pc-windows-msvc
