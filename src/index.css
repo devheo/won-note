@@ -31,51 +31,523 @@
   color-scheme: dark;
 }
 
-/* Dark mode surface overrides for clean Material Simple Dark Grey */
-.dark body {
-  background-color: #121212;
-  color: #eeeeee;
+/* Multi-Theme System CSS Variables & Overrides */
+[data-theme="light"] {
+  color-scheme: light;
 }
 
-.dark .bg-stone-950,
-.dark .bg-stone-900 {
-  background-color: #1e1e1e !important;
+[data-theme="dark-soft"] {
+  --color-bg-base: #1a1c20;
+  --color-surface-1: #22252a;
+  --color-surface-2: #282c33;
+  --color-surface-3: #2a2d34;
+  --color-surface-4: #333842;
+  --color-border: #3b3f4a;
+  --color-border-subtle: #2f333d;
+  --color-text-high: #f1f5f9;
+  --color-text-medium: #94a3b8;
+  --color-text-low: #64748b;
+  color-scheme: dark;
+}
+[data-theme="dark-soft"] body {
+  background-color: #1a1c20;
+  color: #f1f5f9;
 }
 
-.dark .bg-stone-900\/60,
-.dark .bg-stone-900\/50,
-.dark .bg-stone-900\/95,
-.dark .bg-stone-900\/80 {
-  background-color: rgba(30, 30, 30, 0.95) !important;
+[data-theme="dark-warm"] {
+  --color-bg-base: #1c1b1a;
+  --color-surface-1: #262422;
+  --color-surface-2: #2d2b28;
+  --color-surface-3: #302d2a;
+  --color-surface-4: #3d3935;
+  --color-border: #4a4540;
+  --color-border-subtle: #383430;
+  --color-text-high: #f5f2eb;
+  --color-text-medium: #a8a29e;
+  --color-text-low: #78716c;
+  color-scheme: dark;
+}
+[data-theme="dark-warm"] body {
+  background-color: #1c1b1a;
+  color: #f5f2eb;
 }
 
-.dark .bg-stone-800 {
-  background-color: #282828 !important;
+[data-theme="dark-hard"] {
+  --color-bg-base: #09090b;
+  --color-surface-1: #121214;
+  --color-surface-2: #18181b;
+  --color-surface-3: #27272a;
+  --color-surface-4: #3f3f46;
+  --color-border: #27272a;
+  --color-border-subtle: #18181b;
+  --color-text-high: #fafafa;
+  --color-text-medium: #a1a1aa;
+  --color-text-low: #71717a;
+  color-scheme: dark;
+}
+[data-theme="dark-hard"] body {
+  background-color: #09090b;
+  color: #fafafa;
 }
 
-.dark .bg-stone-800\/50,
-.dark .bg-stone-800\/40,
-.dark .bg-stone-800\/60 {
-  background-color: rgba(45, 45, 45, 0.6) !important;
+/* 1. SOFT DARK (Default Comfortable Charcoal) */
+[data-theme="dark-soft"] body,
+[data-theme="dark-soft"] .bg-stone-50\/40,
+[data-theme="dark-soft"] .dark\:bg-stone-950 {
+  background-color: #181a1f !important;
+  color: #f1f5f9;
 }
 
-.dark .hover\:bg-stone-800:hover {
-  background-color: #333333 !important;
+[data-theme="dark-soft"] .dark\:bg-stone-900,
+[data-theme="dark-soft"] .dark\:bg-\[\#181818\],
+[data-theme="dark-soft"] .dark\:bg-\[\#1c1c1c\],
+[data-theme="dark-soft"] .dark\:bg-\[\#141414\],
+[data-theme="dark-soft"] .dark\:bg-\[\#1e1e1e\],
+[data-theme="dark-soft"] .dark\:bg-\[\#202020\],
+[data-theme="dark-soft"] .dark\:bg-\[\#222222\] {
+  background-color: #21252d !important;
 }
 
-.dark .hover\:bg-stone-700:hover {
-  background-color: #3d3d3d !important;
+[data-theme="dark-soft"] .dark\:bg-\[\#252525\],
+[data-theme="dark-soft"] .dark\:bg-\[\#262626\],
+[data-theme="dark-soft"] .dark\:bg-\[\#282828\],
+[data-theme="dark-soft"] .dark\:bg-\[\#2a2a2a\],
+[data-theme="dark-soft"] .dark\:bg-\[\#333333\],
+[data-theme="dark-soft"] .dark\:bg-stone-800 {
+  background-color: #2b303a !important;
 }
 
-.dark .border-stone-800,
-.dark .border-stone-800\/80,
-.dark .border-stone-800\/60 {
-  border-color: #333333 !important;
+[data-theme="dark-soft"] .dark\:border-\[\#333333\],
+[data-theme="dark-soft"] .dark\:border-\[\#383838\],
+[data-theme="dark-soft"] .dark\:border-stone-800 {
+  border-color: #3b4252 !important;
 }
 
-.dark .border-stone-700,
-.dark .border-stone-700\/60 {
-  border-color: #3d3d3d !important;
+
+/* 2. WARM CHARCOAL (Deep Stone / Warm Brown) */
+[data-theme="dark-warm"] body,
+[data-theme="dark-warm"] .bg-stone-50\/40,
+[data-theme="dark-warm"] .dark\:bg-stone-950 {
+  background-color: #1c1917 !important;
+  color: #f5f2eb;
+}
+
+[data-theme="dark-warm"] .dark\:bg-stone-900,
+[data-theme="dark-warm"] .dark\:bg-\[\#181818\],
+[data-theme="dark-warm"] .dark\:bg-\[\#1c1c1c\],
+[data-theme="dark-warm"] .dark\:bg-\[\#141414\],
+[data-theme="dark-warm"] .dark\:bg-\[\#1e1e1e\],
+[data-theme="dark-warm"] .dark\:bg-\[\#202020\],
+[data-theme="dark-warm"] .dark\:bg-\[\#222222\] {
+  background-color: #292524 !important;
+}
+
+[data-theme="dark-warm"] .dark\:bg-\[\#252525\],
+[data-theme="dark-warm"] .dark\:bg-\[\#262626\],
+[data-theme="dark-warm"] .dark\:bg-\[\#282828\],
+[data-theme="dark-warm"] .dark\:bg-\[\#2a2a2a\],
+[data-theme="dark-warm"] .dark\:bg-\[\#333333\],
+[data-theme="dark-warm"] .dark\:bg-stone-800 {
+  background-color: #36302c !important;
+}
+
+[data-theme="dark-warm"] .dark\:border-\[\#333333\],
+[data-theme="dark-warm"] .dark\:border-\[\#383838\],
+[data-theme="dark-warm"] .dark\:border-stone-800 {
+  border-color: #44403c !important;
+}
+
+
+/* 3. HARD DARK (Pure Deep Pitch Black) */
+[data-theme="dark-hard"] body,
+[data-theme="dark-hard"] .bg-stone-50\/40,
+[data-theme="dark-hard"] .dark\:bg-stone-950 {
+  background-color: #09090b !important;
+  color: #fafafa;
+}
+
+[data-theme="dark-hard"] .dark\:bg-stone-900,
+[data-theme="dark-hard"] .dark\:bg-\[\#181818\],
+[data-theme="dark-hard"] .dark\:bg-\[\#1c1c1c\],
+[data-theme="dark-hard"] .dark\:bg-\[\#141414\],
+[data-theme="dark-hard"] .dark\:bg-\[\#1e1e1e\],
+[data-theme="dark-hard"] .dark\:bg-\[\#202020\],
+[data-theme="dark-hard"] .dark\:bg-\[\#222222\] {
+  background-color: #121215 !important;
+}
+
+[data-theme="dark-hard"] .dark\:bg-\[\#252525\],
+[data-theme="dark-hard"] .dark\:bg-\[\#262626\],
+[data-theme="dark-hard"] .dark\:bg-\[\#282828\],
+[data-theme="dark-hard"] .dark\:bg-\[\#2a2a2a\],
+[data-theme="dark-hard"] .dark\:bg-\[\#333333\],
+[data-theme="dark-hard"] .dark\:bg-stone-800 {
+  background-color: #1c1c21 !important;
+}
+
+[data-theme="dark-hard"] .dark\:border-\[\#333333\],
+[data-theme="dark-hard"] .dark\:border-\[\#383838\],
+[data-theme="dark-hard"] .dark\:border-stone-800 {
+  border-color: #27272a !important;
+}
+
+
+/* 4. MATERIAL YOU (Google Material Design 3 / MD3 Expressive Tonal Spot) */
+[data-theme="material-you"] {
+  --color-bg-base: #1d1b20;
+  --color-surface-1: #211f26;
+  --color-surface-2: #2b2930;
+  --color-surface-3: #36343b;
+  --color-surface-4: #49454f;
+  --color-border: #49454f;
+  --color-border-subtle: #36343b;
+  --color-text-high: #e6e1e5;
+  --color-text-medium: #cac4d0;
+  --color-text-low: #938f96;
+  color-scheme: dark;
+}
+
+[data-theme="material-you"] body,
+[data-theme="material-you"] .bg-stone-50\/40,
+[data-theme="material-you"] .dark\:bg-stone-950 {
+  background-color: #1d1b20 !important;
+  color: #e6e1e5;
+}
+
+[data-theme="material-you"] .dark\:bg-stone-900,
+[data-theme="material-you"] .dark\:bg-\[\#181818\],
+[data-theme="material-you"] .dark\:bg-\[\#1c1c1c\],
+[data-theme="material-you"] .dark\:bg-\[\#141414\],
+[data-theme="material-you"] .dark\:bg-\[\#1e1e1e\],
+[data-theme="material-you"] .dark\:bg-\[\#202020\],
+[data-theme="material-you"] .dark\:bg-\[\#222222\] {
+  background-color: #211f26 !important;
+}
+
+[data-theme="material-you"] .dark\:bg-\[\#252525\],
+[data-theme="material-you"] .dark\:bg-\[\#262626\],
+[data-theme="material-you"] .dark\:bg-\[\#282828\],
+[data-theme="material-you"] .dark\:bg-\[\#2a2a2a\],
+[data-theme="material-you"] .dark\:bg-\[\#333333\],
+[data-theme="material-you"] .dark\:bg-stone-800 {
+  background-color: #2b2930 !important;
+}
+
+[data-theme="material-you"] .dark\:border-\[\#333333\],
+[data-theme="material-you"] .dark\:border-\[\#383838\],
+[data-theme="material-you"] .dark\:border-stone-800 {
+  border-color: #49454f !important;
+}
+
+
+/* 5. BOOTSTRAP 5.3 DARK THEME */
+[data-theme="bootstrap-dark"] {
+  --color-bg-base: #212529;
+  --color-surface-1: #2b3035;
+  --color-surface-2: #343a40;
+  --color-surface-3: #495057;
+  --color-surface-4: #6c757d;
+  --color-border: #495057;
+  --color-border-subtle: #343a40;
+  --color-text-high: #f8f9fa;
+  --color-text-medium: #dee2e6;
+  --color-text-low: #adb5bd;
+  color-scheme: dark;
+}
+
+[data-theme="bootstrap-dark"] body,
+[data-theme="bootstrap-dark"] .bg-stone-50\/40,
+[data-theme="bootstrap-dark"] .dark\:bg-stone-950 {
+  background-color: #212529 !important;
+  color: #f8f9fa;
+}
+
+[data-theme="bootstrap-dark"] .dark\:bg-stone-900,
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#181818\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#1c1c1c\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#141414\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#1e1e1e\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#202020\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#222222\] {
+  background-color: #2b3035 !important;
+}
+
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#252525\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#262626\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#282828\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#2a2a2a\],
+[data-theme="bootstrap-dark"] .dark\:bg-\[\#333333\],
+[data-theme="bootstrap-dark"] .dark\:bg-stone-800 {
+  background-color: #343a40 !important;
+}
+
+[data-theme="bootstrap-dark"] .dark\:border-\[\#333333\],
+[data-theme="bootstrap-dark"] .dark\:border-\[\#383838\],
+[data-theme="bootstrap-dark"] .dark\:border-stone-800 {
+  border-color: #495057 !important;
+}
+
+[data-theme="bootstrap-dark"] .text-amber-500,
+[data-theme="bootstrap-dark"] .text-amber-600,
+[data-theme="bootstrap-dark"] .text-amber-400 {
+  color: #0D6EFD !important;
+}
+
+[data-theme="bootstrap-dark"] .bg-amber-500,
+[data-theme="bootstrap-dark"] .bg-amber-400 {
+  background-color: #0D6EFD !important;
+  color: #ffffff !important;
+}
+
+
+/* 6. MATERIAL DESIGN M2/M3 THEME */
+[data-theme="material-design"] {
+  --color-bg-base: #1c1b1f;
+  --color-surface-1: #25232a;
+  --color-surface-2: #322f37;
+  --color-surface-3: #3b3842;
+  --color-surface-4: #49454f;
+  --color-border: #49454f;
+  --color-border-subtle: #322f37;
+  --color-text-high: #f4eff4;
+  --color-text-medium: #e6e1e5;
+  --color-text-low: #938f96;
+  color-scheme: dark;
+}
+
+[data-theme="material-design"] body,
+[data-theme="material-design"] .bg-stone-50\/40,
+[data-theme="material-design"] .dark\:bg-stone-950 {
+  background-color: #1c1b1f !important;
+  color: #f4eff4;
+}
+
+[data-theme="material-design"] .dark\:bg-stone-900,
+[data-theme="material-design"] .dark\:bg-\[\#181818\],
+[data-theme="material-design"] .dark\:bg-\[\#1c1c1c\],
+[data-theme="material-design"] .dark\:bg-\[\#141414\],
+[data-theme="material-design"] .dark\:bg-\[\#1e1e1e\],
+[data-theme="material-design"] .dark\:bg-\[\#202020\],
+[data-theme="material-design"] .dark\:bg-\[\#222222\] {
+  background-color: #25232a !important;
+}
+
+[data-theme="material-design"] .dark\:bg-\[\#252525\],
+[data-theme="material-design"] .dark\:bg-\[\#262626\],
+[data-theme="material-design"] .dark\:bg-\[\#282828\],
+[data-theme="material-design"] .dark\:bg-\[\#2a2a2a\],
+[data-theme="material-design"] .dark\:bg-\[\#333333\],
+[data-theme="material-design"] .dark\:bg-stone-800 {
+  background-color: #322f37 !important;
+}
+
+[data-theme="material-design"] .dark\:border-\[\#333333\],
+[data-theme="material-design"] .dark\:border-\[\#383838\],
+[data-theme="material-design"] .dark\:border-stone-800 {
+  border-color: #49454f !important;
+}
+
+[data-theme="material-design"] .text-amber-500,
+[data-theme="material-design"] .text-amber-600,
+[data-theme="material-design"] .text-amber-400 {
+  color: #d0bcff !important;
+}
+
+[data-theme="material-design"] .bg-amber-500,
+[data-theme="material-design"] .bg-amber-400 {
+  background-color: #6750A4 !important;
+  color: #ffffff !important;
+}
+
+
+/* 7. MATERIAL M3 LIGHT THEME */
+[data-theme="material-light"] {
+  --color-bg-base: #fdf8fd;
+  --color-surface-1: #f5eefa;
+  --color-surface-2: #eaddff;
+  --color-surface-3: #e7e0ec;
+  --color-surface-4: #cac4d0;
+  --color-border: #e7e0ec;
+  --color-border-subtle: #f3edf7;
+  --color-text-high: #1d1b20;
+  --color-text-medium: #49454f;
+  --color-text-low: #625b71;
+  color-scheme: light;
+}
+
+[data-theme="material-light"] body,
+[data-theme="material-light"] .bg-stone-50\/40 {
+  background-color: #fdf8fd !important;
+  color: #1d1b20 !important;
+}
+
+[data-theme="material-light"] .bg-white {
+  background-color: #ffffff !important;
+}
+
+[data-theme="material-light"] .bg-stone-50 {
+  background-color: #f5eefa !important;
+}
+
+[data-theme="material-light"] .bg-stone-100 {
+  background-color: #f0e6f7 !important;
+}
+
+[data-theme="material-light"] .text-stone-900,
+[data-theme="material-light"] .text-stone-800,
+[data-theme="material-light"] .text-stone-700 {
+  color: #1d1b20 !important;
+}
+
+[data-theme="material-light"] .text-stone-600,
+[data-theme="material-light"] .text-stone-500 {
+  color: #49454f !important;
+}
+
+[data-theme="material-light"] .text-stone-400 {
+  color: #625b71 !important;
+}
+
+[data-theme="material-light"] .text-amber-500,
+[data-theme="material-light"] .text-amber-600 {
+  color: #6750a4 !important;
+}
+
+[data-theme="material-light"] .bg-amber-500,
+[data-theme="material-light"] .bg-amber-400 {
+  background-color: #6750a4 !important;
+  color: #ffffff !important;
+}
+
+
+/* 8. BOOTSTRAP 5.3 LIGHT THEME */
+[data-theme="bootstrap-light"] {
+  --color-bg-base: #f8f9fa;
+  --color-surface-1: #ffffff;
+  --color-surface-2: #e9ecef;
+  --color-surface-3: #dee2e6;
+  --color-surface-4: #ced4da;
+  --color-border: #dee2e6;
+  --color-border-subtle: #e9ecef;
+  --color-text-high: #212529;
+  --color-text-medium: #495057;
+  --color-text-low: #6c757d;
+  color-scheme: light;
+}
+
+[data-theme="bootstrap-light"] body,
+[data-theme="bootstrap-light"] .bg-stone-50\/40 {
+  background-color: #f8f9fa !important;
+  color: #212529 !important;
+}
+
+[data-theme="bootstrap-light"] .bg-white {
+  background-color: #ffffff !important;
+}
+
+[data-theme="bootstrap-light"] .bg-stone-50 {
+  background-color: #f8f9fa !important;
+}
+
+[data-theme="bootstrap-light"] .bg-stone-100 {
+  background-color: #f1f3f5 !important;
+}
+
+[data-theme="bootstrap-light"] .text-stone-900,
+[data-theme="bootstrap-light"] .text-stone-800,
+[data-theme="bootstrap-light"] .text-stone-700 {
+  color: #212529 !important;
+}
+
+[data-theme="bootstrap-light"] .text-stone-600,
+[data-theme="bootstrap-light"] .text-stone-500 {
+  color: #495057 !important;
+}
+
+[data-theme="bootstrap-light"] .text-stone-400 {
+  color: #6c757d !important;
+}
+
+[data-theme="bootstrap-light"] .text-amber-500,
+[data-theme="bootstrap-light"] .text-amber-600 {
+  color: #0d6efd !important;
+}
+
+[data-theme="bootstrap-light"] .bg-amber-500,
+[data-theme="bootstrap-light"] .bg-amber-400 {
+  background-color: #0d6efd !important;
+  color: #ffffff !important;
+}
+
+
+/* 9. WARM PASTEL LIGHT THEME */
+[data-theme="warm-light"] {
+  --color-bg-base: #fdfbf7;
+  --color-surface-1: #f7f3ec;
+  --color-surface-2: #efe7dc;
+  --color-surface-3: #e5dbc9;
+  --color-surface-4: #d8cbba;
+  --color-border: #e8e2d8;
+  --color-border-subtle: #f2ece2;
+  --color-text-high: #1c1917;
+  --color-text-medium: #44403c;
+  --color-text-low: #78716c;
+  color-scheme: light;
+}
+
+[data-theme="warm-light"] body,
+[data-theme="warm-light"] .bg-stone-50\/40 {
+  background-color: #fdfbf7 !important;
+  color: #1c1917 !important;
+}
+
+[data-theme="warm-light"] .bg-white {
+  background-color: #ffffff !important;
+}
+
+[data-theme="warm-light"] .bg-stone-50 {
+  background-color: #f8f4ed !important;
+}
+
+[data-theme="warm-light"] .bg-stone-100 {
+  background-color: #f1ebd8 !important;
+}
+
+[data-theme="warm-light"] .text-stone-900,
+[data-theme="warm-light"] .text-stone-800,
+[data-theme="warm-light"] .text-stone-700 {
+  color: #1c1917 !important;
+}
+
+[data-theme="warm-light"] .text-stone-600,
+[data-theme="warm-light"] .text-stone-500 {
+  color: #44403c !important;
+}
+
+[data-theme="warm-light"] .text-stone-400 {
+  color: #78716c !important;
+}
+
+[data-theme="warm-light"] .text-amber-500,
+[data-theme="warm-light"] .text-amber-600 {
+  color: #d97706 !important;
+}
+
+[data-theme="warm-light"] .bg-amber-500,
+[data-theme="warm-light"] .bg-amber-400 {
+  background-color: #f59e0b !important;
+  color: #1c1917 !important;
+}
+
+/* Responsive Image Constraint for Viewers & Renderers */
+.wonbee-rendered-table img,
+.prose img {
+  max-width: 100% !important;
+  height: auto !important;
+  object-fit: contain !important;
+  max-height: 450px !important;
+  border-radius: 0.75rem;
+  margin: 0.75rem auto;
 }
 
 .dark .text-stone-100 {
@@ -688,12 +1160,19 @@ table[data-border-style="none"] th,
   color: #f5f5f5;
 }
 
-.tiptap table .selectedCell:after {
+.tiptap table .selectedCell,
+.wonbee-rich-table .selectedCell {
+  position: relative;
+}
+
+.tiptap table .selectedCell:after,
+.wonbee-rich-table .selectedCell:after {
   z-index: 2;
   position: absolute;
   content: "";
   left: 0; right: 0; top: 0; bottom: 0;
-  background: rgba(245, 158, 11, 0.15);
+  background: rgba(245, 158, 11, 0.22);
+  border: 1px solid #f59e0b;
   pointer-events: none;
 }
 

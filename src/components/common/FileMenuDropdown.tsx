@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { TableDocument, WorkspaceData, TableColumn, TableRow } from '../../types';
 import { parseDelimitedText } from '../../utils/csvParser';
 import { envService } from '../../services/storage/envService';
@@ -63,8 +64,10 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
   onEnvUpdated,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const portalRef = useRef<HTMLDivElement | null>(null);
 
   const envFileInputRef = useRef<HTMLInputElement | null>(null);
   const jsonInputRef = useRef<HTMLInputElement | null>(null);
@@ -72,7 +75,10 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
   // Close when clicking outside
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      const clickedMenu = menuRef.current && menuRef.current.contains(target);
+      const clickedPortal = portalRef.current && portalRef.current.contains(target);
+      if (!clickedMenu && !clickedPortal) {
         setIsOpen(false);
       }
     };
@@ -186,7 +192,13 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     <div className="relative inline-block" ref={menuRef}>
       {/* File Menu Trigger Button */}
       <button
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={(e) => {
+          if (!isOpen) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            setAnchorRect(rect);
+          }
+          setIsOpen(!isOpen);
+        }}
         className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
           isOpen
             ? 'bg-amber-500 text-stone-950 shadow-sm'
@@ -217,9 +229,19 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
         className="hidden"
       />
 
-      {/* Dropdown Menu Window */}
-      {isOpen && (
-        <div className="absolute left-0 mt-1.5 w-72 rounded-xl bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] shadow-2xl p-1.5 z-50 text-xs text-stone-700 dark:text-[#cccccc] animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
+      {/* Dropdown Menu Window via Portal */}
+      {isOpen && anchorRect && createPortal(
+        <div
+          ref={portalRef}
+          style={{
+            position: 'fixed',
+            top: `${anchorRect.bottom + 4}px`,
+            left: `${Math.min(anchorRect.left, window.innerWidth - 300)}px`,
+            width: '288px',
+            zIndex: 999999,
+          }}
+          className="rounded-xl bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] shadow-2xl p-1.5 text-xs text-stone-700 dark:text-[#cccccc] animate-in fade-in zoom-in-95 duration-150 mat-shadow-3"
+        >
           {/* Section 0: Local File Sync (user_data.json) */}
           <div className="px-2.5 py-1.5 mb-1 rounded-lg bg-stone-50 dark:bg-[#1a1a1a] border border-stone-200/80 dark:border-[#333333]">
             <div className="flex items-center justify-between mb-1.5">
@@ -416,7 +438,8 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
             </span>
             <span className="text-[10px] text-stone-400">JSON</span>
           </button>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Floating Toast Notification */}

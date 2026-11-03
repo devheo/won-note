@@ -9,12 +9,13 @@ const ENV_STORAGE_KEY = 'wonbee_user_env';
 
 export const DEFAULT_USER_ENV: UserEnvData = {
   version: '1.0.0',
-  theme: 'light',
+  theme: 'dark-soft',
   zoomLevel: 100,
   activeTableId: 'table-roadmap',
   rowDensity: 'normal',
   columnWidths: {},
   hiddenColumns: {},
+  aiEnabled: false,
   updatedAt: Date.now(),
 };
 
@@ -31,9 +32,12 @@ class EnvService {
       const raw = localStorage.getItem(ENV_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
+        let t = parsed.theme;
+        if (t === 'dark') t = 'dark-soft';
         return {
           ...DEFAULT_USER_ENV,
           ...parsed,
+          theme: t || 'dark-soft',
           columnWidths: parsed.columnWidths || {},
           hiddenColumns: parsed.hiddenColumns || {},
         };
@@ -48,9 +52,32 @@ class EnvService {
     const legacyTable = localStorage.getItem('wonbee_active_table_id');
     const legacyDensity = localStorage.getItem('wonbee_row_density');
 
+    let resolvedTheme: 'light' | 'material-light' | 'bootstrap-light' | 'warm-light' | 'dark-soft' | 'dark-warm' | 'dark-hard' | 'material-you' | 'bootstrap-dark' | 'material-design' = 'dark-soft';
+    if (legacyTheme === 'light') {
+      resolvedTheme = 'light';
+    } else if (legacyTheme === 'material-light') {
+      resolvedTheme = 'material-light';
+    } else if (legacyTheme === 'bootstrap-light') {
+      resolvedTheme = 'bootstrap-light';
+    } else if (legacyTheme === 'warm-light') {
+      resolvedTheme = 'warm-light';
+    } else if (legacyTheme === 'dark' || legacyTheme === 'dark-soft') {
+      resolvedTheme = 'dark-soft';
+    } else if (legacyTheme === 'dark-hard') {
+      resolvedTheme = 'dark-hard';
+    } else if (legacyTheme === 'dark-warm') {
+      resolvedTheme = 'dark-warm';
+    } else if (legacyTheme === 'material-you') {
+      resolvedTheme = 'material-you';
+    } else if (legacyTheme === 'bootstrap-dark') {
+      resolvedTheme = 'bootstrap-dark';
+    } else if (legacyTheme === 'material-design') {
+      resolvedTheme = 'material-design';
+    }
+
     return {
       ...DEFAULT_USER_ENV,
-      theme: legacyTheme === 'dark' ? 'dark' : 'light',
+      theme: resolvedTheme,
       zoomLevel: legacyZoom ? parseInt(legacyZoom, 10) : 100,
       activeTableId: legacyTable || DEFAULT_USER_ENV.activeTableId,
       rowDensity: (legacyDensity as RowDensity) || 'normal',

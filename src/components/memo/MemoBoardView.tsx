@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { TableDocument, TableRow } from '../../types';
 import { boardLayoutStore, BoardNoteLayout } from '../../services/storage/boardLayoutStore';
 import { StickyNoteCard } from './StickyNoteCard';
+import { useStatusBar, computeTextMetrics } from '../common/GlobalStatusBar';
 import {
   Sparkles,
   Plus,
@@ -12,6 +13,7 @@ import {
   Grid,
   Pin,
   HelpCircle,
+  X,
 } from 'lucide-react';
 
 interface MemoBoardViewProps {
@@ -34,6 +36,17 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeColorFilter, setActiveColorFilter] = useState<string>('all');
+  const [activeMemoId, setActiveMemoId] = useState<string | null>(null);
+
+  const handleSetColorFilter = (color: string) => {
+    setActiveColorFilter(color);
+    setActiveMemoId(null);
+  };
+
+  const handleSetSearchQuery = (query: string) => {
+    setSearchQuery(query);
+    setActiveMemoId(null);
+  };
 
   // Load layouts from boardLayoutStore
   const [layouts, setLayouts] = useState<Record<string, BoardNoteLayout>>(() => {
@@ -58,10 +71,54 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
 
     setLayouts(updatedMap);
     setMaxZIndex(highestZ + 1);
-  }, [table.id, table.rows]);
+
+    if (activeMemoId && !table.rows.some((r) => r.id === activeMemoId)) {
+      setActiveMemoId(null);
+    }
+  }, [table.id, table.rows, activeMemoId]);
+
+  const { updateMetrics } = useStatusBar();
+
+  // Track and update GlobalStatusBar metrics for Memo Board
+  useEffect(() => {
+    const primaryCol = table.columns[0];
+    const contentCol = table.columns.find((c) => c.type === 'richText' || c.name.includes('내용') || c.name.includes('설명')) || table.columns[1] || primaryCol;
+
+    const jsonStr = JSON.stringify(table);
+    const totalBytes = new TextEncoder().encode(jsonStr).length;
+
+    if (activeMemoId) {
+      const activeIdx = table.rows.findIndex((r) => r.id === activeMemoId);
+      const activeRow = table.rows[activeIdx];
+      if (activeRow && activeIdx !== -1) {
+        updateMetrics({
+          line: activeIdx + 1,
+          col: 1,
+          selectedChars: 0,
+          selectedBytes: 0,
+          tableName: table.title || '메모 보드',
+          lastModifiedAt: activeRow.updatedAt || table.updatedAt || Date.now(),
+          totalBytes,
+        });
+        return;
+      }
+    }
+
+    // Default when no card is actively selected
+    updateMetrics({
+      line: table.rows.length > 0 ? 1 : 0,
+      col: table.rows.length,
+      selectedChars: 0,
+      selectedBytes: 0,
+      tableName: table.title || '메모 보드',
+      lastModifiedAt: table.updatedAt || Date.now(),
+      totalBytes,
+    });
+  }, [table, activeMemoId, updateMetrics]);
 
   // Bring selected note to front
   const handleBringToFront = useCallback((rowId: string) => {
+    setActiveMemoId(rowId);
     const nextZ = maxZIndex + 1;
     setMaxZIndex(nextZ);
 
@@ -83,12 +140,16 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
 
     if (isFinal) {
       boardLayoutStore.saveLayout(table.id, updatedLayout);
+        // 3초 디바운스가 적용된 App.tsx의 handleUpdateTableDebounced 호출
+        onUpdateTable({
+          ...table,
+          updatedAt: Date.now(),
+        });
     }
-  }, [table.id]);
+  }, [table, onUpdateTable]);
 
   // Auto-arrange all cards in a clean grid
   const handleAutoArrangeGrid = () => {
-    const cols = 3;
     const cardWidth = 280;
     const cardHeight = 220;
     const gapX = 24;
@@ -96,30 +157,76 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
     const paddingX = 32;
     const paddingY = 32;
 
-    const newLayoutsMap: Record<string, BoardNoteLayout> = {};
+    // 1. 캔버스 실시간 너비를 기반으로 동적 열 개수(cols) 계산 (최소 1열)
+      const canvasWidth = canvasRef.current?.clientWidth || 1000;
+      const availableWidth = canvasWidth - paddingX * 2;
+      const cols = Math.max(1, Math.floor((availableWidth + gapX) / (cardWidth + gapX)));
+
+      const newLayoutsMap: Record<string, BoardNoteLayout> = { ...layouts };
+
+      // 2. 핀 고정(isPinned) 카드가 점유 중인 격자 위치 마킹
+      const occupiedSlots = new Set<string>();
+      table.rows.forEach((row) => {
+        const layout = layouts[row.id];
+        if (layout?.isPinned) {
+          const col = Math.round((layout.x - paddingX) / (cardWidth + gapX));
+          const rowIdx = Math.round((layout.y - paddingY) / (cardHeight + gapY));
+          if (col >= 0 && rowIdx >= 0) {
+            occupiedSlots.add(`${col},${rowIdx}`);
+          }
+        }
+      });
+  // 3. 비고정 카드를 화면 폭에 맞는 빈 슬롯에 순차적으로 자동 배치
+    let currentCol = 0;
+    let currentRow = 0;
 
     table.rows.forEach((row, idx) => {
       const col = idx % cols;
       const r = Math.floor(idx / cols);
 
       const existing = layouts[row.id];
+      // 핀으로 고정된 카드는 위치를 절대 변경하지 않음
+      if (existing?.isPinned) {
+        return;
+      }
+      // 이미 점유된 슬롯(핀 고정 카드가 있는 자리)은 건너뜀
+      while (occupiedSlots.has(`${currentCol},${currentRow}`)) {
+        currentCol++;
+        if (currentCol >= cols) {
+          currentCol = 0;
+          currentRow++;
+        }
+      }
       const newLayout: BoardNoteLayout = {
-        rowId: row.id,
-        x: paddingX + col * (cardWidth + gapX),
-        y: paddingY + r * (cardHeight + gapY),
-        width: cardWidth,
-        height: cardHeight,
-        zIndex: 10 + idx,
-        bgColor: existing?.bgColor || 'amber',
-        isPinned: existing?.isPinned || false,
-        updatedAt: Date.now(),
-      };
+            rowId: row.id,
+            x: paddingX + currentCol * (cardWidth + gapX),
+            y: paddingY + currentRow * (cardHeight + gapY),
+            width: existing?.width || cardWidth,
+            height: existing?.height || cardHeight,
+            zIndex: existing?.zIndex || 10 + idx,
+            bgColor: existing?.bgColor || 'amber',
+            isPinned: false,
+            updatedAt: Date.now(),
+          };
 
-      newLayoutsMap[row.id] = newLayout;
-    });
+          newLayoutsMap[row.id] = newLayout;
+          occupiedSlots.add(`${currentCol},${currentRow}`);
 
-    setLayouts(newLayoutsMap);
-    boardLayoutStore.saveLayoutsBatch(table.id, newLayoutsMap);
+          currentCol++;
+          if (currentCol >= cols) {
+            currentCol = 0;
+            currentRow++;
+          }
+        });
+
+        setLayouts(newLayoutsMap);
+        boardLayoutStore.saveLayoutsBatch(table.id, newLayoutsMap);
+
+        // 격자 자동 정렬 완료 후 서버/타 클라이언트로 동기화 알림 발송
+        onUpdateTable({
+          ...table,
+          updatedAt: Date.now(),
+        });
   };
 
   // Double click canvas to add new note at cursor position
@@ -173,16 +280,27 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
               type="text"
               placeholder="메모 검색..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => handleSetSearchQuery(e.target.value)}
               className="pl-8 pr-3 py-1 rounded-xl bg-stone-100 dark:bg-stone-800 border border-stone-200 dark:border-stone-700 text-xs focus:ring-1 focus:ring-amber-500 focus:outline-hidden w-40 sm:w-52"
             />
+            {/* 검색어 있을 때 우측 끝 X 지우기 버튼 */}
+              {searchQuery && (
+                <button
+                  type="button"
+                  onClick={() => handleSetSearchQuery('')}
+                  className="absolute right-2 p-0.5 rounded-full hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
+                  title="검색어 지우기"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              )}
           </div>
 
           {/* Color Filter */}
           <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800 p-1 rounded-xl text-xs">
             <button
               type="button"
-              onClick={() => setActiveColorFilter('all')}
+              onClick={() => handleSetColorFilter('all')}
               className={`px-2 py-0.5 rounded-lg text-[11px] font-medium transition-colors ${
                 activeColorFilter === 'all'
                   ? 'bg-amber-500 text-stone-950 font-bold'
@@ -191,11 +309,10 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
             >
               전체
             </button>
-            {(['amber', 'yellow', 'green', 'blue', 'rose', 'purple'] as const).map((color) => (
+            {(['amber', 'yellow', 'green', 'blue', 'rose', 'purple', 'dark'] as const).map((color) => (
               <button
                 key={color}
-                type="button"
-                onClick={() => setActiveColorFilter(color)}
+                onClick={() => handleSetColorFilter(color)}
                 className={`w-4 h-4 rounded-full border border-black/10 transition-transform ${
                   activeColorFilter === color ? 'ring-2 ring-amber-500 scale-110' : 'hover:scale-110'
                 }`}
@@ -205,7 +322,8 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
                     color === 'yellow' ? '#fef08a' :
                     color === 'green' ? '#6ee7b7' :
                     color === 'blue' ? '#7dd3fc' :
-                    color === 'rose' ? '#fda4af' : '#d8b4fe',
+                    color === 'rose' ? '#fda4af' :
+                    color === 'purple' ? '#d8b4fe' : '#44403c', // dark (검정/어두운 회색)
                 }}
               />
             ))}
@@ -238,6 +356,11 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
       {/* Main Board Canvas */}
       <div
         ref={canvasRef}
+        onClick={(e) => {
+          if (e.target === canvasRef.current || (e.target as HTMLElement).classList.contains('memo-canvas-bg')) {
+            setActiveMemoId(null);
+          }
+        }}
         onDoubleClick={handleCanvasDoubleClick}
         className="memo-canvas-bg flex-1 min-h-[500px] overflow-auto relative p-8 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] dark:bg-[radial-gradient(#2d2d2d_1px,transparent_1px)] [background-size:16px_16px]"
       >

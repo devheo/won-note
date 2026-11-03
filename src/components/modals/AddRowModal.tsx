@@ -250,10 +250,10 @@ export const AddRowModal: React.FC<AddRowModalProps> = ({
                       )}
                       {isUpdateDateColumn(col) && (
                         <span
-                          className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-0.5"
+                          className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-900/60 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-0.5 shrink-0 whitespace-nowrap"
                           title="데이터 추가 및 수정 시 년월일 시분으로 자동 관리됩니다"
                         >
-                          <Clock className="w-2.5 h-2.5" /> 자동 갱신
+                          <Clock className="w-2.5 h-2.5 shrink-0" /> 자동 갱신
                         </span>
                       )}
                     </label>

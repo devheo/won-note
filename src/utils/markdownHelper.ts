@@ -6,7 +6,11 @@ import { detectLanguage } from './codeHighlighter';
  * Converts Markdown string into semantic HTML that TipTap seamlessly consumes,
  * including headings, code blocks, tables, task lists, blockquotes, and text formatting.
  */
-export function markdownToHtml(markdown: string): string {
+const MD_TO_HTML_CACHE = new Map<string, string>();
+const IS_LIKELY_MD_CACHE = new Map<string, boolean>();
+const MAX_CACHE_SIZE = 1500;
+
+function runMarkdownToHtml(markdown: string): string {
   if (!markdown || typeof markdown !== 'string') return '';
   const trimmed = markdown.trim();
   if (!trimmed) return '';
@@ -42,6 +46,19 @@ export function markdownToHtml(markdown: string): string {
     const lang = detected.isCode ? detected.language : (trimmedLang || 'plaintext');
     return `\`\`\`${lang}\n${code}\`\`\``;
   });
+
+  // Auto-wrap standalone unfenced SQL query blocks into ```sql ... ``` fences if not already inside code fences
+  if (!cleanMd.includes('```') && !cleanMd.includes('<pre') && /\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(cleanMd)) {
+    const blocks = cleanMd.split(/\n\s*\n/);
+    const processedBlocks = blocks.map((block) => {
+      const trimmedBlock = block.trim();
+      if (/^\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(trimmedBlock)) {
+        return `\`\`\`sql\n${trimmedBlock}\n\`\`\``;
+      }
+      return block;
+    });
+    cleanMd = processedBlocks.join('\n\n');
+  }
 
   // Auto-close any unclosed markdown code fence (e.g. user pasted partial/unclosed ```)
   const fenceMatches = cleanMd.match(/```/g);
@@ -89,6 +106,25 @@ export function markdownToHtml(markdown: string): string {
   processedHtml = processedHtml.replace(/class="language-(?:markup|xml)"/g, 'class="language-html"');
 
   return processedHtml;
+}
+
+/**
+ * High-performance LRU Cache wrapper for markdownToHtml
+ */
+export function markdownToHtml(markdown: string): string {
+  if (!markdown || typeof markdown !== 'string') return '';
+  const trimmed = markdown.trim();
+  if (!trimmed) return '';
+  if (MD_TO_HTML_CACHE.has(trimmed)) {
+    return MD_TO_HTML_CACHE.get(trimmed)!;
+  }
+  const result = runMarkdownToHtml(trimmed);
+  MD_TO_HTML_CACHE.set(trimmed, result);
+  if (MD_TO_HTML_CACHE.size > MAX_CACHE_SIZE) {
+    const oldest = MD_TO_HTML_CACHE.keys().next().value;
+    if (oldest !== undefined) MD_TO_HTML_CACHE.delete(oldest);
+  }
+  return result;
 }
 
 /**
@@ -246,9 +282,10 @@ export function htmlToMarkdown(html: string): string {
 /**
  * Checks if a string contains Markdown syntax
  */
-export function isLikelyMarkdown(text: string): boolean {
+function runIsLikelyMarkdown(text: string): boolean {
   if (!text || typeof text !== 'string') return false;
-  const trimmed = text.trim();
+  const noHtml = text.replace(/<[^>]+>/g, '');
+  const trimmed = noHtml.trim();
   if (trimmed.length < 2) return false;
 
   // Fast-sampling for large texts (first 16KB) to prevent catastrophic regex backtracking
@@ -282,8 +319,8 @@ export function isLikelyMarkdown(text: string): boolean {
   // 4. Blockquotes (> quote)
   if (/^>\s+\S/m.test(sample)) return true;
 
-  // 5. List items with * or - or + or numbered lists (1. Item)
-  if (/^(\s*[-*+]\s+\S+|\s*\d+\.\s+\S+)/m.test(sample)) return true;
+  // 5. List items with * or - or + or numbered/alphabetical/Korean lists (1. Item, 가. Item)
+  if (/^(\s*[-*+]\s+\S+|\s*(\d+|[가-하]|[A-Za-z])[\.\)]\s+\S+)/m.test(sample)) return true;
 
   // 6. Bold / Italic / Strikethrough formatting
   if (/\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n\s]+\*|_[^_\n\s]+_/.test(sample)) return true;
@@ -297,7 +334,29 @@ export function isLikelyMarkdown(text: string): boolean {
   // 9. Inline code snippets (`code`)
   if (/`[^`\n]+`/.test(sample)) return true;
 
+  // 10. General multi-line bullet lists / MD files
+  if (/^[-*]\s+/m.test(sample) && sample.includes('\n')) return true;
+
   return false;
+}
+
+/**
+ * High-performance LRU Cache wrapper for isLikelyMarkdown
+ */
+export function isLikelyMarkdown(text: string): boolean {
+  if (!text || typeof text !== 'string') return false;
+  const trimmed = text.trim();
+  if (trimmed.length < 2) return false;
+  if (IS_LIKELY_MD_CACHE.has(trimmed)) {
+    return IS_LIKELY_MD_CACHE.get(trimmed)!;
+  }
+  const result = runIsLikelyMarkdown(trimmed);
+  IS_LIKELY_MD_CACHE.set(trimmed, result);
+  if (IS_LIKELY_MD_CACHE.size > MAX_CACHE_SIZE) {
+    const oldest = IS_LIKELY_MD_CACHE.keys().next().value;
+    if (oldest !== undefined) IS_LIKELY_MD_CACHE.delete(oldest);
+  }
+  return result;
 }
 
 /**

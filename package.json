@@ -15,6 +15,7 @@
     "@google/genai": "^2.4.0",
     "@tailwindcss/vite": "^4.1.14",
     "@tanstack/react-virtual": "^3.14.10",
+    "@tauri-apps/plugin-http": "^2.8.3",
     "@tiptap/extension-code-block-lowlight": "^3.31.3",
     "@tiptap/extension-color": "^3.31.0",
     "@tiptap/extension-font-family": "^3.31.3",
@@ -56,6 +57,7 @@
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.12.4",
     "@types/canvas-confetti": "^1.9.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",

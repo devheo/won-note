@@ -12,8 +12,9 @@ import {
 } from '../../types';
 import { wonbeeDB } from './indexedDb';
 import { wonbeeDexieDB } from './dexieDb';
-import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
+import { ensureWorkspaceTree, mergeTrees } from '../../utils/workspaceTreeUtils';
 import { deduplicatedFetchJson } from '../api/requestDeduplicator';
+import { fetchBridge } from '../httpBridge';
 
 export function mergeWorkspaces(
   current: WorkspaceData,
@@ -269,7 +270,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
       for (let i = 0; i < dirtyNotes.length; i += BATCH_SIZE) {
         const batch = dirtyNotes.slice(i, i + BATCH_SIZE);
-        const res = await fetch(`${this.serverUrl}/notes/push-sync`, {
+        const res = await fetchBridge(`${this.serverUrl}/notes/push-sync`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(batch),
@@ -307,10 +308,15 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
    * 3단계: /api/workspace/meta 및 차분(Delta) Sync 실행하여 최신 변경사항 머지.
    */
   async loadWorkspace(signal?: AbortSignal): Promise<WorkspaceData> {
+    const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+    let localWs = await this.localFallback.loadWorkspace();
+    if (isFileProtocol) {
+      return localWs;
+    }
+
     const isRealLocal = await wonbeeDexieDB.hasRealLocalData();
     const lastSyncStr = localStorage.getItem('wonbee_last_sync_timestamp');
     const isColdStart = !isRealLocal || !lastSyncStr;
-    let localWs = await this.localFallback.loadWorkspace();
 
     try {
       // 1. Cold Start (최초 동기화) 로직: 스키마 골격 및 초기 데이터베이스 Bootstrap
@@ -375,12 +381,13 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
       // 2. 기존 로컬 캐시가 존재하는 경우 오프라인 변경 사항(is_dirty: 1) Push Sync
       await this.pushSync();
 
-      // 3. /api/workspace/meta 조회 및 권위 있는 서버 트리(tree) 구조 동기화
+      // 3. /api/workspace/meta 조회 및 서버 트리 머지 (사용자 드래그앤드롭 순서 유지)
       const meta = await this.getWorkspaceMeta(signal);
       if (meta) {
         if (meta.tree && Array.isArray(meta.tree)) {
-          await this.localFallback.saveTree(meta.tree);
-          localWs.tree = meta.tree;
+          const mergedTree = mergeTrees(localWs.tree, meta.tree);
+          await this.localFallback.saveTree(mergedTree);
+          localWs.tree = mergedTree;
         }
       } else {
         return localWs;
@@ -397,26 +404,25 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         localStorage.setItem('wonbee_last_sync_timestamp', String(serverLastUpdated));
       }
 
-      // Ensure tree is up-to-date with meta.tree
+      // Ensure tree is up-to-date with meta.tree without losing user position
       if (meta.tree && Array.isArray(meta.tree)) {
-        localWs.tree = meta.tree;
+        localWs.tree = mergeTrees(localWs.tree, meta.tree);
       }
 
       return localWs;
     } catch (err: any) {
       if (err?.name === 'AbortError') throw err;
-      console.error('[Repository] Server loadWorkspace error:', err);
-      throw err; // Rethrow so hook handles retry UI
+      console.warn('[Repository] Server loadWorkspace offline fallback:', err);
+      return localWs;
     }
   }
 
   async saveWorkspace(data: WorkspaceData): Promise<void> {
     const ensured = ensureWorkspaceTree(data);
-    // Keep local cache synced in background without blocking
-    this.localFallback.saveWorkspace(ensured).catch(() => {});
+    await this.localFallback.saveWorkspace(ensured);
 
     try {
-      const res = await fetch(`${this.serverUrl}/workspace`, {
+      const res = await fetchBridge(`${this.serverUrl}/workspace`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ensured),
@@ -426,8 +432,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
     } catch (err) {
-      console.error('[Repository] Server saveWorkspace failed:', err);
-      throw err;
+      console.warn('[Repository] Server saveWorkspace offline fallback:', err);
     }
   }
 
@@ -444,10 +449,10 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   }
 
   async saveTable(table: TableDocument): Promise<void> {
-    // Fast path: sync to local fallback in background
-    this.localFallback.saveTable(table).catch(() => {});
+    await this.localFallback.saveTable(table);
+
     try {
-      const res = await fetch(`${this.serverUrl}/tables/${table.id}`, {
+      const res = await fetchBridge(`${this.serverUrl}/tables/${table.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(table),
@@ -457,14 +462,13 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
     } catch (err) {
-      console.error('[Repository] Server saveTable failed:', err);
-      throw err;
+      console.warn('[Repository] Server saveTable offline fallback:', err);
     }
   }
 
   async renameTable(tableId: string, newTitle: string): Promise<void> {
     try {
-      const res = await fetch(`${this.serverUrl}/tables/${tableId}/rename`, {
+      const res = await fetchBridge(`${this.serverUrl}/tables/${tableId}/rename`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: newTitle }),
@@ -479,7 +483,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async cleanDatabase(keepTableIds?: string[]): Promise<any> {
     try {
-      const res = await fetch(`${this.serverUrl}/workspace/clean`, {
+      const res = await fetchBridge(`${this.serverUrl}/workspace/clean`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ keepTableIds }),
@@ -528,9 +532,10 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   }
 
   async deleteTable(tableId: string): Promise<void> {
-    this.localFallback.deleteTable(tableId).catch(() => {});
+    await this.localFallback.deleteTable(tableId);
+
     try {
-      const res = await fetch(`${this.serverUrl}/tables/${tableId}`, {
+      const res = await fetchBridge(`${this.serverUrl}/tables/${tableId}`, {
         method: 'DELETE',
       });
       if (!res.ok) {
@@ -538,15 +543,15 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
     } catch (err) {
-      console.error('[Repository] Server deleteTable failed:', err);
-      throw err;
+      console.warn('[Repository] Server deleteTable offline fallback:', err);
     }
   }
 
   async saveTree(tree: TreeItem[]): Promise<void> {
-    this.localFallback.saveTree(tree).catch(() => {});
+    await this.localFallback.saveTree(tree);
+
     try {
-      const res = await fetch(`${this.serverUrl}/tree`, {
+      const res = await fetchBridge(`${this.serverUrl}/tree`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tree),
@@ -556,8 +561,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
     } catch (err) {
-      console.error('[Repository] Server saveTree failed:', err);
-      throw err;
+      console.warn('[Repository] Server saveTree offline fallback:', err);
     }
   }
 
@@ -571,7 +575,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   async getEvents(tableId?: string): Promise<CalendarEvent[]> {
     try {
       const url = tableId ? `${this.serverUrl}/events?tableId=${encodeURIComponent(tableId)}` : `${this.serverUrl}/events`;
-      const res = await fetch(url);
+      const res = await fetchBridge(url);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch {
@@ -581,7 +585,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async saveEvent(event: CalendarEvent, tableId: string): Promise<void> {
     try {
-      await fetch(`${this.serverUrl}/events`, {
+      await fetchBridge(`${this.serverUrl}/events`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ event, tableId }),
@@ -594,7 +598,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   async deleteEvent(eventId: string): Promise<void> {
     try {
       console.log(`[Repository] Requesting server delete for event: ${eventId}`);
-      const res = await fetch(`${this.serverUrl}/events/${encodeURIComponent(eventId)}`, {
+      const res = await fetchBridge(`${this.serverUrl}/events/${encodeURIComponent(eventId)}`, {
         method: 'DELETE',
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);

@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { TableColumn, ColumnType, TableRow } from '../../types';
 import {
   X,
@@ -127,9 +128,9 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
     }
   };
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
+      className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-150"
       onClick={onClose}
     >
       <div
@@ -299,10 +300,10 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
                           )}
                           {isUpdateDateColumn(col) && (
                             <span
-                              className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-0.5"
+                              className="text-[10px] px-1.5 py-0.2 rounded bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 font-bold flex items-center gap-0.5 shrink-0 whitespace-nowrap"
                               title="수정 시 년월일 시분으로 자동 갱신되는 열"
                             >
-                              <Clock className="w-2.5 h-2.5" /> 자동 갱신
+                              <Clock className="w-2.5 h-2.5 shrink-0" /> 자동 갱신
                             </span>
                           )}
                         </div>
@@ -421,6 +422,7 @@ export const ColumnManagerModal: React.FC<ColumnManagerModalProps> = ({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

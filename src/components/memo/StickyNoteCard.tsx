@@ -11,6 +11,7 @@ import {
   Check,
 } from 'lucide-react';
 import { cleanTextValue } from '../../utils/textSanitizer';
+import { useStatusBar, computeTextMetrics } from '../common/GlobalStatusBar';
 
 interface StickyNoteCardProps {
   row: TableRow;
@@ -178,34 +179,58 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
     onLayoutChange(layout, true); // Save layout
   };
 
-  // Content auto-save on blur
-  const handleTitleBlur = () => {
+  // Immediate onChange propagation to table update pipeline (App.tsx handles 0ms UI update + 1s server debounce)
+  const handleTitleChange = (newTitle: string) => {
+    setLocalTitle(newTitle);
     if (!primaryCol) return;
-    if (localTitle !== titleVal) {
-      onUpdateRowData({
-        ...row,
-        data: {
-          ...row.data,
-          [primaryCol.id]: localTitle,
-        },
-        updatedAt: Date.now(),
-      });
-    }
+    const targetColId = contentCol?.id || 'content';
+    onUpdateRowData({
+      ...row,
+      data: {
+        ...row.data,
+        [primaryCol.id]: newTitle,
+        [targetColId]: localContent,
+      },
+      updatedAt: Date.now(),
+    });
   };
 
-  const handleContentBlur = () => {
-    if (localContent !== contentVal) {
-      const targetColId = contentCol?.id || 'content';
-      onUpdateRowData({
-        ...row,
-        data: {
-          ...row.data,
-          [targetColId]: localContent,
-        },
-        updatedAt: Date.now(),
-      });
-    }
+  const handleContentChange = (newContent: string) => {
+    setLocalContent(newContent);
+    if (!primaryCol) return;
+    const targetColId = contentCol?.id || 'content';
+    onUpdateRowData({
+      ...row,
+      data: {
+        ...row.data,
+        [primaryCol.id]: localTitle,
+        [targetColId]: newContent,
+      },
+      updatedAt: Date.now(),
+    });
   };
+
+  const { updateMetrics } = useStatusBar();
+
+  const handleSelectionChange = useCallback((e: React.SyntheticEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    const el = e.currentTarget;
+    const start = el.selectionStart ?? 0;
+    const end = el.selectionEnd ?? 0;
+    const selectedText = start !== end ? el.value.slice(start, end) : '';
+    const { chars, bytes } = computeTextMetrics(selectedText);
+
+    const textBefore = el.value.slice(0, start);
+    const lineNum = textBefore.split('\n').length;
+    const lastNewlineIdx = textBefore.lastIndexOf('\n');
+    const colNum = lastNewlineIdx === -1 ? start + 1 : start - lastNewlineIdx;
+
+    updateMetrics({
+      line: lineNum,
+      col: colNum,
+      selectedChars: chars,
+      selectedBytes: bytes,
+    });
+  }, [updateMetrics]);
 
   const colorStyle = BG_COLOR_STYLES[layout.bgColor] || BG_COLOR_STYLES.amber;
 
@@ -221,6 +246,12 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
         zIndex: layout.zIndex,
       }}
       onClick={onBringToFront}
+      onDoubleClick={(e) => {
+        const target = e.target as HTMLElement;
+        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'BUTTON' || target.closest('button')) return;
+        onOpenRichEditor(row, contentCol?.id);
+      }}
+      title="더블 클릭하면 리치에디터에서 전체 내용을 수정할 수 있습니다"
       className={`rounded-2xl shadow-xl border flex flex-col overflow-hidden transition-shadow duration-150 select-none group/card ${colorStyle.card} ${colorStyle.border} ${
         isDragging ? 'opacity-90 shadow-2xl scale-[1.01] cursor-grabbing' : 'hover:shadow-2xl'
       } ${layout.isPinned ? 'ring-2 ring-amber-500/80 shadow-2xl' : ''}`}
@@ -252,8 +283,10 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
           <input
             type="text"
             value={localTitle}
-            onChange={(e) => setLocalTitle(e.target.value)}
-            onBlur={handleTitleBlur}
+            onChange={(e) => handleTitleChange(e.target.value)}
+            onSelect={handleSelectionChange}
+            onKeyUp={handleSelectionChange}
+            onMouseUp={handleSelectionChange}
             onPointerDown={(e) => e.stopPropagation()}
             placeholder="제목 없음"
             className="font-bold text-xs bg-transparent border-b border-transparent focus:border-stone-400 focus:outline-hidden truncate flex-1"
@@ -330,8 +363,10 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
       <div className="flex-1 p-3 flex flex-col min-h-0 relative">
         <textarea
           value={localContent}
-          onChange={(e) => setLocalContent(e.target.value)}
-          onBlur={handleContentBlur}
+          onChange={(e) => handleContentChange(e.target.value)}
+          onSelect={handleSelectionChange}
+          onKeyUp={handleSelectionChange}
+          onMouseUp={handleSelectionChange}
           onPointerDown={(e) => e.stopPropagation()}
           placeholder="메모 내용을 입력하세요..."
           className="w-full flex-1 bg-transparent resize-none border-none outline-hidden text-xs leading-relaxed custom-scrollbar font-sans"

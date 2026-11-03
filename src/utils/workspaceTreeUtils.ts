@@ -1,5 +1,4 @@
 import { WorkspaceData, TreeItem, TableDocument } from '../types';
-
 /**
  * Ensures a WorkspaceData object has a complete, valid tree structure.
  * If tree is missing, empty, or lacks entries for any tables,
@@ -62,14 +61,29 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
     (data as any)?.workspace?.tree ||
     [];
   let tree: TreeItem[] = Array.isArray(rawTree) ? [...rawTree] : [];
+  // 유효한 모든 폴더 ID 집합 구성 (고립된 parentId 검증용)
+const validFolderIds = new Set<string>(
+  tree.filter((item) => item.type === 'folder').map((item) => item.id)
+);
 
   // Set of IDs already in tree (including hyphen/underscore variants)
   const existingIdsInTree = new Set<string>();
-  tree.forEach((item) => {
-    existingIdsInTree.add(item.id);
-    existingIdsInTree.add(item.id.replace(/-/g, '_'));
-    existingIdsInTree.add(item.id.replace(/_/g, '-'));
-  });
+  tree = tree.map((item) => {
+      existingIdsInTree.add(item.id);
+      existingIdsInTree.add(item.id.replace(/-/g, '_'));
+      existingIdsInTree.add(item.id.replace(/_/g, '-'));
+
+      // 자기 자신이 부모이거나, parentId 폴더가 실제로 존재하지 않으면 루트(null)로 끌어올림
+      if (item.parentId && (item.parentId === item.id || !validFolderIds.has(item.parentId))) {
+        console.warn(`[Tree Repair] 고립되거나 꼬인 노드(${item.title || item.id})의 parentId를 루트(null)로 자동 복구합니다.`);
+        return {
+          ...item,
+          parentId: null,
+          updatedAt: Date.now(),
+        };
+      }
+      return item;
+    });
 
   // 1. Auto-generate tree node for any valid table that is not in the tree
   Object.keys(tables).forEach((tableId) => {
@@ -85,7 +99,28 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
         createdAt: table.createdAt || Date.now(),
         updatedAt: table.updatedAt || Date.now(),
       };
-      tree.push(newTreeItem);
+      tree.unshift(newTreeItem);
+      existingIdsInTree.add(tableId);
+      existingIdsInTree.add(tableId.replace(/-/g, '_'));
+      existingIdsInTree.add(tableId.replace(/_/g, '-'));
+    }
+  });
+
+    //  누락된 테이블 노드 생성 시 unshift 대신 push 사용 (순서 붕괴 방지)
+  Object.keys(tables).forEach((tableId) => {
+    if (!existingIdsInTree.has(tableId)) {
+      const table = tables[tableId];
+      if (!table) return;
+      const newTreeItem: TreeItem = {
+        id: tableId,
+        parentId: null, // 누락된 경우 항상 안전하게 최상위 루트에 배치
+        title: table.title || '새 데이터 테이블',
+        type: 'table',
+        isExpanded: false,
+        createdAt: table.createdAt || Date.now(),
+        updatedAt: table.updatedAt || Date.now(),
+      };
+      tree.push(newTreeItem); // unshift 대신 push로 추가
       existingIdsInTree.add(tableId);
       existingIdsInTree.add(tableId.replace(/-/g, '_'));
       existingIdsInTree.add(tableId.replace(/_/g, '-'));
@@ -136,4 +171,32 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
     tree,
     tables,
   };
+}
+
+/**
+ * Merges server tree into local tree while preserving user's custom local tree ordering and positions.
+ */
+export function mergeTrees(localTree: TreeItem[], serverTree: TreeItem[]): TreeItem[] {
+  if (!localTree || !Array.isArray(localTree)) return serverTree || [];
+  if (!serverTree || !Array.isArray(serverTree)) return localTree;
+
+  const localMap = new Map(localTree.map((item) => [item.id, item]));
+  const merged = [...localTree];
+
+  serverTree.forEach((serverItem) => {
+    if (!localMap.has(serverItem.id)) {
+      merged.push({ ...serverItem });
+    } else {
+      const idx = merged.findIndex((t) => t.id === serverItem.id);
+      if (idx !== -1 && (serverItem.updatedAt || 0) > (merged[idx].updatedAt || 0)) {
+        merged[idx] = {
+          ...merged[idx],
+          title: serverItem.title || merged[idx].title,
+          updatedAt: serverItem.updatedAt,
+        };
+      }
+    }
+  });
+
+  return merged;
 }

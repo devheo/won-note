@@ -4,6 +4,8 @@
  * Prevents duplicated network traffic on fast refreshes and simultaneous component loads.
  */
 
+import { fetchBridge } from '../httpBridge';
+
 const inFlightMap = new Map<string, Promise<any>>();
 
 export interface DeduplicateOptions extends RequestInit {
@@ -18,7 +20,7 @@ export async function deduplicatedFetchJson<T = any>(
 
   // Deduplicate only idempotent queries (GET)
   if (method !== 'GET' || options?.bypassDeduplication) {
-    const res = await fetch(url, options);
+    const res = await fetchBridge(url, options);
     if (!res.ok) {
       const errJson = await res.json().catch(() => ({}));
       throw new Error(errJson.error || `HTTP ${res.status}`);
@@ -35,7 +37,7 @@ export async function deduplicatedFetchJson<T = any>(
 
   const promise = (async () => {
     try {
-      const res = await fetch(url, options);
+      const res = await fetchBridge(url, options);
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);

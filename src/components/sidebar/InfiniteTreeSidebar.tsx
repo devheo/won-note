@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { TreeItem, ItemType } from '../../types';
+import { SettingsMenuDropdown, AppThemeMode } from '../common/SettingsMenuDropdown';
 import {
   Folder,
   FolderOpen,
@@ -35,6 +36,13 @@ interface InfiniteTreeSidebarProps {
   useServer?: boolean;
   onOpenServerSettings?: () => void;
   onOpenDataPortability?: () => void;
+  theme: AppThemeMode;
+  onSelectTheme: (theme: AppThemeMode) => void;
+  onOpenSpeedSettings: () => void;
+  zoomLevel?: number;
+  onChangeZoom?: (newZoom: number) => void;
+  aiEnabled: boolean;
+  onToggleAi: (enabled: boolean) => void;
 }
 
 export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
@@ -52,6 +60,13 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   useServer,
   onOpenServerSettings,
   onOpenDataPortability,
+  theme,
+  onSelectTheme,
+  onOpenSpeedSettings,
+  zoomLevel,
+  onChangeZoom,
+  aiEnabled,
+  onToggleAi,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -190,6 +205,12 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     e.stopPropagation();
   };
 
+  const handleDragEnd = () => {
+    setDraggedItemId(null);
+    setDropTargetId(null);
+    setDropPosition(null);
+  };
+
   const handleDrop = (e: React.DragEvent, targetItem: TreeItem) => {
     e.preventDefault();
     e.stopPropagation();
@@ -290,6 +311,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
             onDragOver={(e) => handleDragOver(e, item)}
             onDragLeave={handleDragLeave}
             onDrop={(e) => handleDrop(e, item)}
+            onDragEnd={handleDragEnd}
             onClick={(e) => {
               if (isFolder) {
                 toggleFolder(item.id, e);
@@ -541,11 +563,21 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                 원비
               </span>
             </div>
-            <p className="text-[11px] text-stone-500 dark:text-[#888888]">
-              미니멀 데이터 워크스페이스
-            </p>
           </div>
         </div>
+
+        <SettingsMenuDropdown
+          theme={theme}
+          onSelectTheme={onSelectTheme}
+          onOpenSpeedSettings={onOpenSpeedSettings}
+          onOpenServerSettings={onOpenServerSettings}
+          useServer={useServer}
+          zoomLevel={zoomLevel}
+          onChangeZoom={onChangeZoom}
+          aiEnabled={aiEnabled}
+          onToggleAi={onToggleAi}
+          iconOnly
+        />
       </div>
 
       {/* Quick Search Bar */}

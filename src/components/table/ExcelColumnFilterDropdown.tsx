@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { TableColumn, TableRow } from '../../types';
 import { cleanTextValue } from '../../utils/textSanitizer';
 import {
@@ -231,7 +232,7 @@ export const ExcelColumnFilterDropdown: React.FC<ExcelColumnFilterDropdownProps>
   }
   const topPos = anchorRect.bottom + 4;
 
-  return (
+  return createPortal(
     <div
       ref={dropdownRef}
       style={{
@@ -239,7 +240,7 @@ export const ExcelColumnFilterDropdown: React.FC<ExcelColumnFilterDropdownProps>
         top: `${topPos}px`,
         left: `${leftPos}px`,
         width: `${dropdownWidth}px`,
-        zIndex: 9999,
+        zIndex: 999999, // z-index 수치를 999999로 상향
       }}
       className="bg-white dark:bg-[#202020] border border-stone-200 dark:border-[#383838] rounded-xl shadow-2xl overflow-hidden flex flex-col mat-shadow-3 text-xs animate-in fade-in zoom-in-95 duration-150"
     >
@@ -446,6 +447,7 @@ export const ExcelColumnFilterDropdown: React.FC<ExcelColumnFilterDropdownProps>
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

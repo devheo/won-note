@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { safeCopyText } from '../../utils/clipboardHelper';
 import {
   detectLanguage,
   highlightCode,
@@ -108,27 +109,10 @@ export const CodeBlockViewer: React.FC<CodeBlockViewerProps> = ({
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await navigator.clipboard.writeText(rawCode);
+    const success = await safeCopyText(rawCode);
+    if (success) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch (err) {
-      console.error('Failed to copy code, trying fallback', err);
-      try {
-        const textarea = document.createElement('textarea');
-        textarea.value = rawCode;
-        textarea.style.position = 'fixed';
-        textarea.style.opacity = '0';
-        document.body.appendChild(textarea);
-        textarea.focus();
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      } catch (fallbackErr) {
-        console.error('Fallback copy failed', fallbackErr);
-      }
     }
   };
 

@@ -10,6 +10,8 @@ import {
   ShieldAlert,
   Calendar,
   X,
+  Lock,
+  RefreshCw,
 } from 'lucide-react';
 import { CalendarEvent } from '../../types';
 import {
@@ -41,10 +43,14 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
   onSnoozeEvent,
 }) => {
   const [permission, setPermission] = useState<NotificationPermission>(getBrowserNotificationPermission());
+  const [showDeniedGuide, setShowDeniedGuide] = useState<boolean>(false);
+  const [guideBrowserTab, setGuideBrowserTab] = useState<'chrome' | 'edge' | 'safari'>('chrome');
+  const [guidePathMode, setGuidePathMode] = useState<'addressBar' | 'settingsMenu'>('addressBar');
 
   useEffect(() => {
     if (isOpen) {
       setPermission(getBrowserNotificationPermission());
+      setShowDeniedGuide(false);
     }
   }, [isOpen]);
 
@@ -103,6 +109,8 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
               <div className="flex items-center gap-2">
                 {permission === 'granted' ? (
                   <ShieldCheck className="w-4 h-4 text-emerald-500 shrink-0" />
+                ) : permission === 'denied' ? (
+                  <ShieldAlert className="w-4 h-4 text-rose-500 shrink-0" />
                 ) : (
                   <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0" />
                 )}
@@ -114,20 +122,29 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
                     {permission === 'granted'
                       ? '활성화됨 (백그라운드에서도 수신)'
                       : permission === 'denied'
-                      ? '브라우저 설정에서 차단됨'
+                      ? '브라우저 보안 설정으로 차단됨'
                       : '권한 승인 필요'}
                   </span>
                 </div>
               </div>
-              {permission !== 'granted' && (
+
+              {permission === 'denied' ? (
+                <button
+                  type="button"
+                  onClick={() => setShowDeniedGuide(true)}
+                  className="px-2.5 py-1 text-[11px] font-bold bg-rose-500/15 hover:bg-rose-500/25 text-rose-700 dark:text-rose-300 border border-rose-300 dark:border-rose-800 rounded-lg transition-colors cursor-pointer shrink-0"
+                >
+                  차단 해제 방법
+                </button>
+              ) : permission !== 'granted' ? (
                 <button
                   type="button"
                   onClick={handleRequestPermission}
-                  className="px-2.5 py-1 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-lg transition-colors shadow-xs"
+                  className="px-2.5 py-1 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-lg transition-colors shadow-xs cursor-pointer shrink-0"
                 >
                   허용하기
                 </button>
-              )}
+              ) : null}
             </div>
           )}
 
@@ -276,9 +293,270 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
 
         {/* Footer info */}
         <div className="p-3 border-t border-stone-100 dark:border-[#2b2b2b] bg-stone-50/60 dark:bg-[#252525]/60 text-center text-[10px] text-stone-400">
-          💡 WonBee는 100% 오프라인 브라우저 타이머로 정확하게 일정 알림을 제공합니다.
         </div>
       </div>
+
+      {/* Browser Notification Denied Guide Modal */}
+      {showDeniedGuide && (
+        <div
+          className="fixed inset-0 z-[999999] flex items-center justify-center p-4 bg-stone-950/60 backdrop-blur-xs animate-in fade-in duration-100"
+          onClick={() => setShowDeniedGuide(false)}
+        >
+          <div
+            className="bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 w-full max-w-lg p-5 space-y-3.5 animate-in zoom-in-95 duration-150 text-stone-900 dark:text-stone-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between border-b border-stone-200 dark:border-stone-800 pb-3">
+              <div className="flex items-center gap-2 font-bold text-sm text-stone-900 dark:text-stone-100">
+                <div className="p-1.5 rounded-lg bg-rose-500/15 text-rose-600 dark:text-rose-400">
+                  <Lock className="w-4 h-4" />
+                </div>
+                <span>브라우저 알림 차단 해제 가이드</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDeniedGuide(false)}
+                className="p-1 rounded-lg text-stone-400 hover:text-stone-600 dark:hover:text-stone-200 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Guide Alert Banner */}
+            <p className="bg-amber-500/10 p-2.5 rounded-xl border border-amber-500/20 text-amber-800 dark:text-amber-300 font-medium text-[11px] leading-relaxed">
+              🔒 사용자가 알림 권한을 거부한 경우, 브라우저 보안 방침상 스크립트로 권한 요청 창을 다시 띄울 수 없습니다. 이용 중이신 브라우저 종류를 선택하여 차단을 해제해 주세요.
+            </p>
+
+            {/* Browser Selection Tabs */}
+            <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800 p-1 rounded-xl text-xs font-bold">
+              {[
+                { id: 'chrome' as const, label: '🌐 Chrome' },
+                { id: 'edge' as const, label: '🌊 Edge' },
+                { id: 'safari' as const, label: '🧭 Safari' },
+              ].map((b) => (
+                <button
+                  key={b.id}
+                  type="button"
+                  onClick={() => setGuideBrowserTab(b.id)}
+                  className={`flex-1 py-1.5 rounded-lg transition-all cursor-pointer ${
+                    guideBrowserTab === b.id
+                      ? 'bg-amber-500 text-stone-950 shadow-xs'
+                      : 'text-stone-600 dark:text-stone-400 hover:text-stone-900'
+                  }`}
+                >
+                  {b.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Path Mode Toggle (Address Bar vs Settings Menu) */}
+            {guideBrowserTab !== 'safari' && (
+              <div className="flex items-center justify-between text-[11px] px-1 pt-0.5 font-semibold">
+                <span className="text-stone-500">진입 경로 선택:</span>
+                <div className="flex bg-stone-200 dark:bg-stone-800 p-0.5 rounded-lg text-[10px]">
+                  <button
+                    type="button"
+                    onClick={() => setGuidePathMode('addressBar')}
+                    className={`px-2.5 py-0.5 rounded transition-all cursor-pointer ${
+                      guidePathMode === 'addressBar'
+                        ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-bold'
+                        : 'text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    주소창 아이콘 (빠른 경로)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGuidePathMode('settingsMenu')}
+                    className={`px-2.5 py-0.5 rounded transition-all cursor-pointer ${
+                      guidePathMode === 'settingsMenu'
+                        ? 'bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 font-bold'
+                        : 'text-stone-600 dark:text-stone-400'
+                    }`}
+                  >
+                    브라우저 설정 메뉴 직접 진입
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* Step-by-Step Guide Content */}
+            <div className="space-y-2 text-xs text-stone-600 dark:text-stone-300 font-sans pt-1">
+              {guideBrowserTab === 'chrome' && guidePathMode === 'addressBar' && (
+                <>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">1</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">주소창 맨 좌측 아이콘 클릭</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        브라우저 상단 URL 주소창 맨 좌측의 <strong>[자물쇠 🔒 / 주의 요함 ⚠️ / 사이트 설정 🎛️]</strong> 아이콘을 클릭합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">2</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">알림 항목 '허용'으로 변경</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        팝업창의 <strong>'알림'</strong> 항목을 <strong>'허용(Allow)'</strong>으로 변경합니다 (또는 '사이트 설정' 진입 후 알림 허용).
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {guideBrowserTab === 'chrome' && guidePathMode === 'settingsMenu' && (
+                <>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">1</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">Chrome 설정 진입 (Alt+E)</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        우측 상단 메뉴 <strong>'⋮'</strong> 클릭 ➔ <strong>'설정'</strong> (단축키: Alt+E)을 클릭합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">2</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">사이트 알림 권한 진입</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        <strong>'개인정보 보호 및 보안'</strong> ➔ <strong>'사이트 설정'</strong> ➔ <strong>'알림'</strong> 메뉴를 선택합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">3</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">현재 사이트 알림 '허용' 변경</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        '알림 전송이 허용되지 않음' 목록에서 해당 사이트 주소를 찾아 <strong>'허용'</strong>으로 변경합니다.
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {guideBrowserTab === 'edge' && guidePathMode === 'addressBar' && (
+                <>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">1</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">주소창 맨 좌측 아이콘 클릭</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        브라우저 상단 URL 주소창 맨 좌측의 <strong>[자물쇠 🔒 / 주의 요함 ⚠️]</strong> 아이콘을 클릭합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">2</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">'이 사이트에 대한 권한' ➔ 알림 '허용'</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        <strong>'이 사이트에 대한 권한'</strong>을 누르고 <strong>'알림'</strong> 항목을 <strong>'허용'</strong>으로 변경합니다.
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {guideBrowserTab === 'edge' && guidePathMode === 'settingsMenu' && (
+                <>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">1</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">Edge 설정 진입</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        우측 상단 메뉴 <strong>'...'</strong> 클릭 ➔ <strong>'설정'</strong>을 클릭합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">2</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">쿠키 및 사이트 권한 진입</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        <strong>'쿠키 및 사이트 권한'</strong> ➔ <strong>'알림'</strong>을 클릭합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">3</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">차단 목록에서 '허용' 변경</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        차단 목록에서 해당 사이트를 찾아 <strong>'허용'</strong>으로 변경합니다.
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {guideBrowserTab === 'safari' && (
+                <>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">1</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">Safari 설정 진입 (Cmd + ,)</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        맥 상단 메뉴바 <strong>[Safari]</strong> ➔ <strong>[설정... (Cmd + ,)]</strong>을 클릭합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">2</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">웹 사이트 탭 ➔ 알림 메뉴 선택</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        상단 <strong>[웹 사이트]</strong> 탭 ➔ 좌측 목록에서 <strong>[알림]</strong>을 선택합니다.
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-stone-50 dark:bg-stone-800/60 border border-stone-200/80 dark:border-stone-700/60">
+                    <div className="w-5 h-5 rounded-full bg-amber-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">3</div>
+                    <div>
+                      <strong className="text-stone-900 dark:text-stone-100 block text-xs">현재 사이트 '허용' 변경</strong>
+                      <span className="text-[11px] text-stone-500 dark:text-stone-400">
+                        우측 사이트 목록에서 현재 사이트 상태를 <strong>'허용'</strong>으로 변경합니다.
+                      </span>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <div className="flex items-start gap-2.5 p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-800 dark:text-emerald-300">
+                <div className="w-5 h-5 rounded-full bg-emerald-500 text-stone-950 font-bold text-[11px] flex items-center justify-center shrink-0 mt-0.5">✓</div>
+                <div>
+                  <strong className="block text-xs font-bold">페이지 새로고침 (F5) 실행</strong>
+                  <span className="text-[11px]">
+                    권한 변경 후 아래의 <strong>'페이지 새로고침'</strong> 버튼을 누르면 알림 권한이 즉시 적용됩니다.
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="pt-2 border-t border-stone-200 dark:border-stone-800 flex items-center justify-end gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setShowDeniedGuide(false)}
+                className="px-3.5 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 font-medium cursor-pointer"
+              >
+                닫기
+              </button>
+              <button
+                type="button"
+                onClick={() => window.location.reload()}
+                className="px-4 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold shadow-xs flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>페이지 새로고침 (F5)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

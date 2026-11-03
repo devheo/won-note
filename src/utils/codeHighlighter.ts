@@ -43,19 +43,10 @@ if (typeof Prism !== 'undefined' && Prism.languages) {
   }
 }
 
-/**
- * Detects if a given text is likely SQL or a programming language
- */
-export function detectLanguage(text: string): { isCode: boolean; language: SupportedLanguage; reason?: string } {
-  if (!text || typeof text !== 'string') {
-    return { isCode: false, language: 'plaintext' };
-  }
+const DETECT_CACHE = new Map<string, { isCode: boolean; language: SupportedLanguage; reason?: string }>();
+const MAX_DETECT_CACHE = 2000;
 
-  const trimmed = text.trim();
-  if (trimmed.length < 5) {
-    return { isCode: false, language: 'plaintext' };
-  }
-
+function runDetectLanguage(trimmed: string): { isCode: boolean; language: SupportedLanguage; reason?: string } {
   // Sample up to 32KB to inspect code beyond long top comments or license headers
   const sample = trimmed.length > 32000 ? trimmed.slice(0, 32000) : trimmed;
 
@@ -236,6 +227,29 @@ export function detectLanguage(text: string): { isCode: boolean; language: Suppo
 }
 
 /**
+ * High-performance LRU Cache wrapper for detectLanguage
+ */
+export function detectLanguage(text: string): { isCode: boolean; language: SupportedLanguage; reason?: string } {
+  if (!text || typeof text !== 'string') {
+    return { isCode: false, language: 'plaintext' };
+  }
+  const trimmed = text.trim();
+  if (trimmed.length < 5) {
+    return { isCode: false, language: 'plaintext' };
+  }
+  if (DETECT_CACHE.has(trimmed)) {
+    return DETECT_CACHE.get(trimmed)!;
+  }
+  const result = runDetectLanguage(trimmed);
+  DETECT_CACHE.set(trimmed, result);
+  if (DETECT_CACHE.size > MAX_DETECT_CACHE) {
+    const oldest = DETECT_CACHE.keys().next().value;
+    if (oldest !== undefined) DETECT_CACHE.delete(oldest);
+  }
+  return result;
+}
+
+/**
  * Highlights code string into Prism HTML
  */
 export function highlightCode(code: string, language: SupportedLanguage): string {
@@ -388,11 +402,27 @@ export function extractCodeBlockFromContent(content: any): {
     return { isPureCode: true, code: inner, language: lang };
   }
 
-  // Check 2: If wrapped in standard TipTap <p>...</p> but the content inside is code
-  const plain = cleanTextValue(trimmed);
-  const detected = detectLanguage(plain);
-  if (detected.isCode && (plain.includes('\n') || plain.length > 20)) {
-    return { isPureCode: true, code: plain, language: detected.language };
+  // If content contains multiple <pre> blocks, multiple code fences, or paragraph text interspersed with code, it's a multi-block document, NOT pure single code
+  const preCount = (trimmed.match(/<pre/gi) || []).length;
+  const fenceCount = (trimmed.match(/```/g) || []).length;
+  const paragraphCount = (trimmed.match(/<p\b/gi) || []).length;
+
+  if (preCount > 1 || fenceCount > 2 || (preCount >= 1 && paragraphCount >= 1)) {
+    return { isPureCode: false, code: '', language: 'plaintext' };
+  }
+
+  // Check 2: Single pure code block without surrounding HTML paragraphs or with at most 1 container paragraph
+  if (paragraphCount <= 1) {
+    const plain = cleanTextValue(trimmed);
+    const detected = detectLanguage(plain);
+    if (detected.isCode && (plain.includes('\n') || plain.length > 20)) {
+      // If it contains multiple distinct SQL queries or code blocks separated by blank lines, return false to allow multi-block rendering
+      const sqlQueryCount = (plain.match(/\b(SELECT|INSERT\s+INTO|UPDATE|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/gi) || []).length;
+      if (sqlQueryCount > 1 && plain.includes('\n\n')) {
+        return { isPureCode: false, code: '', language: 'plaintext' };
+      }
+      return { isPureCode: true, code: plain, language: detected.language };
+    }
   }
 
   return { isPureCode: false, code: '', language: 'plaintext' };

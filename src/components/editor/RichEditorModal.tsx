@@ -26,6 +26,8 @@ import { StickerExtension } from './StickerExtension';
 import { CodeBlockComponent } from './CodeBlockComponent';
 import { ImageComponent } from './ImageComponent';
 import { TableGridPicker } from './TableGridPicker';
+import { RibbonToolbar } from './RibbonToolbar';
+import { TopDialogs } from './TopDialogs';
 import { TableRow as TableRowType, TableColumn } from '../../types';
 import { cleanHtmlToPlainText, cleanTextValue } from '../../utils/textSanitizer';
 import { detectLanguage, escapeHtml, formatJavaOrGeneralCode } from '../../utils/codeHighlighter';
@@ -33,6 +35,12 @@ import { delimitedTextToHtmlTable, convertTextDataToEditorContent } from '../../
 import { compressAndResizeImage } from '../../utils/imageOptimizer';
 import { wonbeeDexieDB } from '../../services/storage/dexieDb';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
+import { useStatusBar } from '../common/GlobalStatusBar';
+import { autoFormatExpress, cleanLogNoise } from '../../utils/formatExpress';
+import { useEditorTableActions } from '../../hooks/useEditorTableActions';
+import { useEditorCodeActions } from '../../hooks/useEditorCodeActions';
+import { useEditorFormatting } from '../../hooks/useEditorFormatting';
+import { useEditorClipboard } from '../../hooks/useEditorClipboard';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import { AiAgentDrawer } from '../agent/AiAgentDrawer';
 import {
@@ -42,6 +50,7 @@ import {
   MARKDOWN_LANGUAGE_TEMPLATES,
   MarkdownLanguageTemplate,
 } from '../../utils/markdownHelper';
+import { analyzeContent } from '../../utils/contentParser';
 import {
   X,
   Bold,
@@ -119,6 +128,12 @@ import {
 // Initialize Lowlight with common languages (Java, SQL, JS, TS, Python, JSON, HTML, Bash, etc.)
 const baseLowlight = createLowlight(common);
 
+const stripHtml = (html: string = ''): string => {
+  if (!html) return '';
+  // HTML 태그 제거 및 연속 공백 정리
+  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+};
+
 // Register critical language aliases for Lowlight
 try {
   baseLowlight.registerAlias('xml', ['html', 'htm', 'markup', 'svg', 'xhtml']);
@@ -132,6 +147,31 @@ try {
   console.warn('baseLowlight.registerAlias error:', e);
 }
 
+// High-performance LRU Cache for syntax highlighting AST results
+const HIGHLIGHT_CACHE_LIMIT = 500;
+const highlightCache = new Map<string, any>();
+
+const getCachedHighlight = (targetLang: string, value: string, options?: any) => {
+  const cacheKey = `${targetLang}::${value}`;
+  if (highlightCache.has(cacheKey)) {
+    const cached = highlightCache.get(cacheKey);
+    // Refresh LRU position
+    highlightCache.delete(cacheKey);
+    highlightCache.set(cacheKey, cached);
+    return cached;
+  }
+
+  const result = baseLowlight.highlight(targetLang, value, options);
+  highlightCache.set(cacheKey, result);
+  if (highlightCache.size > HIGHLIGHT_CACHE_LIMIT) {
+    const oldestKey = highlightCache.keys().next().value;
+    if (oldestKey !== undefined) {
+      highlightCache.delete(oldestKey);
+    }
+  }
+  return result;
+};
+
 const resolveLowlightLang = (lang: string, value: string): string => {
   const l = (lang || '').toLowerCase();
   if (l === 'html' || l === 'markup' || l === 'htm') return 'xml';
@@ -140,8 +180,10 @@ const resolveLowlightLang = (lang: string, value: string): string => {
   if (l === 'py') return 'python';
   if (l === 'sh') return 'bash';
   if (l === 'pc' || l === 'h') return 'c';
+  // O(1) Early Return if explicit registered language is specified
   if (l && l !== 'auto' && baseLowlight.registered(l)) return l;
 
+  // Only run language detection if language is 'auto' or unspecified
   const detected = detectLanguage(value);
   if (detected.isCode) {
     const dLang = detected.language;
@@ -166,8 +208,6 @@ const resolveLowlightLang = (lang: string, value: string): string => {
 };
 
 // Safe high-performance wrapper for lowlight
-// Accurately resolves languages (including 'auto' and language aliases) and highlights up to 3MB
-// without stripping syntax tokens or freezing the browser.
 const lowlight = {
   ...baseLowlight,
   registered: (aliasOrLanguage: string) => {
@@ -181,13 +221,13 @@ const lowlight = {
     if (!value) {
       return { type: 'root', children: [] };
     }
-    // Safety guard for extreme memory exhaustion (> 3MB / 3,000,000 chars)
+    // Safety guard for extreme memory exhaustion (> 3MB)
     if (value.length > 3000000) {
       return { type: 'root', children: [{ type: 'text', value }] };
     }
     try {
       const targetLang = resolveLowlightLang(language, value);
-      return baseLowlight.highlight(targetLang, value, options);
+      return getCachedHighlight(targetLang, value, options);
     } catch (err) {
       console.warn('lowlight highlight error:', err);
       try {
@@ -206,7 +246,7 @@ const lowlight = {
     }
     try {
       const targetLang = resolveLowlightLang('auto', value);
-      return baseLowlight.highlight(targetLang, value, options);
+      return getCachedHighlight(targetLang, value, options);
     } catch (err) {
       console.warn('lowlight highlightAuto error:', err);
       return { type: 'root', children: [{ type: 'text', value }] };
@@ -223,65 +263,65 @@ const lowlight = {
 
 /**
  * Sanitizes Excel/MS Office/Web HTML tables before pasting into TipTap editor.
- * Removes bloat tags (<o:p>, <font>), empty paragraph wrappers (<p><br></p>),
- * duplicate linebreaks (<br><br>), and normalizes cells into clean HTML tables.
+ * Uses native DOMParser for single-pass tree traversal to prevent main-thread freezing (Jank)
+ * when handling large tables with hundreds/thousands of cells.
  */
 function sanitizeExcelTableHtml(htmlData: string): string {
   if (!htmlData || typeof htmlData !== 'string') return htmlData;
 
-  let clean = htmlData;
+  if (typeof DOMParser !== 'undefined') {
+    try {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(htmlData, 'text/html');
 
-  // 1. Remove MS Office bloat, conditional comments, and unnecessary font/meta/style tags
-  clean = clean
+      // 1. Single-pass removal of MS Office bloat, styles, meta, font, and script elements
+      const bloatElements = doc.querySelectorAll('style, meta, font, o\\:p, script');
+      bloatElements.forEach((el) => el.remove());
+
+      const tables = doc.querySelectorAll('table');
+      if (tables.length > 0) {
+        tables.forEach((table) => {
+          table.classList.add('wonbee-rich-table', 'wonbee-table-border-all');
+          table.setAttribute('data-border-style', 'all');
+          table.removeAttribute('border');
+
+          // Clean up cells in a single DOM pass
+          const cells = table.querySelectorAll('td, th');
+          cells.forEach((cell) => {
+            const styleAttr = cell.getAttribute('style') || '';
+            if (styleAttr.includes('border: none') || styleAttr.includes('border:none')) {
+              (cell as HTMLElement).style.border = '';
+            }
+
+            const paragraphs = cell.querySelectorAll('p');
+            paragraphs.forEach((p) => {
+              const textContent = p.textContent?.trim() || '';
+              if (!textContent || textContent === ' ') {
+                p.remove();
+              } else {
+                const textNode = doc.createTextNode(` ${textContent} `);
+                p.replaceWith(textNode);
+              }
+            });
+
+            const brs = cell.querySelectorAll('br');
+            brs.forEach((br) => br.replaceWith(doc.createTextNode(' ')));
+          });
+        });
+
+        return doc.body.innerHTML;
+      }
+    } catch (e) {
+      console.warn('DOMParser table sanitize fallback:', e);
+    }
+  }
+
+  // Fallback regex pass if DOMParser is unavailable
+  return htmlData
     .replace(/<!--\[if[\s\S]*?<!\[endif\]-->/gi, '')
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<meta[^>]*>/gi, '')
     .replace(/<\/?o:p[^>]*>/gi, '')
     .replace(/<\/?font[^>]*>/gi, '');
-
-  // 2. Normalize forced linebreaks (<br>, \r, \n, <p>) inside <td> and <th> cells to a single space " "
-  clean = clean.replace(/<(td|th)([^>]*)>([\s\S]*?)<\/\1>/gi, (match, tag, attrs, content) => {
-    let cleanContent = content
-      // Remove empty <p><br></p> or <p>&nbsp;</p>
-      .replace(/<p[^>]*>(?:\s*<br\s*\/?>|\s|&nbsp;)*<\/p>/gi, '')
-      // Convert internal <p> and <br> tags to a single space
-      .replace(/<\/?p[^>]*>/gi, ' ')
-      .replace(/<br\s*\/?>/gi, ' ')
-      // Convert newlines/carriage returns to space
-      .replace(/[\r\n]+/g, ' ')
-      // Collapse multiple spaces/nbsp into a single clean space
-      .replace(/(?:&nbsp;|\s)+/g, ' ')
-      .trim();
-
-    return `<${tag}${attrs}>${cleanContent}</${tag}>`;
-  });
-
-  // 3. Remove \r\n whitespace bloat between table tags
-  clean = clean.replace(/(<\/(?:tr|td|th|thead|tbody|table)>)\s*[\r\n]+\s*(<(?:tr|td|th|thead|tbody|table)[\s>])/gi, '$1$2');
-
-  // 4. Ensure table gets wonbee-rich-table styling classes and clean attributes
-  clean = clean
-    .replace(/<table([^>]*)>/gi, (match, attrs) => {
-      let cleanAttrs = attrs
-        .replace(/border=["']?0["']?/gi, '')
-        .replace(/style=["'][^"']*border:\s*none[^"']*["']/gi, '');
-      if (cleanAttrs.includes('class=')) {
-        cleanAttrs = cleanAttrs.replace(/class=["']([^"']*)["']/gi, 'class="$1 wonbee-rich-table wonbee-table-border-all"');
-      } else {
-        cleanAttrs = ` class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"${cleanAttrs}`;
-      }
-      return `<table${cleanAttrs}>`;
-    })
-    .replace(/<td([^>]*)>/gi, (match, attrs) => {
-      let cleanAttrs = attrs.replace(/border:\s*none/gi, '');
-      return `<td${cleanAttrs}>`;
-    })
-    .replace(/<th([^>]*)>/gi, (match, attrs) => {
-      let cleanAttrs = attrs.replace(/border:\s*none/gi, '');
-      return `<th${cleanAttrs}>`;
-    });
-
-  return clean;
 }
 
 /**
@@ -499,6 +539,12 @@ class CustomTableView extends TableView {
   private insertAfterBtn: HTMLDivElement | null = null;
   private selectGripHandle: HTMLDivElement | null = null;
   private isResizing = false;
+  private listeners: Array<{
+    target: EventTarget;
+    type: string;
+    listener: EventListenerOrEventListenerObject;
+    options?: any;
+  }> = [];
 
   constructor(node: any, cellMinWidth: number, view?: any, HTMLAttributes: Record<string, any> = {}) {
     super(node, cellMinWidth, view, HTMLAttributes);
@@ -508,6 +554,28 @@ class CustomTableView extends TableView {
     this.initInsertButtons();
     this.initSelectGripHandle();
     this.initNodeSelectionListeners();
+  }
+
+  private addTrackedEventListener(
+    target: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: any
+  ) {
+    target.addEventListener(type, listener, options);
+    this.listeners.push({ target, type, listener, options });
+  }
+
+  destroy() {
+    this.listeners.forEach(({ target, type, listener, options }) => {
+      try {
+        target.removeEventListener(type, listener, options);
+      } catch (_) {}
+    });
+    this.listeners = [];
+    if (typeof (TableView.prototype as any).destroy === 'function') {
+      (TableView.prototype as any).destroy.call(this);
+    }
   }
 
   update(node: any) {
@@ -556,7 +624,7 @@ class CustomTableView extends TableView {
       </svg>
     `;
 
-    grip.addEventListener('mousedown', (e) => {
+    this.addTrackedEventListener(grip, 'mousedown', (e: Event) => {
       e.stopPropagation();
       if (!this.customView || typeof (this as any).getPos !== 'function') return;
       try {
@@ -573,7 +641,7 @@ class CustomTableView extends TableView {
       }
     });
 
-    grip.addEventListener('click', (e) => {
+    this.addTrackedEventListener(grip, 'click', (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
       if (!this.customView || typeof (this as any).getPos !== 'function') return;
@@ -591,7 +659,7 @@ class CustomTableView extends TableView {
       }
     });
 
-    grip.addEventListener('dragstart', (e) => {
+    this.addTrackedEventListener(grip, 'dragstart', (e: Event) => {
       if (!this.customView || typeof (this as any).getPos !== 'function') return;
       try {
         const pos = (this as any).getPos();
@@ -600,9 +668,10 @@ class CustomTableView extends TableView {
           const selection = NodeSelection.create(state.doc, pos);
           dispatch(state.tr.setSelection(selection));
           this.selectNode();
-          if (e.dataTransfer) {
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', '[표]');
+          const dragEvent = e as DragEvent;
+          if (dragEvent.dataTransfer) {
+            dragEvent.dataTransfer.effectAllowed = 'move';
+            dragEvent.dataTransfer.setData('text/plain', '[표]');
           }
         }
       } catch (_) {}
@@ -621,14 +690,21 @@ class CustomTableView extends TableView {
   private initNodeSelectionListeners() {
     if (typeof document === 'undefined' || !this.dom) return;
 
-    this.dom.setAttribute('draggable', 'true');
+    // 테이블 본체 DND는 제한하고, 이동/선택은 상단 전용 핸들러(.wonbee-table-select-grip)로만 수행
+    this.dom.removeAttribute('draggable');
 
-    // Click / Shift+Click / Alt+Click on table outer border selects table node
-    this.dom.addEventListener('mousedown', (e: MouseEvent) => {
-      const target = e.target as HTMLElement;
-      const isCellOrCellContent = target && (target.tagName === 'TD' || target.tagName === 'TH' || target.closest('td, th'));
+    this.addTrackedEventListener(this.dom, 'mousedown', (e: Event) => {
+      const mouseEvent = e as MouseEvent;
+      const target = mouseEvent.target as HTMLElement;
+      const isCellOrCellContent = Boolean(target && (target.tagName === 'TD' || target.tagName === 'TH' || target.closest('td, th')));
 
-      if (e.shiftKey || e.altKey || !isCellOrCellContent || target === this.table || target === this.dom) {
+      // 셀 내부를 클릭하거나 Shift 키를 누른 셀 범위 선택 시에는 전체 선택(NodeSelection)을 타지 않음
+      if (isCellOrCellContent) {
+        return; // 셀 기본 선택 동작(CellSelection) 유지
+      }
+
+      // 표 외곽선 또는 여백 클릭 시에만 전체 노드 선택
+      if (target === this.table || target === this.dom) {
         if (typeof (this as any).getPos === 'function' && this.customView) {
           try {
             const pos = (this as any).getPos();
@@ -640,24 +716,6 @@ class CustomTableView extends TableView {
             }
           } catch (_) {}
         }
-      }
-    });
-
-    // Dragging table node triggers ProseMirror NodeSelection DND
-    this.dom.addEventListener('dragstart', (e: DragEvent) => {
-      if (typeof (this as any).getPos === 'function' && this.customView) {
-        try {
-          const pos = (this as any).getPos();
-          if (typeof pos === 'number') {
-            const { state, dispatch } = this.customView;
-            const selection = NodeSelection.create(state.doc, pos);
-            dispatch(state.tr.setSelection(selection));
-            if (e.dataTransfer) {
-              e.dataTransfer.effectAllowed = 'move';
-              e.dataTransfer.setData('text/plain', '[표]');
-            }
-          }
-        } catch (_) {}
       }
     });
   }
@@ -686,7 +744,7 @@ class CustomTableView extends TableView {
         </div>
       `;
 
-      bar.addEventListener('mousedown', (e) => {
+      this.addTrackedEventListener(bar, 'mousedown', (e: Event) => {
         e.preventDefault();
         e.stopPropagation();
         if (!this.customView || typeof (this as any).getPos !== 'function') return;
@@ -730,13 +788,14 @@ class CustomTableView extends TableView {
     handle.setAttribute('contenteditable', 'false');
     handle.setAttribute('title', '드래그하여 표 전체 너비 조절 (최대 크기 방지)');
 
-    handle.addEventListener('mousedown', (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    this.addTrackedEventListener(handle, 'mousedown', (e: Event) => {
+      const mouseEvent = e as MouseEvent;
+      mouseEvent.preventDefault();
+      mouseEvent.stopPropagation();
       if (!this.table) return;
 
       this.isResizing = true;
-      const startX = e.clientX;
+      const startX = mouseEvent.clientX;
       const tableRect = this.table.getBoundingClientRect();
       const parentRect = this.dom?.parentElement?.getBoundingClientRect() || this.dom.getBoundingClientRect();
       const startWidth = tableRect.width;
@@ -774,8 +833,8 @@ class CustomTableView extends TableView {
         }
       };
 
-      window.addEventListener('mousemove', onMouseMove);
-      window.addEventListener('mouseup', onMouseUp);
+      this.addTrackedEventListener(window, 'mousemove', onMouseMove as EventListener);
+      this.addTrackedEventListener(window, 'mouseup', onMouseUp as EventListener);
     });
 
     if (this.dom) {
@@ -927,11 +986,12 @@ class CustomTableView extends TableView {
 
 // Custom Table supporting borders & styles
 const CustomTable = Table.extend({
-  selectable: true,
-  draggable: true,
+  selectable: false,
+  draggable: false,
   addOptions() {
     return {
       ...this.parent?.(),
+      allowTableNodeSelection: false,
       View: CustomTableView,
     };
   },
@@ -1095,6 +1155,18 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   initialTargetId,
   onSaveRow,
 }) => {
+  // O(1) Map Lookup for Columns
+  const columnMap = useMemo(() => {
+    const map = new Map<string, TableColumn>();
+    (columns || []).forEach((col) => {
+      map.set(col.id, col);
+    });
+    return map;
+  }, [columns]);
+
+  const primaryColumn = useMemo(() => {
+    return columns.find((c) => c.isPrimaryKey) || columns[0];
+  }, [columns]);
   const sanitizeRowData = useCallback((data: Record<string, any> = {}) => {
     const sanitized: Record<string, any> = { ...data };
     columns.forEach((col) => {
@@ -1148,6 +1220,14 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
   // Video Dialog state
   const [videoDialogUrl, setVideoDialogUrl] = useState('');
+
+  // Editor Position & Selection Metrics for Modal Footer
+  const [editorMetrics, setEditorMetrics] = useState({
+    line: 1,
+    col: 1,
+    selectedChars: 0,
+    selectedBytes: 0,
+  });
 
   // Table Border Dialog scope ('cell' for selected cell(s), 'table' for entire table)
   const [borderScope, setBorderScope] = useState<'cell' | 'table'>('cell');
@@ -1313,87 +1393,34 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     el.scrollBy({ left: direction === 'left' ? -150 : 150, behavior: 'smooth' });
   }, []);
 
-  // Helper to format content for TipTap editor, ensuring plain Java/source code is safely wrapped in code block
+  // Helper to format content for TipTap editor using common analyzeContent utility
   const formatContentForEditor = useCallback((rawContent: string): string => {
     if (!rawContent || typeof rawContent !== 'string') return '';
     const trimmed = rawContent.trim();
     if (!trimmed) return '';
 
-    // If it already has HTML code block, ensure it is not stuck on plaintext if it's real code
-    if (trimmed.includes('<pre') || trimmed.includes('<code')) {
-      if (trimmed.includes('language-plaintext') || trimmed.includes('language-auto') || !/class="[^"]*language-[a-zA-Z0-9_-]+/i.test(trimmed)) {
-        const codeText = trimmed
-          .replace(/<[^>]+>/g, '')
-          .replace(/&lt;/g, '<')
-          .replace(/&gt;/g, '>')
-          .replace(/&amp;/g, '&');
-        const detected = detectLanguage(codeText);
-        const hasJava = /\b(?:package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|private\s+|protected\s+|@Override|public\s+static\s+final)\b/.test(codeText.slice(0, 32000));
-        const effective = detected.isCode ? detected.language : (hasJava ? 'java' : null);
-        if (effective && effective !== 'plaintext') {
-          return trimmed
-            .replace(/class="([^"]*)language-(?:plaintext|auto)([^"]*)"/gi, `class="$1language-${effective}$2"`)
-            .replace(/<code(?!\s+class="[^"]*language-)/gi, `<code class="language-${effective}"`);
-        }
-      }
-      return rawContent;
-    }
+    const parsed = analyzeContent(rawContent);
 
-    // Fast check for markdown code fences (```...```) or Markdown content
-    const hasMarkdownFences = rawContent.includes('```');
-    const isMd = hasMarkdownFences || isLikelyMarkdown(rawContent);
-
-    // Fast check for real rich HTML block tags on sample
-    const sample = trimmed.length > 32000 ? trimmed.slice(0, 32000) : trimmed;
-    const hasComplexHtml =
-      /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|svg)\b/i.test(sample) ||
-      /style\s*=\s*["']/i.test(sample) ||
-      /data-color\s*=/i.test(sample);
-
-    if (hasComplexHtml && !hasMarkdownFences) {
-      return rawContent;
-    }
-
-    // Check if it's Markdown format (e.g. ## headers, | table |, - list, ```` code blocks, etc.)
-    if (isMd) {
+    // 1. If Markdown, parse to HTML
+    if (parsed.isMarkdown) {
       return markdownToHtml(rawContent);
     }
 
-    const hasRealHtmlTags =
-      /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|h[1-6]|ul|ol|li|blockquote|p|div|span|strong|b|em|i|u|s|del|mark|a|hr)\b/i.test(sample);
-    if (hasRealHtmlTags) {
+    // 2. If single pure code block, format as code block
+    if (parsed.isPureCode) {
+      const formatted = formatJavaOrGeneralCode(parsed.code);
+      return `<pre><code class="language-${parsed.codeLanguage}">${escapeHtml(formatted)}</code></pre>`;
+    }
+
+    // 3. If it already has complex HTML or pre/code blocks, preserve HTML
+    if (trimmed.includes('<pre') || trimmed.includes('<code') || (trimmed.includes('<') && trimmed.includes('>'))) {
       return rawContent;
     }
 
-    // Check if it's source code (Java, SQL, JS, etc.) or has Java patterns
-    const langDetect = detectLanguage(rawContent);
-    const hasJavaPattern = /\b(?:package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|private\s+|protected\s+|@Override|public\s+static\s+final)\b/.test(sample);
-    const hasCodeStructure =
-      rawContent.includes('\n') &&
-      ((sample.includes('{') && sample.includes('}')) || (sample.includes('(') && sample.includes(')'))) &&
-      (sample.includes(';') || sample.includes('//') || sample.includes('/*') || /^\s{2,}\S/m.test(sample));
-
-    if (langDetect.isCode || hasJavaPattern || hasCodeStructure) {
-      const formatted = formatJavaOrGeneralCode(rawContent);
-      let lang = langDetect.isCode ? langDetect.language : (hasJavaPattern ? 'java' : 'auto');
-      if (lang === 'auto' || lang === 'plaintext') {
-        if (hasJavaPattern || sample.includes('System.out') || sample.includes('String ') || sample.includes('void ')) {
-          lang = 'java';
-        } else if (/\b(?:SELECT|INSERT|UPDATE|DELETE|CREATE\s+TABLE)\b/i.test(sample)) {
-          lang = 'sql';
-        } else {
-          lang = 'java';
-        }
-      }
-      return `<pre><code class="language-${lang}">${escapeHtml(formatted)}</code></pre>`;
-    }
-
-    // If it's multi-line plain text: wrap in paragraphs so TipTap never collapses newlines into spaces
+    // 4. Multi-line plain text fallback: wrap in paragraphs
     if (rawContent.includes('\n')) {
       const lines = rawContent.split('\n');
-      return lines
-        .map((line) => `<p>${escapeHtml(line) || '<br>'}</p>`)
-        .join('');
+      return lines.map((line) => `<p>${escapeHtml(line) || '<br>'}</p>`).join('');
     }
 
     return escapeHtml(rawContent);
@@ -1447,7 +1474,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           setRichContent(html);
           richContentRef.current = html;
         } else {
-          const targetCol = columns.find((c) => c.id === currentTarget);
+          const targetCol = columnMap.get(currentTarget);
           const hasRichFormatting =
             targetCol?.type === 'richText' ||
             /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|h[1-6]|ul|ol|li|blockquote|pre|code|strong|b|em|i|u|s|del|mark|span|a|hr)\b/i.test(html) ||
@@ -1550,6 +1577,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       StarterKit.configure({
         heading: { levels: [1, 2, 3] },
         codeBlock: false,
+        gapcursor: false,
       }),
       CodeBlockLowlight.extend({
         draggable: true,
@@ -1558,7 +1586,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           return {
             ...this.parent?.(),
             width: {
-              default: '100%',
+              default: 100,
               parseHTML: (element) => element.getAttribute('data-code-width') || element.style.width || '100%',
               renderHTML: (attributes) => {
                 if (!attributes.width) return {};
@@ -1606,6 +1634,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }),
       CustomTable.configure({
         resizable: true,
+        allowTableNodeSelection: false,
         View: CustomTableView,
         HTMLAttributes: {
           class: 'wonbee-rich-table',
@@ -1696,31 +1725,13 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           const target = event.target as HTMLElement;
           if (!target) return false;
 
-          const isCell = target.tagName === 'TD' || target.tagName === 'TH';
-          const isCellContent = target.closest('td, th');
-          const tableEl = target.closest('table') || target.closest('.tableWrapper');
+          const isCellOrCellContent = Boolean(target.tagName === 'TD' || target.tagName === 'TH' || target.closest('td, th'));
 
-          if (tableEl && (event.shiftKey || event.altKey || (!isCell && !isCellContent))) {
-            try {
-              const pos = view.posAtDOM(tableEl, 0);
-              if (typeof pos === 'number' && pos >= 0) {
-                const { state, dispatch } = view;
-                const $pos = state.doc.resolve(pos);
-                for (let d = $pos.depth; d >= 0; d--) {
-                  const node = $pos.node(d);
-                  if (node && node.type.name === 'table') {
-                    const tablePos = $pos.before(d);
-                    const selection = NodeSelection.create(state.doc, tablePos);
-                    dispatch(state.tr.setSelection(selection));
-                    view.focus();
-                    event.preventDefault();
-                    event.stopPropagation();
-                    return true;
-                  }
-                }
-              }
-            } catch (_) {}
+          // 셀 내부에서 발생한 클릭/Shift+클릭은 ProseMirror의 셀렉션(CellSelection)으로 넘김
+          if (isCellOrCellContent) {
+            return false;
           }
+
           return false;
         },
       },
@@ -1787,10 +1798,43 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         return false;
       },
       handlePaste: (view, event) => {
+        const { state } = view;
+        const { $from } = state.selection;
+
+        // 1. Check if current cursor is inside codeBlock
+        const isInCodeBlock = $from.depth > 0 && $from.node($from.depth).type.name === 'codeBlock';
+
+        if (isInCodeBlock) {
+          event.preventDefault();
+          const text = event.clipboardData?.getData('text/plain') || '';
+          if (text) {
+            const tr = state.tr.insertText(text);
+            view.dispatch(tr);
+          }
+          return true;
+        }
+
         const clipboardData = event.clipboardData;
         if (!clipboardData) return false;
 
         const ed = editorRef.current || (view as any).editor;
+        const plainText = clipboardData.getData('text/plain') || '';
+
+        // Format Express smart paste check for raw logs or minified messy strings
+        if (plainText && (plainText.includes('INFO') || plainText.includes('DEBUG') || plainText.includes('ERROR') || plainText.length > 300)) {
+          const cleaned = cleanLogNoise(plainText);
+          if (cleaned !== plainText || (plainText.trim().startsWith('{') && plainText.includes('\n') === false)) {
+            const { formatted, detectedType } = autoFormatExpress(plainText);
+            event.preventDefault();
+            const lang = detectedType === 'JSON' ? 'json' : detectedType.includes('XML') ? 'markup' : detectedType === 'SQL' ? 'sql' : 'plaintext';
+            if (ed) {
+              ed.chain().focus().insertContent(`<pre><code class="language-${lang}">${escapeHtml(formatted)}</code></pre>`).run();
+              setToastMessage(`✨ Format Express: [${detectedType}] 스마트 정제 및 노이즈 제거 완료`);
+              setTimeout(() => setToastMessage(null), 3500);
+              return true;
+            }
+          }
+        }
 
         // 0. Copied file check: User copied a .md / .markdown / .txt file in OS and pressed Ctrl+V
         const files = clipboardData.files;
@@ -1822,7 +1866,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         }
 
         const htmlData = clipboardData.getData('text/html') || '';
-        const plainText = clipboardData.getData('text/plain') || '';
 
         // 1. HTML Table check FIRST (Excel, Google Sheets, or Web table)
         // Microsoft Excel puts both image/png and text/html table in clipboard!
@@ -1887,18 +1930,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
         if (!plainText) return false;
 
-        // Check if cursor is currently inside an existing codeBlock
-        const state = view.state;
-        const { $from } = state.selection;
-        const isInsideCodeBlock = $from.parent.type.name === 'codeBlock';
-
-        if (isInsideCodeBlock) {
-          // If already inside a code block, strictly insert raw plain text preserving all spaces, indents, and newlines
-          event.preventDefault();
-          view.dispatch(state.tr.replaceSelectionWith(state.schema.text(plainText)));
-          return true;
-        }
-
         const insertHtmlSafely = (htmlContent: string) => {
           const targetEd = editorRef.current || (view as any).editor;
           if (targetEd && targetEd.commands && typeof targetEd.commands.insertContent === 'function') {
@@ -1930,55 +1961,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           }
         }
 
-        // 5. Source code check (HTML / XML, C / Pro*C, SQL, Java, JS/TS, Python, Bash, etc.)
-        // or multi-line text with indentations
-        const langDetection = detectLanguage(plainText);
-        const hasJavaCodeSignature =
-          /\b(package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.(out|err)|private\s+|protected\s+|@Override|void\s+\w+\s*\(|int\s+\w+\s*=|public\s+static\s+final)\b/.test(plainText);
-        const hasCCodeSignature =
-          /\b(memcpy|memcmp|memset|malloc|free|printf|#include|typedef\s+struct|char\s*\*|int\s+main|sizeof\s*\()\b/.test(plainText);
-        const hasSqlSignature =
-          /\b(SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b/i.test(plainText);
-        const hasHtmlSignature =
-          /^\s*<!doctype\s+html\b/i.test(plainText) || /^\s*<html\b/i.test(plainText) || /<\s*(?:head|body|script|style)\b/i.test(plainText);
-        const isMultilineWithIndentation =
-          plainText.includes('\n') && (/^\s{2,}\S/m.test(plainText) || /^\t\S/m.test(plainText));
-
-        if (langDetection.isCode || hasJavaCodeSignature || hasCCodeSignature || hasSqlSignature || hasHtmlSignature || (isMultilineWithIndentation && (plainText.includes('{') || plainText.includes(';') || plainText.includes('(')))) {
-          // It's source code! Insert as a dedicated codeBlock with auto/detected language attribute
-          event.preventDefault();
-          let language = langDetection.isCode
-            ? langDetection.language
-            : hasHtmlSignature
-            ? 'html'
-            : hasCCodeSignature
-            ? 'c'
-            : hasSqlSignature
-            ? 'sql'
-            : hasJavaCodeSignature
-            ? 'java'
-            : 'auto';
-
-          if (language === 'markup' || language === 'xml') {
-            language = 'html';
-          }
-
-          // For multi-line code (especially HTML, SQL, etc.), preserve original linebreaks without destructive formatting
-          const lineCount = (plainText.match(/\n/g) || []).length;
-          const formattedCode = lineCount >= 2 ? plainText : formatJavaOrGeneralCode(plainText);
-          const codeBlockType = state.schema.nodes.codeBlock;
-          if (codeBlockType) {
-            const codeBlockNode = codeBlockType.create(
-              { language },
-              state.schema.text(formattedCode)
-            );
-            view.dispatch(state.tr.replaceSelectionWith(codeBlockNode));
-            setToastMessage(`✓ ${language.toUpperCase()} 소스 코드가 코드 블록으로 자동 인식되었습니다.`);
-            setTimeout(() => setToastMessage(null), 3000);
-            return true;
-          }
-        }
-
         return false;
       },
     },
@@ -1989,7 +1971,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       if (currentTarget === '__richContent__') {
         setRichContent(html);
       } else {
-        const targetCol = columns.find((c) => c.id === currentTarget);
+        const targetCol = columnMap.get(currentTarget);
         const hasRichFormatting =
           targetCol?.type === 'richText' ||
           /<\s*(?:table|thead|tbody|tr|td|th|img|sticker-node|h[1-6]|ul|ol|li|blockquote|pre|code|strong|b|em|i|u|s|del|mark|span|a|hr)\b/i.test(html) ||
@@ -2072,141 +2054,119 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     };
   }, [editor]);
 
-  // Color apply handlers with selection restoration
-  const handleApplyTextColor = useCallback(
-    (color: string) => {
-      if (!editor) return;
-      const sel = savedSelectionRef.current;
-      if (sel && sel.from !== sel.to) {
-        editor.chain().setTextSelection(sel).setColor(color).focus().run();
-      } else {
-        editor.chain().focus().setColor(color).run();
-      }
-      setActiveTopDialog(null);
-    },
-    [editor]
-  );
+  // Custom Editor Hooks Integration
+  const {
+    handleInsertNewTable,
+    getActiveTableAttrs,
+    setTableBorderStyle,
+    setTableBorderColor,
+    handleInsertParagraphBeforeTable,
+    handleInsertParagraphAfterTable,
+    getActiveTableCellAttrs,
+    applyCellBorder,
+    applyCellBorderColor,
+  } = useEditorTableActions({
+    editor,
+    setActiveTopDialog,
+    setToastMessage,
+  });
 
-  const handleResetTextColor = useCallback(() => {
+  const {
+    getSelectedText,
+    handleAutoHighlightSelection,
+    handleInsertBashBlock,
+    handleInsertSqlBlock,
+    handleInsertJavaBlock,
+    handleInsertCBlock,
+    handleInsertPythonBlock,
+    handleFormatCodeInEditor,
+  } = useEditorCodeActions({
+    editor,
+    setToastMessage,
+  });
+
+  const {
+    setFontSize,
+    setFontFamily,
+    handleIndent,
+    handleOutdent,
+    handleApplyTextColor,
+    handleResetTextColor,
+    handleApplyHighlight,
+    handleResetHighlight,
+  } = useEditorFormatting({
+    editor,
+    setActiveTopDialog,
+    setToastMessage,
+    savedSelectionRef,
+  });
+
+  const {
+    handleContextCopy,
+    handleContextCut,
+    handleContextPaste,
+    handleContextDeleteSelection,
+  } = useEditorClipboard({
+    editor,
+    contextMenu,
+    setContextMenu,
+    setToastMessage,
+    getSelectedText,
+  });
+
+  const { updateMetrics } = useStatusBar();
+
+  useEffect(() => {
     if (!editor) return;
-    const sel = savedSelectionRef.current;
-    if (sel && sel.from !== sel.to) {
-      editor.chain().setTextSelection(sel).unsetColor().focus().run();
-    } else {
-      editor.chain().focus().unsetColor().run();
-    }
-    setActiveTopDialog(null);
-  }, [editor]);
+    let timerId: any = null;
 
-  const handleApplyHighlight = useCallback(
-    (color: string) => {
-      if (!editor) return;
-      const sel = savedSelectionRef.current;
-      if (sel && sel.from !== sel.to) {
-        editor.chain().setTextSelection(sel).toggleHighlight({ color }).focus().run();
-      } else {
-        editor.chain().focus().toggleHighlight({ color }).run();
-      }
-      setActiveTopDialog(null);
-    },
-    [editor]
-  );
+    const updateSelectionMetrics = () => {
+      if (timerId) return;
+      timerId = requestAnimationFrame(() => {
+        timerId = null;
+        if (!editor || editor.isDestroyed) return;
+        const { state } = editor;
+        const { from, to, empty } = state.selection;
+        const textBefore = state.doc.textBetween(0, from, '\n');
+        const lineNum = textBefore.split('\n').length;
+        const lastNewlineIdx = textBefore.lastIndexOf('\n');
+        const colNum = lastNewlineIdx === -1 ? from + 1 : from - lastNewlineIdx;
 
-  const handleResetHighlight = useCallback(() => {
-    if (!editor) return;
-    const sel = savedSelectionRef.current;
-    if (sel && sel.from !== sel.to) {
-      editor.chain().setTextSelection(sel).unsetHighlight().focus().run();
-    } else {
-      editor.chain().focus().unsetHighlight().run();
-    }
-    setActiveTopDialog(null);
-  }, [editor]);
+        const selectedText = empty ? '' : state.doc.textBetween(from, to, '\n');
+        const encoder = new TextEncoder();
+        const selectedBytes = encoder.encode(selectedText).length;
 
-  const getSelectedText = useCallback((): string => {
-    if (!editor) return '';
-    const { state } = editor;
-    const { from, to, empty } = state.selection;
-    if (empty) return '';
-    return state.doc.textBetween(from, to, '\n');
-  }, [editor]);
+        const fullHtml = editor.getHTML();
+        const totalBytes = encoder.encode(fullHtml).length;
 
-  // Right-Click Context Menu Clipboard & Selection Actions
-  const handleContextCopy = useCallback(() => {
-    if (!editor) return;
-    editor.commands.focus();
-    const selectedText = getSelectedText();
-    if (selectedText && selectedText.trim() !== '') {
-      navigator.clipboard.writeText(selectedText).then(() => {
-        setToastMessage('✓ 선택 영역이 클립보드에 복사되었습니다.');
-      }).catch(() => {
-        try {
-          document.execCommand('copy');
-          setToastMessage('✓ 선택 영역이 복사되었습니다.');
-        } catch (_) {
-          setToastMessage('⚠ 복사 실패 (Ctrl+C를 이용하세요)');
-        }
-      });
-    } else if (contextMenu?.isInTable) {
-      const cellText = editor.getAttributes('tableCell').textContent || editor.getAttributes('tableHeader').textContent || '';
-      if (cellText) {
-        navigator.clipboard.writeText(cellText).then(() => {
-          setToastMessage('✓ 표 셀 데이터가 복사되었습니다.');
-        }).catch(() => {
-          setToastMessage('⚠ 복사 실패');
+        setEditorMetrics({
+          line: lineNum,
+          col: colNum,
+          selectedChars: selectedText.length,
+          selectedBytes,
         });
-      }
-    }
-    setContextMenu(null);
-    setTimeout(() => setToastMessage(null), 2000);
-  }, [editor, getSelectedText, contextMenu]);
 
-  const handleContextCut = useCallback(() => {
-    if (!editor) return;
-    editor.commands.focus();
-    const selectedText = getSelectedText();
-    if (selectedText && selectedText.trim() !== '') {
-      navigator.clipboard.writeText(selectedText).then(() => {
-        editor.chain().focus().deleteSelection().run();
-        setToastMessage('✓ 잘라내기 완료.');
-      }).catch(() => {
-        try {
-          document.execCommand('cut');
-          setToastMessage('✓ 잘라내기 완료.');
-        } catch (_) {
-          editor.chain().focus().deleteSelection().run();
-          setToastMessage('✓ 선택 영역이 삭제되었습니다.');
-        }
+        updateMetrics({
+          line: lineNum,
+          col: colNum,
+          selectedChars: selectedText.length,
+          selectedBytes,
+          totalBytes,
+          lastModifiedAt: row?.updatedAt || Date.now(),
+        });
       });
-    }
-    setContextMenu(null);
-    setTimeout(() => setToastMessage(null), 2000);
-  }, [editor, getSelectedText]);
+    };
 
-  const handleContextPaste = useCallback(async () => {
-    if (!editor) return;
-    editor.commands.focus();
-    try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        editor.chain().focus().insertContent(text).run();
-        setToastMessage('✓ 클립보드 내용 붙여넣기 완료.');
-      } else {
-        setToastMessage('💡 클립보드 붙여넣기는 에디터에서 [Ctrl+V]를 눌러주세요.');
-      }
-    } catch (err) {
-      setToastMessage('💡 붙여넣기는 에디터 내부에서 단축키 [Ctrl+V]를 눌러주세요!');
-    }
-    setContextMenu(null);
-    setTimeout(() => setToastMessage(null), 3000);
-  }, [editor]);
+    editor.on('selectionUpdate', updateSelectionMetrics);
+    editor.on('update', updateSelectionMetrics);
+    updateSelectionMetrics();
 
-  const handleContextDeleteSelection = useCallback(() => {
-    if (!editor) return;
-    editor.commands.focus();
-    editor.chain().focus().deleteSelection().run();
-    setContextMenu(null);
-  }, [editor]);
+    return () => {
+      if (timerId) cancelAnimationFrame(timerId);
+      editor.off('selectionUpdate', updateSelectionMetrics);
+      editor.off('update', updateSelectionMetrics);
+    };
+  }, [editor, row?.updatedAt, updateMetrics]);
 
   // High-performance direct content loader for editor
   const loadContentWithProgress = useCallback(
@@ -2345,11 +2305,9 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     }
   };
 
-  if (!isOpen || !row) return null;
-
   const handleCellChange = (columnId: string, val: any) => {
     setHasUnsavedChanges(true);
-    const targetCol = columns.find((c) => c.id === columnId);
+    const targetCol = columnMap.get(columnId);
     const cleaned = typeof val === 'string' && targetCol?.type !== 'richText' ? cleanTextValue(val) : val;
 
     setCurrentRowData((prev) => ({
@@ -2369,53 +2327,6 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       editor.chain().focus().insertSticker({ color }).run();
     }
   };
-
-  // Insert a new table safely with multi-layer fallback to guarantee creation
-  const handleInsertNewTable = useCallback((rows: number, cols: number, withHeader: boolean = true) => {
-    if (!editor) return;
-    try {
-      const { state } = editor;
-      const { $from } = state.selection;
-      let isInsideTable = false;
-      for (let d = $from.depth; d > 0; d--) {
-        if ($from.node(d).type.name === 'table') {
-          isInsideTable = true;
-          break;
-        }
-      }
-
-      if (isInsideTable) {
-        // If cursor is already inside a table, insert paragraph after table first
-        editor.chain().focus('end').insertContent('<p></p>').insertTable({ rows, cols, withHeaderRow: withHeader }).run();
-      } else {
-        const success = editor.chain().focus().insertTable({ rows, cols, withHeaderRow: withHeader }).run();
-        if (!success) {
-          editor.chain().focus('end').insertContent('<p></p>').insertTable({ rows, cols, withHeaderRow: withHeader }).run();
-        }
-      }
-      setActiveTopDialog(null);
-      setActiveRibbonTab('format');
-      setToastMessage(`✓ ${cols}열 × ${rows}행 표가 삽입되었습니다.`);
-      setTimeout(() => setToastMessage(null), 2500);
-    } catch (err) {
-      console.error('Failed to insert table:', err);
-      // Fallback: direct HTML table injection
-      let tableHtml = '<table class="wonbee-rich-table wonbee-table-border-all" data-border-style="all"><tbody>';
-      for (let r = 0; r < rows; r++) {
-        tableHtml += '<tr>';
-        for (let c = 0; c < cols; c++) {
-          tableHtml += (r === 0 && withHeader) ? '<th>헤더</th>' : '<td>내용</td>';
-        }
-        tableHtml += '</tr>';
-      }
-      tableHtml += '</tbody></table><p></p>';
-      editor.chain().focus().insertContent(tableHtml).run();
-      setActiveTopDialog(null);
-      setActiveRibbonTab('format');
-      setToastMessage(`✓ ${cols}열 × ${rows}행 표가 삽입되었습니다.`);
-      setTimeout(() => setToastMessage(null), 2500);
-    }
-  }, [editor]);
 
   const openTableDialog = useCallback(() => {
     setTableDialogRows(3);
@@ -2478,220 +2389,51 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   }, [editor, imageDialogUrl, imageDialogAlt, imageDialogWidth]);
 
   // Auto-detect language of selected text and wrap in code block with syntax highlighting
-  const handleAutoHighlightSelection = useCallback(() => {
-    if (!editor) return;
-    const selected = getSelectedText();
-    if (!selected || selected.trim() === '') {
-      // Nothing selected: toggle default code block
-      editor.chain().focus().toggleCodeBlock().run();
-      return;
+//   const handleAutoHighlightSelection = useCallback(() => {
+//     if (!editor) return;
+//     const selected = getSelectedText();
+//     if (!selected || selected.trim() === '') {
+//       // Nothing selected: toggle default code block
+//       editor.chain().focus().toggleCodeBlock().run();
+//       return;
+//     }
+//
+//     const langDetection = detectLanguage(selected);
+//     const hasJavaPattern = /\b(package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|public\s+static\s+final)\b/.test(selected);
+//     const isShebang = /^(#!\/(bin|usr\/bin|usr\/local\/bin)\/(bash|sh|zsh|env\s+bash|env\s+sh))/m.test(selected);
+//
+//     let detectedLang = langDetection.isCode ? langDetection.language : 'plaintext';
+//     if (isShebang || /\b(sudo\s+|chmod\s+|curl\s+|docker\s+|npm\s+run|git\s+|grep\s+|echo\s+)/.test(selected)) {
+//       detectedLang = 'bash';
+//     } else if (hasJavaPattern) {
+//       detectedLang = 'java';
+//     } else if (/\b(SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(selected)) {
+//       detectedLang = 'sql';
+//     }
+//
+//     if (editor.isActive('codeBlock')) {
+//       editor.chain().focus().updateAttributes('codeBlock', { language: detectedLang }).run();
+//     } else {
+//       editor.chain().focus().setCodeBlock({ language: detectedLang }).run();
+//     }
+
+  const handleApplyMarkdownPaste = useCallback(() => {
+    handleApplyPastedData(mdPasteInputText, mdPasteMode);
+  }, [mdPasteInputText, mdPasteMode]);
+
+  const handleSaveAndClose = useCallback(async () => {
+    const ok = await handleSave();
+    if (ok) {
+      setShowExitConfirm(false);
+      onClose();
     }
+  }, [handleSave, onClose]);
 
-    const langDetection = detectLanguage(selected);
-    const hasJavaPattern = /\b(package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|public\s+static\s+final)\b/.test(selected);
-    const isShebang = /^(#!\/(bin|usr\/bin|usr\/local\/bin)\/(bash|sh|zsh|env\s+bash|env\s+sh))/m.test(selected);
-
-    let detectedLang = langDetection.isCode ? langDetection.language : 'plaintext';
-    if (isShebang || /\b(sudo\s+|chmod\s+|curl\s+|docker\s+|npm\s+run|git\s+|grep\s+|echo\s+)/.test(selected)) {
-      detectedLang = 'bash';
-    } else if (hasJavaPattern) {
-      detectedLang = 'java';
-    } else if (/\b(SELECT\s+|INSERT\s+INTO|UPDATE\s+|DELETE\s+FROM|CREATE\s+TABLE)\b/i.test(selected)) {
-      detectedLang = 'sql';
-    }
-
-    if (editor.isActive('codeBlock')) {
-      editor.chain().focus().updateAttributes('codeBlock', { language: detectedLang }).run();
-    } else {
-      editor.chain().focus().setCodeBlock({ language: detectedLang }).run();
-    }
-
-    setToastMessage(`✓ 선택 데이터가 [${detectedLang.toUpperCase()}] 코드 블록으로 자동 변환되었습니다.`);
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getSelectedText]);
-
-  // Bash Shell Script Insertion & Conversion
-  const handleInsertBashBlock = useCallback(() => {
-    if (!editor) return;
-    const selected = getSelectedText();
-    if (selected && selected.trim() !== '') {
-      if (editor.isActive('codeBlock')) {
-        editor.chain().focus().updateAttributes('codeBlock', { language: 'bash' }).run();
-      } else {
-        editor.chain().focus().setCodeBlock({ language: 'bash' }).run();
-      }
-      setToastMessage('✓ 선택 영역이 Bash 쉘 스크립트 코드 블록으로 변환되었습니다.');
-      setTimeout(() => setToastMessage(null), 2500);
-      return;
-    }
-
-    const sampleBash = `#!/bin/bash\n# Bash Shell Script\nset -euo pipefail\n\necho "배쉬 쉘 스크립트 실행 시작..."\ncurl -sSf https://api.example.com/health | grep "status: ok"\n`;
-    editor.chain().focus().insertContent({
-      type: 'codeBlock',
-      attrs: { language: 'bash' },
-      content: [{ type: 'text', text: sampleBash }],
-    }).run();
-    setToastMessage('✓ Bash 쉘 스크립트 템플릿이 삽입되었습니다.');
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getSelectedText]);
-
-  const handleInsertSqlBlock = useCallback(() => {
-    if (!editor) return;
-    const selected = getSelectedText();
-    if (selected && selected.trim() !== '') {
-      if (editor.isActive('codeBlock')) {
-        editor.chain().focus().updateAttributes('codeBlock', { language: 'sql' }).run();
-      } else {
-        editor.chain().focus().setCodeBlock({ language: 'sql' }).run();
-      }
-      setToastMessage('✓ 선택 영역이 SQL 쿼리 블록으로 변환되었습니다.');
-      setTimeout(() => setToastMessage(null), 2500);
-      return;
-    }
-
-    const sampleSql = `-- SQL Query\nSELECT \n  id, name, created_at \nFROM \n  my_table \nWHERE \n  status = 'ACTIVE'\nORDER BY \n  id DESC;`;
-    editor.chain().focus().insertContent({
-      type: 'codeBlock',
-      attrs: { language: 'sql' },
-      content: [{ type: 'text', text: sampleSql }],
-    }).run();
-    setToastMessage('✓ SQL 쿼리 템플릿이 삽입되었습니다.');
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getSelectedText]);
-
-  const handleInsertJavaBlock = useCallback(() => {
-    if (!editor) return;
-    const selected = getSelectedText();
-    if (selected && selected.trim() !== '') {
-      if (editor.isActive('codeBlock')) {
-        editor.chain().focus().updateAttributes('codeBlock', { language: 'java' }).run();
-      } else {
-        editor.chain().focus().setCodeBlock({ language: 'java' }).run();
-      }
-      setToastMessage('✓ 선택 영역이 Java 코드 블록으로 변환되었습니다.');
-      setTimeout(() => setToastMessage(null), 2500);
-      return;
-    }
-
-    const sampleJava = `// Java Source Code\npublic class Solution {\n    public static void main(String[] args) {\n        System.out.println("Hello, World!");\n    }\n}`;
-    editor.chain().focus().insertContent({
-      type: 'codeBlock',
-      attrs: { language: 'java' },
-      content: [{ type: 'text', text: sampleJava }],
-    }).run();
-    setToastMessage('✓ Java 클래스 템플릿이 삽입되었습니다.');
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getSelectedText]);
-
-  const handleInsertCBlock = useCallback(() => {
-    if (!editor) return;
-    const selected = getSelectedText();
-    if (selected && selected.trim() !== '') {
-      if (editor.isActive('codeBlock')) {
-        editor.chain().focus().updateAttributes('codeBlock', { language: 'c' }).run();
-      } else {
-        editor.chain().focus().setCodeBlock({ language: 'c' }).run();
-      }
-      setToastMessage('✓ 선택 영역이 C / Pro*C 코드 블록으로 변환되었습니다.');
-      setTimeout(() => setToastMessage(null), 2500);
-      return;
-    }
-
-    const sampleC = `/* C / Pro*C 전문 처리 소스 코드 */\n#include <stdio.h>\n#include <string.h>\n\nint processTransaction(const char* szFileID, char* szXCH_DIS, char* szPRC_PRG_DIS) {\n    if (!memcmp(szFileID, "TC33", 4)) { /* 미지급 전문 */\n        writeLog("미지급 전문 처리 [%s]", szFileID);\n        memcpy(szXCH_DIS, "21", sizeof(szXCH_DIS) - 1);  /* 21: 미지급 */\n    } else {\n        writeLog("일반 전문 처리 [%s]", szFileID);\n        memcpy(szXCH_DIS, "22", sizeof(szXCH_DIS) - 1);  /* 22: 일반 */\n    }\n    memcpy(szPRC_PRG_DIS, "31", sizeof(szPRC_PRG_DIS) - 1);  /* 31: 결제원수신 */\n    return 0;\n}`;
-    editor.chain().focus().insertContent({
-      type: 'codeBlock',
-      attrs: { language: 'c' },
-      content: [{ type: 'text', text: sampleC }],
-    }).run();
-    setToastMessage('✓ C / Pro*C 코드 블록 템플릿이 삽입되었습니다.');
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getSelectedText]);
-
-  const handleInsertPythonBlock = useCallback(() => {
-    if (!editor) return;
-    const selected = getSelectedText();
-    if (selected && selected.trim() !== '') {
-      if (editor.isActive('codeBlock')) {
-        editor.chain().focus().updateAttributes('codeBlock', { language: 'python' }).run();
-      } else {
-        editor.chain().focus().setCodeBlock({ language: 'python' }).run();
-      }
-      setToastMessage('✓ 선택 영역이 Python 코드 블록으로 변환되었습니다.');
-      setTimeout(() => setToastMessage(null), 2500);
-      return;
-    }
-
-    const samplePython = `# Python Data Pipeline\nimport os\nimport pandas as pd\n\ndef process_records(file_path: str) -> pd.DataFrame:\n    df = pd.read_csv(file_path)\n    summary = df.groupby('status').agg({'amount': 'sum', 'id': 'count'})\n    return summary\n\nif __name__ == '__main__':\n    print("데이터 처리 파이프라인 기동 완료")\n`;
-    editor.chain().focus().insertContent({
-      type: 'codeBlock',
-      attrs: { language: 'python' },
-      content: [{ type: 'text', text: samplePython }],
-    }).run();
-    setToastMessage('✓ Python 코드 블록 템플릿이 삽입되었습니다.');
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getSelectedText]);
-
-  const handleInsertMarkdownTemplate = useCallback((tpl: MarkdownLanguageTemplate) => {
-    if (!editor) return;
-    const html = markdownToHtml(tpl.markdown);
-    editor.chain().focus().insertContent(html).run();
-    setToastMessage(`✓ ${tpl.name} 마크다운 템플릿이 삽입되었습니다. (코드 블록 하이라이팅 적용)`);
-    setTimeout(() => setToastMessage(null), 3000);
-  }, [editor]);
-
-  const handleDownloadMarkdownTemplate = useCallback((tpl: MarkdownLanguageTemplate) => {
-    const blob = new Blob([tpl.markdown], { type: 'text/markdown;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = tpl.filename;
-    a.click();
-    URL.revokeObjectURL(url);
-    setToastMessage(`✓ ${tpl.filename} 마크다운 템플릿 파일이 다운로드되었습니다.`);
-    setTimeout(() => setToastMessage(null), 3000);
-  }, []);
-
-  const handlePasteCodeFromClipboard = async () => {
-    if (!editor) return;
-    try {
-      const text = await navigator.clipboard.readText();
-      if (!text) return;
-      const langDetection = detectLanguage(text);
-      const isJava = /\b(package\s+[a-zA-Z0-9_.]+|import\s+java|public\s+class|class\s+\w+|public\s+static\s+void|System\.out|public\s+static\s+final)\b/.test(text);
-      const language = langDetection.isCode ? langDetection.language : (isJava ? 'java' : 'auto');
-      const formattedText = formatJavaOrGeneralCode(text);
-
-      editor.chain().focus().insertContent({
-        type: 'codeBlock',
-        attrs: { language },
-        content: [{ type: 'text', text: formattedText }],
-      }).run();
-    } catch (err) {
-      console.warn('Failed to read clipboard text', err);
-    }
-  };
-
-  const handleFormatCodeInEditor = () => {
-    if (!editor) return;
-    const { state } = editor;
-    const { $from } = state.selection;
-    if ($from.parent.type.name === 'codeBlock') {
-      const codeText = $from.parent.textContent;
-      const formatted = formatJavaOrGeneralCode(codeText);
-      const start = $from.start();
-      const end = $from.end();
-      editor.chain().focus().command(({ tr }) => {
-        tr.replaceWith(start, end, state.schema.text(formatted));
-        return true;
-      }).run();
-    } else {
-      const plain = editor.getText();
-      if (!plain) return;
-      const formatted = formatJavaOrGeneralCode(plain);
-      const lang = detectLanguage(formatted).language || 'java';
-      editor.commands.setContent(`<pre><code class="language-${lang}">${escapeHtml(formatted)}</code></pre>`);
-    }
-  };
+  const handleDiscardAndClose = useCallback(() => {
+    setShowExitConfirm(false);
+    setHasUnsavedChanges(false);
+    onClose();
+  }, [onClose]);
 
   const handleMdFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -2720,6 +2462,88 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     }
     if (mdFileInputRef.current) mdFileInputRef.current.value = '';
   };
+
+  const handleFormatExpress = useCallback(() => {
+    if (!editor) return;
+    const { from, to, empty } = editor.state.selection;
+    const targetText = empty
+      ? editor.state.doc.textBetween(0, editor.state.doc.content.size, '\n')
+      : editor.state.doc.textBetween(from, to, '\n');
+
+    if (!targetText.trim()) {
+      setToastMessage('⚠ 정제할 텍스트가 없습니다.');
+      setTimeout(() => setToastMessage(null), 2000);
+      return;
+    }
+
+    const { formatted, detectedType } = autoFormatExpress(targetText);
+    const lang = detectedType === 'JSON' ? 'json' : detectedType.includes('XML') ? 'markup' : detectedType === 'SQL' ? 'sql' : 'plaintext';
+
+    if (empty) {
+      editor.commands.setContent(`<pre><code class="language-${lang}">${escapeHtml(formatted)}</code></pre>`);
+    } else {
+      editor.chain().focus().deleteSelection().insertContent(`<pre><code class="language-${lang}">${escapeHtml(formatted)}</code></pre>`).run();
+    }
+    setToastMessage(`✨ Format Express: [${detectedType}] 스마트 정제가 완료되었습니다.`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, [editor, setToastMessage]);
+
+  const handlePasteCodeFromClipboard = async () => {
+    if (!editor) return;
+    try {
+      const text = await navigator.clipboard.readText();
+      if (!text) return;
+      const langDetection = detectLanguage(text);
+      const language = langDetection.isCode ? langDetection.language : 'auto';
+      const formattedText = formatJavaOrGeneralCode(text);
+      editor.chain().focus().insertContent({
+        type: 'codeBlock',
+        attrs: { language },
+        content: [{ type: 'text', text: formattedText }],
+      }).run();
+    } catch (err) {
+      console.warn('Failed to read clipboard text', err);
+    }
+  };
+
+  const handleInsertMarkdownTemplate = useCallback((tpl: MarkdownLanguageTemplate) => {
+    if (!editor) return;
+    const html = markdownToHtml(tpl.markdown);
+    editor.chain().focus().insertContent(html).run();
+    setToastMessage(`✓ ${tpl.name} 마크다운 템플릿이 삽입되었습니다.`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, [editor, setToastMessage]);
+
+  const handleDownloadMarkdownTemplate = useCallback((tpl: MarkdownLanguageTemplate) => {
+    const blob = new Blob([tpl.markdown], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = tpl.filename;
+    a.click();
+    URL.revokeObjectURL(url);
+    setToastMessage(`✓ ${tpl.filename} 마크다운 파일이 다운로드되었습니다.`);
+    setTimeout(() => setToastMessage(null), 3000);
+  }, [setToastMessage]);
+
+  const handleInsertVideo = useCallback(() => {
+    if (!editor || !videoDialogUrl.trim()) return;
+    const url = videoDialogUrl.trim();
+    if (url.includes('youtube.com') || url.includes('youtu.be')) {
+      (editor.commands as any).setYoutubeVideo({ src: url });
+    } else {
+      editor.chain().focus().insertContent(`<video controls src="${escapeHtml(url)}" class="rounded-xl max-w-full my-3 shadow-md"></video><p></p>`).run();
+    }
+    setActiveTopDialog(null);
+    setVideoDialogUrl('');
+    setToastMessage('✓ 동영상이 삽입되었습니다.');
+    setTimeout(() => setToastMessage(null), 2500);
+  }, [editor, videoDialogUrl, setActiveTopDialog, setToastMessage]);
+
+  const openVideoDialog = useCallback(() => {
+    setVideoDialogUrl('');
+    setActiveTopDialog('video');
+  }, [setActiveTopDialog]);
 
   const handleCopyAsMarkdown = () => {
     if (!editor) return;
@@ -2941,535 +2765,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     };
   }, [editor]);
 
-  // Helper to get active table attributes for highlighting current selection in UI
-  const getActiveTableAttrs = useCallback(() => {
-    if (!editor) return { borderStyle: 'all', borderColor: null };
-    const { state } = editor;
-    const { $from } = state.selection;
-    for (let d = $from.depth; d > 0; d--) {
-      const node = $from.node(d);
-      if (node.type.name === 'table') {
-        return {
-          borderStyle: (node.attrs.borderStyle || 'all') as 'all' | 'outer' | 'thick' | 'horizontal' | 'none',
-          borderColor: (node.attrs.borderColor || null) as string | null,
-        };
-      }
-    }
-    if (lastTablePosRef.current !== null) {
-      try {
-        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
-        if (nodeAtLast && nodeAtLast.type.name === 'table') {
-          return {
-            borderStyle: (nodeAtLast.attrs.borderStyle || 'all') as 'all' | 'outer' | 'thick' | 'horizontal' | 'none',
-            borderColor: (nodeAtLast.attrs.borderColor || null) as string | null,
-          };
-        }
-      } catch {
-        // ignore
-      }
-    }
-    let firstAttrs: { borderStyle: 'all' | 'outer' | 'thick' | 'horizontal' | 'none'; borderColor: string | null } = {
-      borderStyle: 'all',
-      borderColor: null,
-    };
-    state.doc.descendants((node) => {
-      if (node.type.name === 'table') {
-        firstAttrs = {
-          borderStyle: (node.attrs.borderStyle || 'all') as any,
-          borderColor: node.attrs.borderColor || null,
-        };
-        return false;
-      }
-      return true;
-    });
-    return firstAttrs;
-  }, [editor]);
-
-  // Table Border Style Handler
-  const setTableBorderStyle = useCallback((style: 'all' | 'outer' | 'thick' | 'horizontal' | 'none', color?: string) => {
-    if (!editor) return;
-    const { state, view } = editor;
-    const { tr, selection } = state;
-    const { $from } = selection;
-
-    let foundTablePos: number | null = null;
-    let currentAttrs: Record<string, any> = {};
-
-    // 1. Check if cursor is directly inside a table
-    for (let d = $from.depth; d > 0; d--) {
-      const node = $from.node(d);
-      if (node.type.name === 'table') {
-        foundTablePos = $from.before(d);
-        currentAttrs = node.attrs;
-        break;
-      }
-    }
-
-    // 2. Check if we recently tracked a table position
-    if (foundTablePos === null && lastTablePosRef.current !== null) {
-      try {
-        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
-        if (nodeAtLast && nodeAtLast.type.name === 'table') {
-          foundTablePos = lastTablePosRef.current;
-          currentAttrs = nodeAtLast.attrs;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    // 3. If not, look for the first table in the document
-    if (foundTablePos === null) {
-      state.doc.descendants((node, pos) => {
-        if (node.type.name === 'table' && foundTablePos === null) {
-          foundTablePos = pos;
-          currentAttrs = node.attrs;
-          return false;
-        }
-        return true;
-      });
-    }
-
-    if (foundTablePos !== null) {
-      lastTablePosRef.current = foundTablePos;
-      const targetColor = color !== undefined ? color : currentAttrs.borderColor;
-      const newAttrs = {
-        ...currentAttrs,
-        borderStyle: style,
-        ...(targetColor !== undefined ? { borderColor: targetColor || null } : {}),
-      };
-      tr.setNodeMarkup(foundTablePos, undefined, newAttrs);
-      view.dispatch(tr);
-
-      // Direct DOM update fallback for instantaneous visual reactivity
-      try {
-        const domNode = view.nodeDOM(foundTablePos) as HTMLElement | null;
-        if (domNode) {
-          const tableEl = (domNode.tagName === 'TABLE' ? domNode : domNode.querySelector('table')) as HTMLTableElement | null;
-          if (tableEl) {
-            tableEl.classList.remove(
-              'wonbee-table-border-all',
-              'wonbee-table-border-outer',
-              'wonbee-table-border-thick',
-              'wonbee-table-border-horizontal',
-              'wonbee-table-border-none'
-            );
-            tableEl.classList.add('wonbee-rich-table', `wonbee-table-border-${style}`);
-            tableEl.setAttribute('data-border-style', style);
-            if (targetColor) {
-              tableEl.setAttribute('data-border-color', targetColor);
-              tableEl.style.setProperty('--table-border-color', targetColor);
-              tableEl.style.borderColor = targetColor;
-            } else {
-              tableEl.removeAttribute('data-border-color');
-              tableEl.style.removeProperty('--table-border-color');
-              tableEl.style.borderColor = '';
-            }
-
-            const effectiveColor = targetColor || 'var(--table-border-color, #475569)';
-            const gridColor = targetColor || 'var(--table-border-color, #cbd5e1)';
-
-            if (style === 'outer') {
-              tableEl.style.border = `2.5px solid ${effectiveColor}`;
-              tableEl.style.outline = `1px solid ${effectiveColor}`;
-            } else if (style === 'thick') {
-              tableEl.style.border = `3.5px solid ${effectiveColor}`;
-              tableEl.style.outline = `1px solid ${effectiveColor}`;
-            } else if (style === 'horizontal') {
-              tableEl.style.borderLeft = 'none';
-              tableEl.style.borderRight = 'none';
-              tableEl.style.borderTop = `2px solid ${effectiveColor}`;
-              tableEl.style.borderBottom = `2px solid ${effectiveColor}`;
-              tableEl.style.outline = 'none';
-            } else if (style === 'none') {
-              tableEl.style.border = 'none';
-              tableEl.style.outline = 'none';
-            } else {
-              tableEl.style.border = `1px solid ${gridColor}`;
-              tableEl.style.outline = 'none';
-            }
-
-            const cells = tableEl.querySelectorAll('td, th');
-            cells.forEach((cellEl) => {
-              const el = cellEl as HTMLElement;
-              if (el.getAttribute('data-cell-border')) {
-                return;
-              }
-              if (style === 'outer' || style === 'none') {
-                el.style.border = 'none';
-              } else if (style === 'horizontal') {
-                el.style.borderLeft = 'none';
-                el.style.borderRight = 'none';
-                el.style.borderTop = `1px solid ${gridColor}`;
-                el.style.borderBottom = `1px solid ${gridColor}`;
-              } else {
-                el.style.border = `1px solid ${gridColor}`;
-              }
-            });
-          }
-        }
-      } catch {
-        // ignore fallback errors
-      }
-
-      const labels: Record<string, string> = {
-        all: '모든 테두리 (격자)',
-        outer: '바깥쪽 테두리만',
-        thick: '굵은 바깥 테두리',
-        horizontal: '가로 구분선만',
-        none: '테두리 없음',
-      };
-      setToastMessage(`✓ 표 테두리: ${labels[style] || style} 적용`);
-      setTimeout(() => setToastMessage(null), 2500);
-    } else {
-      setToastMessage('표를 먼저 클릭하거나 선택해주세요.');
-      setTimeout(() => setToastMessage(null), 2000);
-    }
-  }, [editor]);
-
-  // Table Border Color Handler
-  const setTableBorderColor = useCallback((color: string) => {
-    if (!editor) return;
-    const { state, view } = editor;
-    const { tr, selection } = state;
-    const { $from } = selection;
-
-    let foundTablePos: number | null = null;
-    let currentAttrs: Record<string, any> = {};
-
-    for (let d = $from.depth; d > 0; d--) {
-      const node = $from.node(d);
-      if (node.type.name === 'table') {
-        foundTablePos = $from.before(d);
-        currentAttrs = node.attrs;
-        break;
-      }
-    }
-
-    if (foundTablePos === null && lastTablePosRef.current !== null) {
-      try {
-        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
-        if (nodeAtLast && nodeAtLast.type.name === 'table') {
-          foundTablePos = lastTablePosRef.current;
-          currentAttrs = nodeAtLast.attrs;
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    if (foundTablePos === null) {
-      state.doc.descendants((node, pos) => {
-        if (node.type.name === 'table' && foundTablePos === null) {
-          foundTablePos = pos;
-          currentAttrs = node.attrs;
-          return false;
-        }
-        return true;
-      });
-    }
-
-    if (foundTablePos !== null) {
-      lastTablePosRef.current = foundTablePos;
-      const newAttrs = {
-        ...currentAttrs,
-        borderColor: color || null,
-      };
-      tr.setNodeMarkup(foundTablePos, undefined, newAttrs);
-      view.dispatch(tr);
-
-      // Direct DOM update fallback
-      try {
-        const domNode = view.nodeDOM(foundTablePos) as HTMLElement | null;
-        if (domNode) {
-          const tableEl = (domNode.tagName === 'TABLE' ? domNode : domNode.querySelector('table')) as HTMLTableElement | null;
-          if (tableEl) {
-            if (color) {
-              tableEl.setAttribute('data-border-color', color);
-              tableEl.style.setProperty('--table-border-color', color);
-              tableEl.style.borderColor = color;
-            } else {
-              tableEl.removeAttribute('data-border-color');
-              tableEl.style.removeProperty('--table-border-color');
-              tableEl.style.borderColor = '';
-            }
-
-            const style = currentAttrs.borderStyle || 'all';
-            const effectiveColor = color || 'var(--table-border-color, #475569)';
-            const gridColor = color || 'var(--table-border-color, #cbd5e1)';
-
-            if (style === 'outer') {
-              tableEl.style.border = `2.5px solid ${effectiveColor}`;
-              tableEl.style.outline = `1px solid ${effectiveColor}`;
-            } else if (style === 'thick') {
-              tableEl.style.border = `3.5px solid ${effectiveColor}`;
-              tableEl.style.outline = `1px solid ${effectiveColor}`;
-            } else if (style === 'horizontal') {
-              tableEl.style.borderTop = `2px solid ${effectiveColor}`;
-              tableEl.style.borderBottom = `2px solid ${effectiveColor}`;
-            } else if (style === 'none') {
-              tableEl.style.border = 'none';
-              tableEl.style.outline = 'none';
-            } else {
-              tableEl.style.border = `1px solid ${gridColor}`;
-            }
-
-            const cells = tableEl.querySelectorAll('td, th');
-            cells.forEach((cellEl) => {
-              const el = cellEl as HTMLElement;
-              if (el.getAttribute('data-cell-border')) {
-                return;
-              }
-              if (style === 'outer' || style === 'none') {
-                el.style.border = 'none';
-              } else if (style === 'horizontal') {
-                el.style.borderLeft = 'none';
-                el.style.borderRight = 'none';
-                el.style.borderTop = `1px solid ${gridColor}`;
-                el.style.borderBottom = `1px solid ${gridColor}`;
-              } else {
-                el.style.border = `1px solid ${gridColor}`;
-              }
-            });
-          }
-        }
-      } catch {
-        // ignore fallback errors
-      }
-
-      setToastMessage(color ? `✓ 표 테두리 색상(${color})이 적용되었습니다.` : '✓ 표 테두리 색상이 기본값으로 초기화되었습니다.');
-      setTimeout(() => setToastMessage(null), 2000);
-    } else {
-      setToastMessage('표를 먼저 클릭하거나 선택해주세요.');
-      setTimeout(() => setToastMessage(null), 2000);
-    }
-  }, [editor]);
-
-  // Insert a new paragraph before the currently focused/active table
-  const handleInsertParagraphBeforeTable = useCallback(() => {
-    if (!editor) return;
-    const { state, dispatch } = editor.view;
-    const { $from } = state.selection;
-
-    let foundTablePos: number | null = null;
-    for (let d = $from.depth; d > 0; d--) {
-      const node = $from.node(d);
-      if (node.type.name === 'table') {
-        foundTablePos = $from.before(d);
-        break;
-      }
-    }
-
-    if (foundTablePos === null && lastTablePosRef.current !== null) {
-      try {
-        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
-        if (nodeAtLast && nodeAtLast.type.name === 'table') {
-          foundTablePos = lastTablePosRef.current;
-        }
-      } catch (_) {}
-    }
-
-    if (foundTablePos === null) {
-      state.doc.descendants((node, pos) => {
-        if (node.type.name === 'table' && foundTablePos === null) {
-          foundTablePos = pos;
-          return false;
-        }
-        return true;
-      });
-    }
-
-    if (foundTablePos !== null) {
-      const tr = state.tr.insert(foundTablePos, state.schema.nodes.paragraph.create());
-      const resolved = tr.doc.resolve(foundTablePos + 1);
-      tr.setSelection(TextSelection.near(resolved));
-      dispatch(tr.scrollIntoView());
-      editor.view.focus();
-      setToastMessage('✓ 표 위에 새 본문 줄(단락)이 삽입되었습니다.');
-      setTimeout(() => setToastMessage(null), 2000);
-    } else {
-      setToastMessage('표를 먼저 클릭하거나 선택해주세요.');
-      setTimeout(() => setToastMessage(null), 2000);
-    }
-  }, [editor]);
-
-  // Insert a new paragraph after the currently focused/active table
-  const handleInsertParagraphAfterTable = useCallback(() => {
-    if (!editor) return;
-    const { state, dispatch } = editor.view;
-    const { $from } = state.selection;
-
-    let foundTablePos: number | null = null;
-    let tableSize = 0;
-    for (let d = $from.depth; d > 0; d--) {
-      const node = $from.node(d);
-      if (node.type.name === 'table') {
-        foundTablePos = $from.before(d);
-        tableSize = node.nodeSize;
-        break;
-      }
-    }
-
-    if (foundTablePos === null && lastTablePosRef.current !== null) {
-      try {
-        const nodeAtLast = state.doc.nodeAt(lastTablePosRef.current);
-        if (nodeAtLast && nodeAtLast.type.name === 'table') {
-          foundTablePos = lastTablePosRef.current;
-          tableSize = nodeAtLast.nodeSize;
-        }
-      } catch (_) {}
-    }
-
-    if (foundTablePos === null) {
-      state.doc.descendants((node, pos) => {
-        if (node.type.name === 'table' && foundTablePos === null) {
-          foundTablePos = pos;
-          tableSize = node.nodeSize;
-          return false;
-        }
-        return true;
-      });
-    }
-
-    if (foundTablePos !== null) {
-      const targetPos = foundTablePos + tableSize;
-      const tr = state.tr.insert(targetPos, state.schema.nodes.paragraph.create());
-      const resolved = tr.doc.resolve(targetPos + 1);
-      tr.setSelection(TextSelection.near(resolved));
-      dispatch(tr.scrollIntoView());
-      editor.view.focus();
-      setToastMessage('✓ 표 아래에 새 본문 줄(단락)이 삽입되었습니다.');
-      setTimeout(() => setToastMessage(null), 2000);
-    } else {
-      setToastMessage('표를 먼저 클릭하거나 선택해주세요.');
-      setTimeout(() => setToastMessage(null), 2000);
-    }
-  }, [editor]);
-
-  // Inspect active cell/header attributes
-  const getActiveTableCellAttrs = useCallback(() => {
-    if (!editor) return { cellBorder: null, cellBorderColor: null, backgroundColor: null };
-    return {
-      cellBorder: editor.getAttributes('tableCell').cellBorder || editor.getAttributes('tableHeader').cellBorder || null,
-      cellBorderColor: editor.getAttributes('tableCell').cellBorderColor || editor.getAttributes('tableHeader').cellBorderColor || null,
-      backgroundColor: editor.getAttributes('tableCell').backgroundColor || editor.getAttributes('tableHeader').backgroundColor || null,
-    };
-  }, [editor]);
-
-  // Apply cell-specific border style
-  const applyCellBorder = useCallback((borderStyle: string | null, borderColor?: string) => {
-    if (!editor) return;
-    const currentCellAttrs = getActiveTableCellAttrs();
-    const targetColor = borderColor !== undefined ? borderColor : (currentCellAttrs.cellBorderColor || '#475569');
-
-    editor.chain().focus()
-      .setCellAttribute('cellBorder', borderStyle)
-      .setCellAttribute('cellBorderColor', borderStyle ? targetColor : null)
-      .run();
-
-    const labels: Record<string, string> = {
-      all: '모든 테두리',
-      thick: '굵은 테두리',
-      dashed: '점선 테두리',
-      bottom: '아래쪽 강조선',
-      top: '위쪽 강조선',
-      left: '왼쪽 테두리',
-      right: '오른쪽 테두리',
-      none: '테두리 없음',
-    };
-
-    setToastMessage(
-      borderStyle
-        ? `✓ 선택한 셀에 [${labels[borderStyle] || borderStyle}] 테두리가 적용되었습니다.`
-        : '✓ 선택한 셀의 테두리가 기본 표 스타일로 초기화되었습니다.'
-    );
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getActiveTableCellAttrs]);
-
-  // Apply cell-specific border color
-  const applyCellBorderColor = useCallback((color: string) => {
-    if (!editor) return;
-    const currentCellAttrs = getActiveTableCellAttrs();
-    const currentBorderStyle = currentCellAttrs.cellBorder || 'all';
-    editor.chain().focus()
-      .setCellAttribute('cellBorder', currentBorderStyle)
-      .setCellAttribute('cellBorderColor', color)
-      .run();
-    setToastMessage(`✓ 선택한 셀의 테두리 색상이 변경되었습니다.`);
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, getActiveTableCellAttrs]);
-
-  // Custom Font Size Setter
-  const setFontSize = useCallback((size: string) => {
-    if (!editor) return;
-    if (!size || size === 'default') {
-      (editor.chain().focus() as any).setMark('textStyle', { fontSize: null }).removeEmptyTextStyle().run();
-    } else {
-      (editor.chain().focus() as any).setMark('textStyle', { fontSize: size }).run();
-    }
-  }, [editor]);
-
-  // Custom Font Family Setter
-  const setFontFamily = useCallback((family: string) => {
-    if (!editor) return;
-    if (!family || family === 'default') {
-      (editor.chain().focus() as any).unsetFontFamily().run();
-    } else {
-      (editor.chain().focus() as any).setFontFamily(family).run();
-    }
-  }, [editor]);
-
-  // Indent (Tab / Sink List)
-  const handleIndent = useCallback(() => {
-    if (!editor) return;
-    if (editor.isActive('listItem')) {
-      (editor.chain().focus() as any).sinkListItem('listItem').run();
-      return;
-    }
-    if (editor.isActive('taskItem')) {
-      (editor.chain().focus() as any).sinkListItem('taskItem').run();
-      return;
-    }
-    editor.chain().focus().insertContent('    ').run();
-  }, [editor]);
-
-  // Outdent (Shift+Tab / Lift List / Lift Quote)
-  const handleOutdent = useCallback(() => {
-    if (!editor) return;
-    if (editor.isActive('listItem')) {
-      (editor.chain().focus() as any).liftListItem('listItem').run();
-      return;
-    }
-    if (editor.isActive('taskItem')) {
-      (editor.chain().focus() as any).liftListItem('taskItem').run();
-      return;
-    }
-    editor.chain().focus().lift('blockquote').run();
-  }, [editor]);
-
-  // Video Insertion Dialog opener & handler
-  const openVideoDialog = useCallback(() => {
-    setVideoDialogUrl('');
-    setActiveTopDialog('video');
-  }, []);
-
-  const handleInsertVideo = useCallback(() => {
-    if (!editor || !videoDialogUrl.trim()) return;
-    const url = videoDialogUrl.trim();
-    if (url.includes('youtube.com') || url.includes('youtu.be')) {
-      (editor.commands as any).setYoutubeVideo({ src: url });
-    } else {
-      editor.chain().focus().insertContent(`<video controls src="${escapeHtml(url)}" class="rounded-xl max-w-full my-3 shadow-md"></video><p></p>`).run();
-    }
-    setActiveTopDialog(null);
-    setVideoDialogUrl('');
-    setToastMessage('✓ 동영상이 삽입되었습니다.');
-    setTimeout(() => setToastMessage(null), 2500);
-  }, [editor, videoDialogUrl]);
-
-  const primaryColumn = columns.find((c) => c.isPrimaryKey) || columns[0];
   const primaryTitle = primaryColumn ? String(currentRowData[primaryColumn.id] || '새 데이터 항목') : '데이터 세부 정보';
   const currentTargetName = richTargets.find((t) => t.id === selectedTargetId)?.name || '내용';
+
+  if (!isOpen || !row) return null;
 
   return (
     <div
@@ -3495,1704 +2794,77 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           </div>
         )}
 
-        {/* TOP LEVEL DIALOGS OVERLAY (최상단 팝업 다이얼로그 - 스크롤 및 툴바 overflow 잘림 없이 최상단에 완전 표시) */}
-        {activeTopDialog && (
-          <div
-            id="rich-editor-top-dialog-backdrop"
-            className="absolute inset-0 z-50 flex items-start justify-center pt-8 md:pt-14 pb-8 px-4 bg-stone-950/45 backdrop-blur-[2px] animate-in fade-in duration-150 overflow-y-auto"
-            onClick={() => setActiveTopDialog(null)}
-          >
-            <div
-              id="rich-editor-top-dialog"
-              className="bg-white dark:bg-[#1e1e1e] rounded-2xl border border-stone-200 dark:border-[#383838] shadow-2xl w-full max-w-md md:max-w-lg animate-in zoom-in-95 duration-150 overflow-hidden text-stone-900 dark:text-stone-100 my-auto"
-              onClick={(e) => e.stopPropagation()}
-            >
-              {/* DIALOG 1: 새 표 삽입 (Table Dialog) */}
-              {activeTopDialog === 'table' && (
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                        <TableIcon className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                          새 표 삽입
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-mono font-medium">Excel 스타일</span>
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          원하는 행과 열 크기를 지정하여 스프레드시트형 표를 삽입합니다
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* 1. Matrix Grid Picker */}
-                  <div>
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-2 flex items-center justify-between">
-                      <span>1. 마우스 드래그로 빠른 선택</span>
-                      <span className="text-[10px] text-stone-400 font-mono">최대 10×10</span>
-                    </div>
-                    <div className="flex justify-center p-3 bg-stone-50 dark:bg-[#141414] rounded-xl border border-stone-200/70 dark:border-stone-800">
-                      <TableGridPicker
-                        onInsert={(rows, cols) => {
-                          handleInsertNewTable(rows, cols, tableDialogHeaderRow);
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* 2. Manual Inputs */}
-                  <div>
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-2">
-                      2. 행 및 열 크기 직접 입력
-                    </div>
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="p-3 bg-stone-50 dark:bg-[#141414] rounded-xl border border-stone-200/70 dark:border-stone-800 flex items-center justify-between">
-                        <span className="text-xs font-medium text-stone-600 dark:text-stone-300">열 (Columns)</span>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setTableDialogCols((c) => Math.max(1, c - 1))}
-                            className="w-7 h-7 rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors text-xs font-bold"
-                          >
-                            -
-                          </button>
-                          <input
-                            type="number"
-                            min={1}
-                            max={12}
-                            value={tableDialogCols}
-                            onChange={(e) => setTableDialogCols(Math.max(1, Math.min(12, parseInt(e.target.value) || 1)))}
-                            className="w-10 text-center font-mono font-bold text-sm bg-transparent border-b border-amber-500 focus:outline-hidden"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setTableDialogCols((c) => Math.min(12, c + 1))}
-                            className="w-7 h-7 rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors text-xs font-bold"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="p-3 bg-stone-50 dark:bg-[#141414] rounded-xl border border-stone-200/70 dark:border-stone-800 flex items-center justify-between">
-                        <span className="text-xs font-medium text-stone-600 dark:text-stone-300">행 (Rows)</span>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => setTableDialogRows((r) => Math.max(1, r - 1))}
-                            className="w-7 h-7 rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors text-xs font-bold"
-                          >
-                            -
-                          </button>
-                          <input
-                            type="number"
-                            min={1}
-                            max={30}
-                            value={tableDialogRows}
-                            onChange={(e) => setTableDialogRows(Math.max(1, Math.min(30, parseInt(e.target.value) || 1)))}
-                            className="w-10 text-center font-mono font-bold text-sm bg-transparent border-b border-amber-500 focus:outline-hidden"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => setTableDialogRows((r) => Math.min(30, r + 1))}
-                            className="w-7 h-7 rounded-lg bg-white dark:bg-stone-800 border border-stone-200 dark:border-stone-700 flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300 transition-colors text-xs font-bold"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* 3. Quick Presets */}
-                  <div>
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-1.5">
-                      3. 추천 규격 프리셋
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {[
-                        { label: '2×2 (4분할)', rows: 2, cols: 2 },
-                        { label: '3×3 (기본 표)', rows: 3, cols: 3 },
-                        { label: '4×3 (요약 표)', rows: 3, cols: 4 },
-                        { label: '5×4 (상세 목록)', rows: 4, cols: 5 },
-                        { label: '2열 비교표', rows: 4, cols: 2 },
-                      ].map((preset) => (
-                        <button
-                          key={preset.label}
-                          type="button"
-                          onClick={() => {
-                            setTableDialogRows(preset.rows);
-                            setTableDialogCols(preset.cols);
-                          }}
-                          className={`px-2.5 py-1 rounded-lg text-xs border transition-colors ${
-                            tableDialogRows === preset.rows && tableDialogCols === preset.cols
-                              ? 'bg-amber-100 dark:bg-amber-950/60 border-amber-400 text-amber-800 dark:text-amber-300 font-semibold'
-                              : 'bg-stone-50 dark:bg-[#252525] border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700'
-                          }`}
-                        >
-                          {preset.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* 4. Options */}
-                  <div className="pt-2 border-t border-stone-100 dark:border-stone-800">
-                    <label className="flex items-center gap-2 cursor-pointer text-xs text-stone-700 dark:text-stone-300 select-none">
-                      <input
-                        type="checkbox"
-                        checked={tableDialogHeaderRow}
-                        onChange={(e) => setTableDialogHeaderRow(e.target.checked)}
-                        className="rounded border-stone-300 text-amber-500 focus:ring-amber-500 w-4 h-4"
-                      />
-                      <span>첫 번째 행을 제목 헤더(Header)로 강조</span>
-                    </label>
-                  </div>
-
-                  {/* 5. Footer Buttons */}
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      취소
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleInsertNewTable(tableDialogRows, tableDialogCols, tableDialogHeaderRow)}
-                      className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
-                    >
-                      <TableIcon className="w-3.5 h-3.5" />
-                      <span>{tableDialogCols}열 × {tableDialogRows}행 표 삽입하기</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* DIALOG 2: 코드 & MD 통합 대화상자 (Unified Code & Markdown Dialog) */}
-              {(activeTopDialog === 'code' || activeTopDialog === 'md_paste') && (() => {
-                const currentTab = activeTopDialog === 'md_paste' ? 'md_paste' : codeDialogTab;
-                const parsedData = mdPasteInputText.trim()
-                  ? convertTextDataToEditorContent(mdPasteInputText, {
-                      format: dataPasteFormat,
-                      delimiter: dataPasteDelimiter,
-                      hasHeader: dataPasteHasHeader,
-                      outputType: dataPasteOutputType,
-                      tableWidth: dataPasteTableWidth,
-                    })
-                  : null;
-
-                return (
-                  <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
-                    {/* 헤더 영역 */}
-                    <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                      <div className="flex items-center gap-2.5">
-                        <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                          <Code className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                            코드 & 마크다운(MD) 통합 도구
-                            <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 font-mono font-medium">C · SQL · Java · MD</span>
-                          </h3>
-                          <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                            언어별 코드 블록 삽입, 마크다운 붙여넣기/미리보기 및 파일 가져오기를 한곳에서 처리합니다
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTopDialog(null)}
-                        className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                  {/* Unified Navigation Tabs */}
-                  <div className="flex rounded-xl bg-stone-100 dark:bg-[#141414] p-1 gap-1">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCodeDialogTab('templates');
-                              if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
-                            }}
-                            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                              currentTab === 'templates'
-                                ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
-                                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                            }`}
-                          >
-                            <Code className="w-3.5 h-3.5" />
-                            <span>주요 언어 템플릿</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCodeDialogTab('md_paste');
-                              if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
-                            }}
-                            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                              currentTab === 'md_paste'
-                                ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
-                                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                            }`}
-                          >
-                            <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
-                            <span>MD · 엑셀(CSV) · TXT 붙여넣기</span>
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCodeDialogTab('tools');
-                              if (activeTopDialog === 'md_paste') setActiveTopDialog('code');
-                            }}
-                            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                              currentTab === 'tools'
-                                ? 'bg-white dark:bg-[#282828] text-amber-700 dark:text-amber-400 shadow-xs'
-                                : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                            }`}
-                          >
-                            <FileText className="w-3.5 h-3.5 text-sky-500" />
-                            <span>문서 & 파일 도구</span>
-                          </button>
-                        </div>
-
-                  {/* TAB 1: 주요 언어 템플릿 */}
-                  {currentTab === 'templates' && (
-                    <div className="space-y-4">
-
-                  {/* Selected Text Highlight Banner */}
-                  {editor && !editor.state.selection.empty && (
-                    <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between gap-3 animate-in fade-in">
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
-                          <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                          <span>선택된 텍스트가 있습니다</span>
-                        </div>
-                        <div className="text-[11px] text-stone-500 dark:text-stone-400 truncate">
-                          "{getSelectedText().slice(0, 35)}..."
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleAutoHighlightSelection();
-                          setActiveTopDialog(null);
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold whitespace-nowrap shadow-xs transition-colors"
-                      >
-                        자동 하이라이팅 적용
-                      </button>
-                    </div>
-                  )}
-
-                  {/* Language Templates Grid */}
-                  <div>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[11px] font-semibold text-stone-700 dark:text-stone-300">
-                        주요 언어 코드 블록 템플릿
-                      </span>
-                      <span className="text-[10px] text-stone-400">선택 영역 변환 또는 템플릿 삽입</span>
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleInsertCBlock();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
-                      >
-                        <div className="p-1.5 rounded-lg bg-blue-500/10 text-blue-600 dark:text-blue-400">
-                          <Cpu className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">C / Pro*C</div>
-                          <div className="text-[10px] text-stone-400">전문 처리 & 메모리 복사</div>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleInsertSqlBlock();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
-                      >
-                        <div className="p-1.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                          <Database className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">SQL 쿼리</div>
-                          <div className="text-[10px] text-stone-400">SELECT / JOIN / DDL</div>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleInsertJavaBlock();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
-                      >
-                        <div className="p-1.5 rounded-lg bg-orange-500/10 text-orange-600 dark:text-orange-400">
-                          <FileCode className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Java 클래스</div>
-                          <div className="text-[10px] text-stone-400">Spring 서비스 & 엔티티</div>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleInsertPythonBlock();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
-                      >
-                        <div className="p-1.5 rounded-lg bg-sky-500/10 text-sky-600 dark:text-sky-400">
-                          <Code className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Python</div>
-                          <div className="text-[10px] text-stone-400">데이터 처리 & 파이프라인</div>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleInsertBashBlock();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
-                      >
-                        <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                          <Terminal className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">Bash / Shell</div>
-                          <div className="text-[10px] text-stone-400">명령어 & 쉘 스크립트</div>
-                        </div>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => {
-                          if (editor) {
-                            const template = `function calculateMetrics(data: any[]) {\n  return data.map(item => ({\n    id: item.id,\n    total: item.quantity * item.price\n  }));\n}`;
-                            editor.chain().focus().insertContent(`<pre><code class="language-typescript">${escapeHtml(template)}</code></pre><p></p>`).run();
-                          }
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50 dark:bg-[#222222] hover:bg-stone-100 dark:hover:bg-[#2a2a2a] text-left transition-colors flex items-center gap-2.5"
-                      >
-                        <div className="p-1.5 rounded-lg bg-yellow-500/10 text-yellow-600 dark:text-yellow-400">
-                          <Code className="w-4 h-4" />
-                        </div>
-                        <div>
-                          <div className="text-xs font-bold text-stone-800 dark:text-stone-200">JavaScript / TS</div>
-                          <div className="text-[10px] text-stone-400">JS / TS 함수 작성</div>
-                        </div>
-                      </button>
-                    </div>
-
-                    {/* Quick Shortcut to MD Paste */}
-                    <div className="pt-2 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between text-xs">
-                      <span className="text-stone-500 dark:text-stone-400 text-[11px]">마크다운 파일 전체를 붙여넣고 미리보기 하려면:</span>
-                      <button
-                        type="button"
-                        onClick={() => setCodeDialogTab('md_paste')}
-                        className="text-amber-600 dark:text-amber-400 font-semibold hover:underline flex items-center gap-1 text-[11px]"
-                      >
-                        <ClipboardPaste className="w-3.5 h-3.5" />
-                        <span>MD 붙여넣기 탭 열기 →</span>
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-                {/* TAB 3: 문서 & 파일 도구 */}
-                {currentTab === 'tools' && (
-                  <div className="space-y-4">
-                  {/* Utilities */}
-                  <div className="pt-2 border-t border-stone-100 dark:border-stone-800">
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-1.5">
-                      코드 편의 도구
-                    </div>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handlePasteCodeFromClipboard();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center gap-2 transition-colors"
-                      >
-                        <ClipboardPaste className="w-3.5 h-3.5 text-indigo-500" />
-                        <span>클립보드 코드 붙여넣기</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleFormatCodeInEditor();
-                          setActiveTopDialog(null);
-                        }}
-                        className="p-2 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center gap-2 transition-colors"
-                      >
-                        <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                        <span>들여쓰기 자동 정렬</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Markdown 연동 */}
-                  <div className="pt-2 border-t border-stone-100 dark:border-stone-800 space-y-2.5">
-                    <div className="flex items-center justify-between">
-                      <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 flex items-center gap-1.5">
-                        <span>마크다운 (.md) 파일 연동</span>
-                        <span className="text-[9px] px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium">
-                          코드 블록 하이라이팅 연동
-                        </span>
-                      </div>
-                      <span className="text-[10px] text-stone-400">드래그&드롭 지원</span>
-                    </div>
-
-                    {/* Basic Markdown Import / Export Actions */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handlePasteMarkdownFromClipboard();
-                          setActiveTopDialog(null);
-                        }}
-                        className="py-1.5 px-2.5 rounded-xl border border-amber-300 dark:border-amber-700 bg-amber-50/80 dark:bg-amber-950/40 hover:bg-amber-100 dark:hover:bg-amber-900/60 text-amber-900 dark:text-amber-200 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
-                        title="클립보드에 복사된 마크다운을 에디터에 즉시 하이라이트 서식으로 붙여넣어 적용합니다."
-                      >
-                        <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                        <span>클립보드 붙여넣기</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveTopDialog('md_paste');
-                        }}
-                        className="py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
-                        title="마크다운 붙여넣기 및 실시간 하이라이트 미리보기 전용 대화상자를 엽니다."
-                      >
-                        <Edit3 className="w-3.5 h-3.5 text-amber-500" />
-                        <span>MD 붙여넣기 창</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveTopDialog(null);
-                          mdFileInputRef.current?.click();
-                        }}
-                        className="py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
-                        title="마크다운 파일을 가져옵니다. C, SQL, Java 등 코드 블록의 언어가 자동으로 인식되어 하이라이팅이 적용됩니다."
-                      >
-                        <FileDown className="w-3.5 h-3.5 text-sky-500" />
-                        <span>MD 파일 열기</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          handleCopyAsMarkdown();
-                          setActiveTopDialog(null);
-                        }}
-                        className="py-1.5 px-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs flex items-center justify-center gap-1.5 transition-colors"
-                        title="현재 에디터의 내용을 주요 언어 코드 블록(```c, ```sql 등)이 보존된 마크다운으로 복사합니다."
-                      >
-                        <Download className="w-3.5 h-3.5 text-emerald-500" />
-                        <span>MD 복사</span>
-                      </button>
-                    </div>
-
-                    {/* Major Language Markdown Document Templates */}
-                    <div className="pt-2 border-t border-stone-100/80 dark:border-stone-800/80">
-                      <div className="text-[10px] font-semibold text-stone-500 dark:text-stone-400 mb-2 flex items-center justify-between">
-                        <span>주요 언어 마크다운 문서 템플릿 (코드 블록 포함)</span>
-                        <span className="text-[9px] text-stone-400">클릭 시 에디터 삽입 / .md 다운로드</span>
-                      </div>
-                      <div className="max-h-48 overflow-y-auto pr-1 space-y-1.5 custom-scrollbar">
-                        {MARKDOWN_LANGUAGE_TEMPLATES.map((tpl) => (
-                          <div
-                            key={tpl.id}
-                            className="p-2 rounded-xl border border-stone-200/80 dark:border-stone-700/60 bg-stone-50/70 dark:bg-[#1e1e1e] flex items-center justify-between gap-2 hover:border-amber-500/40 transition-all"
-                          >
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-bold bg-stone-200 dark:bg-stone-800 text-stone-700 dark:text-stone-300">
-                                  {tpl.badge}
-                                </span>
-                                <span className="text-xs font-medium text-stone-800 dark:text-stone-200 truncate">
-                                  {tpl.name}
-                                </span>
-                              </div>
-                              <p className="text-[10px] text-stone-400 dark:text-stone-500 truncate mt-0.5">
-                                {tpl.description}
-                              </p>
-                            </div>
-                            <div className="flex items-center gap-1 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  handleInsertMarkdownTemplate(tpl);
-                                  setActiveTopDialog(null);
-                                }}
-                                className="px-2 py-1 rounded-lg bg-stone-200 dark:bg-stone-800 hover:bg-amber-500 hover:text-stone-950 dark:hover:bg-amber-500 dark:hover:text-stone-950 text-stone-700 dark:text-stone-300 text-[11px] font-medium transition-colors"
-                                title="에디터에 이 마크다운 템플릿을 삽입합니다."
-                              >
-                                삽입
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  handleDownloadMarkdownTemplate(tpl);
-                                }}
-                                className="p-1 rounded-lg border border-stone-200 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 transition-colors"
-                                title="이 템플릿을 .md 파일로 다운로드합니다."
-                              >
-                                <FileDown className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-                  {/* TAB 2: 마크다운(.md), 엑셀/CSV, TXT 복사 붙여넣기 및 크기 조절 통합 도구 */}
-                  {currentTab === 'md_paste' && (() => {
-                    const parsedData = mdPasteInputText.trim()
-                      ? convertTextDataToEditorContent(mdPasteInputText, {
-                          format: dataPasteFormat,
-                          delimiter: dataPasteDelimiter,
-                          hasHeader: dataPasteHasHeader,
-                          outputType: dataPasteOutputType,
-                          tableWidth: dataPasteTableWidth,
-                        })
-                      : null;
-
-                    return (
-                      <div className="space-y-3.5">
-                        {/* 1. Mode Switcher & Top Action Buttons */}
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center gap-1 bg-stone-100 dark:bg-stone-800/80 p-1 rounded-xl">
-                            <button
-                              type="button"
-                              onClick={() => setMdPasteActiveTab('input')}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                                mdPasteActiveTab === 'input'
-                                  ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
-                                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                              }`}
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                              <span>데이터 입력 / 붙여넣기</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setMdPasteActiveTab('preview')}
-                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors ${
-                                mdPasteActiveTab === 'preview'
-                                  ? 'bg-white dark:bg-stone-700 text-amber-800 dark:text-amber-300 shadow-xs'
-                                  : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
-                              }`}
-                            >
-                              <Eye className="w-3.5 h-3.5" />
-                              <span>실시간 서식 & 표 미리보기</span>
-                              {parsedData && (
-                                <span className="ml-1 px-1.5 py-0.2 rounded text-[10px] bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-200 font-mono">
-                                  {parsedData.detectedFormat.toUpperCase()}
-                                </span>
-                              )}
-                            </button>
-                          </div>
-
-                          <div className="flex items-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                try {
-                                  const text = await navigator.clipboard.readText();
-                                  if (text) {
-                                    setMdPasteInputText(text);
-                                    setToastMessage('✓ 클립보드 내용을 붙여넣기 창에 가져왔습니다.');
-                                    setTimeout(() => setToastMessage(null), 2500);
-                                  }
-                                } catch {
-                                  setToastMessage('클립보드 읽기 권한이 필요합니다. 아래 입력창을 클릭 후 Ctrl+V를 누르세요.');
-                                  setTimeout(() => setToastMessage(null), 3000);
-                                }
-                              }}
-                              className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors font-medium shadow-2xs"
-                              title="운영체제 클립보드 내용 직접 가져오기"
-                            >
-                              <ClipboardPaste className="w-3.5 h-3.5 text-amber-500" />
-                              <span>클립보드 가져오기</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => mdFileInputRef.current?.click()}
-                              className="px-2.5 py-1.5 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 hover:bg-stone-50 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-200 text-xs flex items-center gap-1.5 transition-colors font-medium shadow-2xs"
-                              title="파일 열기 (.md, .csv, .tsv, .txt, .log)"
-                            >
-                              <FileDown className="w-3.5 h-3.5 text-sky-500" />
-                              <span>파일 열기 (.md/.csv/.txt)</span>
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* 2. Format & Layout Controls Bar (CSV, TXT, MD, Table Width, Delimiters) */}
-                        <div className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700/80 bg-stone-50/70 dark:bg-[#181818] space-y-2 text-xs">
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-                            {/* Format selector */}
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">데이터 형식:</span>
-                              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] p-0.5">
-                                {[
-                                  { val: 'auto', label: '⚡ 자동 감지' },
-                                  { val: 'csv', label: '📊 엑셀/CSV' },
-                                  { val: 'md', label: '📝 마크다운(.md)' },
-                                  { val: 'txt', label: '📄 텍스트(.txt)' },
-                                ].map((fmt) => (
-                                  <button
-                                    key={fmt.val}
-                                    type="button"
-                                    onClick={() => setDataPasteFormat(fmt.val as any)}
-                                    className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                                      dataPasteFormat === fmt.val
-                                        ? 'bg-amber-500 text-white font-semibold shadow-2xs'
-                                        : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#2c2c2c]'
-                                    }`}
-                                  >
-                                    {fmt.label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Delimiter selector (for Excel / CSV) */}
-                            {(dataPasteFormat === 'auto' || dataPasteFormat === 'csv') && (
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">구분자:</span>
-                                <select
-                                  value={dataPasteDelimiter}
-                                  onChange={(e) => setDataPasteDelimiter(e.target.value as any)}
-                                  className="px-2 py-1 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] text-stone-800 dark:text-stone-200 text-[11px] focus:outline-none focus:border-amber-500"
-                                >
-                                  <option value="auto">자동 구분 감지</option>
-                                  <option value="tab">탭 (\t, 엑셀 기본 복사)</option>
-                                  <option value="comma">쉼표 (, CSV 표준)</option>
-                                  <option value="pipe">파이프 (|)</option>
-                                  <option value="semicolon">세미콜론 (;)</option>
-                                  <option value="space">공백 (Space)</option>
-                                </select>
-                              </div>
-                            )}
-
-                            {/* Header checkbox */}
-                            {(dataPasteFormat === 'auto' || dataPasteFormat === 'csv') && (
-                              <label className="flex items-center gap-1.5 text-[11px] text-stone-700 dark:text-stone-300 cursor-pointer select-none">
-                                <input
-                                  type="checkbox"
-                                  checked={dataPasteHasHeader}
-                                  onChange={(e) => setDataPasteHasHeader(e.target.checked)}
-                                  className="rounded border-stone-300 text-amber-600 focus:ring-amber-500"
-                                />
-                                <span>첫 행을 표 제목(헤더)으로 지정</span>
-                              </label>
-                            )}
-                          </div>
-
-                          {/* Row 2: Table Width & Output Type */}
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 pt-1 border-t border-stone-200/60 dark:border-stone-700/60">
-                            {/* Table & Code Block Width (Directly addressing: 테이블, 코드 블럭 크기 조절 가능하게 해줘 최대크기로 하지말고) */}
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">표/블록 크기:</span>
-                              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] p-0.5">
-                                {[
-                                  { val: 'auto', label: '자동 (내용 맞춤)', title: '최대 크기 강제 방지: 내용 너비에 맞춰 유연하게 조절' },
-                                  { val: '50%', label: '50% 너비', title: '에디터 본문의 50% 크기' },
-                                  { val: '75%', label: '75% 너비', title: '에디터 본문의 75% 크기' },
-                                  { val: '100%', label: '100% (최대)', title: '에디터 전체 너비 (100%)' },
-                                ].map((w) => (
-                                  <button
-                                    key={w.val}
-                                    type="button"
-                                    onClick={() => setDataPasteTableWidth(w.val)}
-                                    className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                                      dataPasteTableWidth === w.val
-                                        ? 'bg-amber-500 text-white font-semibold shadow-2xs'
-                                        : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#2c2c2c]'
-                                    }`}
-                                    title={w.title}
-                                  >
-                                    {w.label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-
-                            {/* Output representation */}
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-stone-500 dark:text-stone-400 font-medium shrink-0">출력 형태:</span>
-                              <div className="inline-flex rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#202020] p-0.5">
-                                {[
-                                  { val: 'table', label: '리치 테이블(표)' },
-                                  { val: 'md_table', label: '마크다운 표' },
-                                  { val: 'code_block', label: '코드 블록' },
-                                  { val: 'plain', label: '일반 텍스트' },
-                                ].map((ot) => (
-                                  <button
-                                    key={ot.val}
-                                    type="button"
-                                    onClick={() => setDataPasteOutputType(ot.val as any)}
-                                    className={`px-2 py-1 rounded-md text-[11px] font-medium transition-colors ${
-                                      dataPasteOutputType === ot.val
-                                        ? 'bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900 font-semibold'
-                                        : 'text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-[#2c2c2c]'
-                                    }`}
-                                  >
-                                    {ot.label}
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Quick Presets / Samples Bar */}
-                        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-[11px]">
-                          <span className="text-stone-400 shrink-0 font-medium">빠른 예시:</span>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const excelSample = "거래일자\t거래구분\t계좌번호\t예금주\t금액\t처리상태\n2025-01-10\t급여이체\t1002-123-456789\t홍길동\t3,500,000\t정상\n2025-01-11\t타행송금\t020-987-654321\t이우리\t1,200,000\t정상\n2025-01-12\t공과금자동이체\t1002-555-888888\t한국전력\t84,200\t정상";
-                              setMdPasteInputText(excelSample);
-                              setDataPasteFormat('csv');
-                              setDataPasteDelimiter('tab');
-                              setToastMessage('✓ 엑셀 탭 구분 표 예시를 입력창에 불러왔습니다.');
-                              setTimeout(() => setToastMessage(null), 2500);
-                            }}
-                            className="px-2 py-1 rounded-md border border-emerald-300 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 hover:bg-emerald-100 text-emerald-800 dark:text-emerald-300 shrink-0 transition-colors font-medium"
-                          >
-                            + 엑셀 복사 예시
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const csvSample = "코드,금융상품명,분류,기본금리,최고우대금리,가입대상\nWON-01,WON플러스 예금,정기예금,연 3.45%,연 3.85%,개인/법인\nWON-02,우리 비상금 대출,신용대출,연 4.12%,연 4.60%,직장인\nWON-03,주택청약종합저축,청약통장,연 2.80%,연 3.00%,국민누구나";
-                              setMdPasteInputText(csvSample);
-                              setDataPasteFormat('csv');
-                              setDataPasteDelimiter('comma');
-                              setToastMessage('✓ CSV 파일 형식 표 예시를 불러왔습니다.');
-                              setTimeout(() => setToastMessage(null), 2500);
-                            }}
-                            className="px-2 py-1 rounded-md border border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 hover:bg-sky-100 text-sky-800 dark:text-sky-300 shrink-0 transition-colors font-medium"
-                          >
-                            + CSV 데이터 예시
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const mdSample = `# 우리금융 시스템 연동 가이드\n\n대외 기관 결제 모듈 호출 시 다음과 같은 구조체를 정의하여 전달합니다.\n\n\`\`\`c\ntypedef struct {\n    char szBankCode[4];    /* 은행코드: 020 */\n    char szAcctNo[16];     /* 계좌번호 */\n    long lTransAmount;     /* 거래금액 */\n} ST_TRANS_BODY;\n\`\`\`\n\n> **안내**: 결제 타임아웃은 기본 30초로 설정되어 있습니다.`;
-                              setMdPasteInputText(mdSample);
-                              setDataPasteFormat('md');
-                              setToastMessage('✓ 마크다운 문서 & 코드 블록 예시를 불러왔습니다.');
-                              setTimeout(() => setToastMessage(null), 2500);
-                            }}
-                            className="px-2 py-1 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 hover:bg-amber-100 text-amber-800 dark:text-amber-300 shrink-0 transition-colors font-medium"
-                          >
-                            + 마크다운 문서 예시
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const txtSample = `[2025-01-15 09:00:01] INFO  대외연계 시스템 연결 성공 (Session ID: WON-7821)\n[2025-01-15 09:00:15] INFO  실시간 타행이체 1,420건 정상 처리 완료 (평균응답 32ms)\n[2025-01-15 09:01:40] WARN  타행망 네트워크 지연 감지 (응답시간 480ms 소요)\n[2025-01-15 09:02:10] INFO  일괄 배치 마감 작업 완료`;
-                              setMdPasteInputText(txtSample);
-                              setDataPasteFormat('txt');
-                              setToastMessage('✓ 텍스트 로그(.txt) 예시를 불러왔습니다.');
-                              setTimeout(() => setToastMessage(null), 2500);
-                            }}
-                            className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 text-stone-700 dark:text-stone-300 shrink-0 transition-colors font-medium"
-                          >
-                            + 텍스트 로그 예시
-                          </button>
-                        </div>
-
-                        {/* Tab 1: Input Editor */}
-                        {mdPasteActiveTab === 'input' && (
-                          <div className="space-y-2">
-                            <div className="relative">
-                              <textarea
-                                value={mdPasteInputText}
-                                onChange={(e) => setMdPasteInputText(e.target.value)}
-                                placeholder={`엑셀에서 복사한 데이터(Ctrl+C), CSV/TXT 텍스트, 또는 마크다운(.md) 내용을 여기에 붙여넣으세요 (Ctrl+V)\n\n[예시 1: 엑셀 복사 데이터]\n일자\t거래유형\t금액\t상태\n2025-01-10\t급여이체\t3,500,000\t완료\n\n[예시 2: CSV 데이터]\n이름,직급,부서,연락처\n홍길동,과장,IT개발부,010-1234-5678\n\n[예시 3: 마크다운 & 코드 블록]\n# 제목 및 가이드\n\`\`\`c\nmemcpy(szXCH_DIS, "22", sizeof(szXCH_DIS)- 1);\n\`\`\``}
-                                className="w-full h-64 p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-stone-900 dark:text-stone-100 font-mono text-xs focus:ring-2 focus:ring-amber-500 focus:border-amber-500 focus:outline-hidden transition-all resize-y"
-                              />
-                              {mdPasteInputText && (
-                                <button
-                                  type="button"
-                                  onClick={() => setMdPasteInputText('')}
-                                  className="absolute top-3 right-3 px-2 py-0.5 rounded text-[10px] bg-stone-200 dark:bg-stone-700 hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-950 dark:hover:text-red-300 text-stone-600 dark:text-stone-300 transition-colors"
-                                >
-                                  지우기
-                                </button>
-                              )}
-                            </div>
-
-                            {/* Live Detection Info Banner */}
-                            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-stone-500 dark:text-stone-400">
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span>
-                                  {mdPasteInputText.length.toLocaleString()} 글자 · 약 {mdPasteInputText.split('\n').length.toLocaleString()} 줄
-                                </span>
-                                {parsedData && (
-                                  <>
-                                    <span className="text-stone-300 dark:text-stone-700">•</span>
-                                    {parsedData.detectedFormat === 'csv' && (
-                                      <span className="px-2 py-0.5 rounded-md bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-300 dark:border-emerald-700 text-emerald-700 dark:text-emerald-300 font-semibold flex items-center gap-1">
-                                        <TableIcon className="w-3.5 h-3.5" />
-                                        엑셀/CSV 표 감지: {parsedData.colCount}열 × {parsedData.rowCount}행 (구분자: {parsedData.detectedDelimiterName})
-                                      </span>
-                                    )}
-                                    {parsedData.detectedFormat === 'md' && (
-                                      <span className="px-2 py-0.5 rounded-md bg-amber-50 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 font-semibold flex items-center gap-1">
-                                        <FileCode className="w-3.5 h-3.5" />
-                                        마크다운 서식 및 코드 블록 감지
-                                      </span>
-                                    )}
-                                    {parsedData.detectedFormat === 'txt' && (
-                                      <span className="px-2 py-0.5 rounded-md bg-stone-100 dark:bg-stone-800 border border-stone-300 dark:border-stone-700 text-stone-700 dark:text-stone-300 font-semibold flex items-center gap-1">
-                                        <FileText className="w-3.5 h-3.5" />
-                                        일반 텍스트(.txt) 감지
-                                      </span>
-                                    )}
-                                  </>
-                                )}
-                              </div>
-                              <span className="text-amber-600 dark:text-amber-400 font-medium">
-                                💡 너비 조절: 표와 코드 블록은 상단 너비 옵션으로 자동/50%/75%/100% 지정 가능
-                              </span>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Tab 2: HTML & Syntax Highlighting Live Preview */}
-                        {mdPasteActiveTab === 'preview' && (
-                          <div className="space-y-2">
-                            <div className="w-full h-64 p-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-[#1e1e1e] overflow-y-auto prose dark:prose-invert max-w-none text-xs">
-                              {parsedData ? (
-                                <div
-                                  style={{
-                                    width: dataPasteTableWidth !== 'auto' ? dataPasteTableWidth : 'auto',
-                                    maxWidth: '100%',
-                                  }}
-                                  dangerouslySetInnerHTML={{
-                                    __html:
-                                      parsedData.detectedFormat === 'md'
-                                        ? markdownToHtml(parsedData.markdownEquivalent || mdPasteInputText)
-                                        : parsedData.html,
-                                  }}
-                                />
-                              ) : (
-                                <div className="h-full flex flex-col items-center justify-center text-stone-400">
-                                  <FileText className="w-8 h-8 mb-2 opacity-40" />
-                                  <p className="text-xs">입력창에 엑셀, CSV, TXT, 또는 마크다운 텍스트를 입력하면 실시간 변환 결과가 미리보기에 표시됩니다.</p>
-                                </div>
-                              )}
-                            </div>
-                            <div className="text-[11px] text-stone-500 dark:text-stone-400 flex items-center justify-between">
-                              <span>미리보기는 에디터에 실제 삽입될 때의 표 너비({dataPasteTableWidth}) 및 코드 하이라이트와 동일하게 렌더링됩니다.</span>
-                              <button
-                                type="button"
-                                onClick={() => setMdPasteActiveTab('input')}
-                                className="text-amber-600 dark:text-amber-400 hover:underline font-medium"
-                              >
-                                입력창으로 돌아가기
-                              </button>
-                            </div>
-                          </div>
-                        )}
-
-                        {/* 3. Insertion Mode & Action Controls */}
-                        <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex flex-wrap items-center justify-between gap-3">
-                          <div className="flex items-center gap-3 text-xs">
-                            <span className="text-stone-500 font-medium">적용 방식:</span>
-                            <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300 font-medium">
-                              <input
-                                type="radio"
-                                name="mdPasteMode"
-                                checked={mdPasteMode === 'insert'}
-                                onChange={() => setMdPasteMode('insert')}
-                                className="text-amber-600 focus:ring-amber-500"
-                              />
-                              <span>커서 위치에 삽입</span>
-                            </label>
-                            <label className="flex items-center gap-1.5 cursor-pointer text-stone-700 dark:text-stone-300 font-medium">
-                              <input
-                                type="radio"
-                                name="mdPasteMode"
-                                checked={mdPasteMode === 'replace'}
-                                onChange={() => setMdPasteMode('replace')}
-                                className="text-amber-600 focus:ring-amber-500"
-                              />
-                              <span>전체 내용 교체</span>
-                            </label>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setActiveTopDialog(null)}
-                              className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                            >
-                              취소
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleApplyPastedData(mdPasteInputText, mdPasteMode)}
-                              disabled={!mdPasteInputText.trim()}
-                              className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 disabled:opacity-40 text-white font-semibold text-xs flex items-center gap-1.5 shadow-sm transition-colors cursor-pointer"
-                            >
-                              <Check className="w-4 h-4" />
-                              <span>에디터에 적용하기</span>
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })()}
-
-              {/* Common Footer */}
-              {currentTab !== 'md_paste' && (
-                <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex justify-end">
-                  <button
-                    type="button"
-                    onClick={() => setActiveTopDialog(null)}
-                    className="px-4 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                  >
-                    닫기
-                  </button>
-                </div>
-              )}
-            </div>
-            );
-          })()}
-
-              {/* DIALOG: 동영상 삽입 (Video Dialog) */}
-              {activeTopDialog === 'video' && (
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-rose-500/10 text-rose-600 dark:text-rose-400">
-                        <Video className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                          동영상 삽입
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 font-medium">YouTube / MP4</span>
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          YouTube 영상 링크 또는 웹 동영상(MP4/WebM) 주소를 입력하세요
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
-                        동영상 웹 주소 (URL)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="예: https://www.youtube.com/watch?v=... 또는 https://example.com/video.mp4"
-                        value={videoDialogUrl}
-                        onChange={(e) => setVideoDialogUrl(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter') {
-                            e.preventDefault();
-                            handleInsertVideo();
-                          }
-                        }}
-                        className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-xs focus:ring-2 focus:ring-rose-500 focus:outline-hidden"
-                      />
-                    </div>
-                    <div className="text-[11px] text-stone-500 dark:text-stone-400 bg-stone-50 dark:bg-stone-800/50 p-2.5 rounded-xl border border-stone-200/50 dark:border-stone-700/50">
-                      💡 <strong>팁</strong>: YouTube 영상 주소를 입력하면 반응형 플레이어로 자동 임베드되며, 직접 MP4 링크를 입력하면 HTML5 비디오 플레이어로 삽입됩니다.
-                    </div>
-                  </div>
-
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      취소
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleInsertVideo}
-                      disabled={!videoDialogUrl.trim()}
-                      className="px-5 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
-                    >
-                      <Video className="w-3.5 h-3.5" />
-                      <span>동영상 삽입</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* DIALOG 3: 이미지 삽입 (Image Dialog) */}
-              {activeTopDialog === 'image' && (
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-                        <ImageIcon className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
-                          이미지 삽입
-                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 font-medium">자동 리사이즈</span>
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          컴퓨터 파일 업로드 또는 웹 이미지 URL 주소를 입력하세요
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  {/* Tab Selector */}
-                  <div className="flex rounded-xl bg-stone-100 dark:bg-[#141414] p-1">
-                    <button
-                      type="button"
-                      onClick={() => setImageDialogTab('upload')}
-                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                        imageDialogTab === 'upload'
-                          ? 'bg-white dark:bg-[#282828] text-stone-900 dark:text-stone-100 shadow-xs'
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                      }`}
-                    >
-                      <Upload className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>컴퓨터 파일 업로드</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setImageDialogTab('url')}
-                      className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center justify-center gap-1.5 ${
-                        imageDialogTab === 'url'
-                          ? 'bg-white dark:bg-[#282828] text-stone-900 dark:text-stone-100 shadow-xs'
-                          : 'text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200'
-                      }`}
-                    >
-                      <Link2 className="w-3.5 h-3.5 text-sky-500" />
-                      <span>웹 이미지 URL 입력</span>
-                    </button>
-                  </div>
-
-                  {/* Tab 1: Upload */}
-                  {imageDialogTab === 'upload' && (
-                    <div className="space-y-3">
-                      <div
-                        onClick={() => {
-                          setActiveTopDialog(null);
-                          fileInputRef.current?.click();
-                        }}
-                        className="p-6 border-2 border-dashed border-stone-300 dark:border-stone-700 hover:border-emerald-500 dark:hover:border-emerald-500 rounded-2xl flex flex-col items-center justify-center gap-2 cursor-pointer bg-stone-50/50 dark:bg-[#141414]/50 hover:bg-emerald-50/20 dark:hover:bg-emerald-950/20 transition-all text-center"
-                      >
-                        <div className="w-12 h-12 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
-                          <Upload className="w-6 h-6" />
-                        </div>
-                        <div className="text-xs font-bold text-stone-800 dark:text-stone-200">
-                          이미지 파일을 클릭하여 선택하거나 끌어다 놓으세요
-                        </div>
-                        <div className="text-[11px] text-stone-400">
-                          PNG, JPG, GIF, WebP 지원 (자동 최적화 및 크기 조절 툴팁 지원)
-                        </div>
-                        <button
-                          type="button"
-                          className="mt-1 px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold shadow-xs"
-                        >
-                          파일 선택하기
-                        </button>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Tab 2: URL */}
-                  {imageDialogTab === 'url' && (
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
-                          웹 이미지 URL 주소
-                        </label>
-                        <input
-                          type="url"
-                          placeholder="https://example.com/photo.jpg"
-                          value={imageDialogUrl}
-                          onChange={(e) => setImageDialogUrl(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
-                          대체 텍스트 / 이미지 설명 (선택사항)
-                        </label>
-                        <input
-                          type="text"
-                          placeholder="이미지 설명"
-                          value={imageDialogAlt}
-                          onChange={(e) => setImageDialogAlt(e.target.value)}
-                          className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-xs focus:ring-2 focus:ring-emerald-500 focus:outline-hidden"
-                        />
-                      </div>
-                      {imageDialogUrl && imageDialogUrl.startsWith('http') && (
-                        <div className="p-2 rounded-xl bg-stone-100 dark:bg-[#141414] border border-stone-200 dark:border-stone-800 text-center">
-                          <div className="text-[10px] text-stone-400 mb-1">미리보기</div>
-                          <img
-                            src={imageDialogUrl}
-                            alt="미리보기"
-                            className="max-h-36 mx-auto rounded-lg object-contain shadow-xs"
-                            onError={(e) => {
-                              (e.target as HTMLElement).style.display = 'none';
-                            }}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Image Width Size */}
-                  <div className="pt-2 border-t border-stone-100 dark:border-stone-800">
-                    <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-1.5">
-                      삽입 너비 크기
-                    </div>
-                    <div className="grid grid-cols-4 gap-2">
-                      {[
-                        { label: '100% (전체 너비)', val: '100%' as const },
-                        { label: '75% (중대형)', val: '75%' as const },
-                        { label: '50% (나란히 배치)', val: '50%' as const },
-                        { label: '30% (소형)', val: '30%' as const },
-                      ].map((s) => (
-                        <button
-                          key={s.val}
-                          type="button"
-                          onClick={() => setImageDialogWidth(s.val)}
-                          className={`py-1.5 px-2 rounded-lg text-xs border transition-colors ${
-                            imageDialogWidth === s.val
-                              ? 'bg-emerald-100 dark:bg-emerald-950/60 border-emerald-400 text-emerald-800 dark:text-emerald-300 font-semibold'
-                              : 'bg-stone-50 dark:bg-[#252525] border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-700'
-                          }`}
-                        >
-                          {s.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Actions */}
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-end gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      취소
-                    </button>
-                    {imageDialogTab === 'url' ? (
-                      <button
-                        type="button"
-                        onClick={handleInsertImageUrl}
-                        disabled={!imageDialogUrl.trim()}
-                        className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
-                      >
-                        <ImageIcon className="w-3.5 h-3.5" />
-                        <span>이미지 삽입하기</span>
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveTopDialog(null);
-                          fileInputRef.current?.click();
-                        }}
-                        className="px-5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold transition-colors shadow-sm flex items-center gap-1.5"
-                      >
-                        <Upload className="w-3.5 h-3.5" />
-                        <span>파일 탐색기 열기</span>
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* DIALOG 4: 하이퍼링크 (Link Dialog) */}
-              {activeTopDialog === 'link' && (
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-sky-500/10 text-sky-600 dark:text-sky-400">
-                        <Link2 className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100">
-                          하이퍼링크 삽입 / 편집
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          웹 주소(URL) 링크를 연결합니다
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
-                        연결할 웹 주소 (URL)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="https://example.com"
-                        value={linkDialogUrl}
-                        onChange={(e) => setLinkDialogUrl(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-xs focus:ring-2 focus:ring-sky-500 focus:outline-hidden"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-medium text-stone-700 dark:text-stone-300 mb-1">
-                        표시할 링크 텍스트
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="링크 이름 (비워둘 시 본문 텍스트 또는 URL 적용)"
-                        value={linkDialogText}
-                        onChange={(e) => setLinkDialogText(e.target.value)}
-                        className="w-full px-3 py-2 rounded-xl border border-stone-300 dark:border-stone-700 bg-stone-50 dark:bg-[#181818] text-xs focus:ring-2 focus:ring-sky-500 focus:outline-hidden"
-                      />
-                    </div>
-                    <label className="flex items-center gap-2 cursor-pointer text-xs text-stone-700 dark:text-stone-300 select-none">
-                      <input
-                        type="checkbox"
-                        checked={linkDialogNewTab}
-                        onChange={(e) => setLinkDialogNewTab(e.target.checked)}
-                        className="rounded border-stone-300 text-sky-500 focus:ring-sky-500 w-4 h-4"
-                      />
-                      <span>새 창(새 탭)에서 열기 (target="_blank")</span>
-                    </label>
-                  </div>
-
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between">
-                    {editor && editor.isActive('link') ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          editor.chain().focus().extendMarkRange('link').unsetLink().run();
-                          setActiveTopDialog(null);
-                          setToastMessage('✓ 링크가 제거되었습니다.');
-                          setTimeout(() => setToastMessage(null), 2500);
-                        }}
-                        className="px-3 py-1.5 rounded-xl border border-rose-200 dark:border-rose-900/60 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition-colors"
-                      >
-                        링크 제거
-                      </button>
-                    ) : <div />}
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTopDialog(null)}
-                        className="px-4 py-2 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                      >
-                        취소
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleApplyLink}
-                        className="px-5 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition-colors shadow-sm"
-                      >
-                        링크 적용
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* DIALOG 5: 표 테두리 및 서식 (Table Border Dialog) */}
-              {activeTopDialog === 'border' && (() => {
-                const activeAttrs = getActiveTableAttrs();
-                const currentStyle = activeAttrs.borderStyle || 'all';
-                const currentColor = activeAttrs.borderColor;
-
-                return (
-                  <div className="p-5 space-y-4">
-                    <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                      <div className="flex items-center gap-2.5">
-                        <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                          <Grid className="w-5 h-5" />
-                        </div>
-                        <div>
-                          <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100">
-                            표 테두리 설정
-                          </h3>
-                          <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                            선택한 표의 테두리 모양과 선 색상을 실시간으로 변경합니다
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTopDialog(null)}
-                        className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
-                    </div>
-
-                    {/* Border Styles */}
-                    <div>
-                      <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-2 flex items-center justify-between">
-                        <span>테두리 스타일 선택</span>
-                        <span className="text-[10px] text-amber-600 dark:text-amber-400 font-medium">클릭 시 즉시 표에 반영</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setTableBorderStyle('all')}
-                          className={`p-2.5 rounded-xl border flex items-center justify-between transition-all text-left ${
-                            currentStyle === 'all'
-                              ? 'border-amber-500 bg-amber-500/10 text-amber-900 dark:text-amber-200 ring-2 ring-amber-500/30 font-semibold'
-                              : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
-                          }`}
-                        >
-                          <span className="flex items-center gap-2 text-xs">
-                            <Grid className="w-4 h-4 text-amber-500" />
-                            <span>모든 테두리 (격자)</span>
-                          </span>
-                          <span className="text-[10px] text-stone-400 font-mono">기본</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setTableBorderStyle('outer')}
-                          className={`p-2.5 rounded-xl border flex items-center gap-2 transition-all text-xs text-left ${
-                            currentStyle === 'outer'
-                              ? 'border-sky-500 bg-sky-500/10 text-sky-900 dark:text-sky-200 ring-2 ring-sky-500/30 font-semibold'
-                              : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
-                          }`}
-                        >
-                          <Square className="w-4 h-4 text-sky-500" />
-                          <span>바깥쪽 테두리만</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setTableBorderStyle('thick')}
-                          className={`p-2.5 rounded-xl border flex items-center gap-2 transition-all text-xs text-left ${
-                            currentStyle === 'thick'
-                              ? 'border-indigo-500 bg-indigo-500/10 text-indigo-900 dark:text-indigo-200 ring-2 ring-indigo-500/30 font-semibold'
-                              : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
-                          }`}
-                        >
-                          <Square className="w-4 h-4 text-indigo-500 stroke-[2.5]" />
-                          <span>굵은 바깥 테두리</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setTableBorderStyle('horizontal')}
-                          className={`p-2.5 rounded-xl border flex items-center gap-2 transition-all text-xs text-left ${
-                            currentStyle === 'horizontal'
-                              ? 'border-emerald-500 bg-emerald-500/10 text-emerald-900 dark:text-emerald-200 ring-2 ring-emerald-500/30 font-semibold'
-                              : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300'
-                          }`}
-                        >
-                          <Rows className="w-4 h-4 text-emerald-500" />
-                          <span>가로 구분선만</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => setTableBorderStyle('none')}
-                          className={`p-2.5 rounded-xl border flex items-center gap-2 transition-all text-xs col-span-2 text-left ${
-                            currentStyle === 'none'
-                              ? 'border-stone-500 bg-stone-500/10 text-stone-900 dark:text-stone-200 ring-2 ring-stone-500/30 font-semibold'
-                              : 'border-stone-200 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-500 dark:text-stone-400'
-                          }`}
-                        >
-                          <X className="w-4 h-4 text-stone-400" />
-                          <span>테두리 없음 (편집 시 옅은 가이드 점선)</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Line Colors */}
-                    <div className="pt-2 border-t border-stone-100 dark:border-stone-800">
-                      <div className="text-[11px] font-semibold text-stone-700 dark:text-stone-300 mb-2 flex items-center justify-between">
-                        <span>테두리 선 색상</span>
-                        {currentColor && (
-                          <button
-                            type="button"
-                            onClick={() => setTableBorderColor('')}
-                            className="text-[10px] text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 underline cursor-pointer"
-                          >
-                            기본 색상으로 초기화
-                          </button>
-                        )}
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {[
-                          { color: '#d1d5db', name: '기본 연회색' },
-                          { color: '#4b5563', name: '진한 회색' },
-                          { color: '#0f172a', name: '흑색' },
-                          { color: '#3b82f6', name: '블루' },
-                          { color: '#f59e0b', name: '앰버' },
-                          { color: '#10b981', name: '초록' },
-                          { color: '#ef4444', name: '빨강' },
-                          { color: '#8b5cf6', name: '보라' },
-                        ].map((c) => {
-                          const isSelected = currentColor?.toLowerCase() === c.color.toLowerCase() || (!currentColor && c.color === '#d1d5db');
-                          return (
-                            <button
-                              key={c.color}
-                              type="button"
-                              onClick={() => setTableBorderColor(c.color)}
-                              className={`w-7 h-7 rounded-full border border-stone-300 dark:border-stone-600 hover:scale-110 transition-all shadow-xs relative ${
-                                isSelected ? 'ring-2 ring-offset-2 ring-amber-500 scale-110' : ''
-                              }`}
-                              style={{ backgroundColor: c.color }}
-                              title={c.name}
-                            />
-                          );
-                        })}
-
-                        {/* Custom Color Input */}
-                        <label
-                          className="w-7 h-7 rounded-full border border-dashed border-stone-400 dark:border-stone-600 flex items-center justify-center cursor-pointer hover:scale-110 transition-transform relative overflow-hidden"
-                          title="직접 색상 선택 (Color Picker)"
-                        >
-                          <input
-                            type="color"
-                            value={currentColor || '#3b82f6'}
-                            onChange={(e) => setTableBorderColor(e.target.value)}
-                            className="absolute -top-4 -left-4 w-16 h-16 opacity-0 cursor-pointer"
-                          />
-                          <span className="text-[10px] font-bold text-stone-600 dark:text-stone-300">+</span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex justify-end">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTopDialog(null)}
-                        className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 text-xs font-bold transition-colors shadow-sm"
-                      >
-                        완료 및 닫기
-                      </button>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* DIALOG 6: 글자 색상 (Text Color Dialog) */}
-              {activeTopDialog === 'textColor' && (
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-indigo-500/10 text-indigo-600 dark:text-indigo-400">
-                        <Palette className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100">
-                          글자 색상 선택
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          {savedSelectionRef.current && savedSelectionRef.current.from !== savedSelectionRef.current.to
-                            ? '선택된 텍스트 영역에 글꼴 색상을 적용합니다'
-                            : '선택한 텍스트 또는 커서 위치의 글꼴 색상을 지정합니다'}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-2.5">
-                    {[
-                      { color: '#1c1917', name: '기본(검정)' },
-                      { color: '#ef4444', name: '빨강' },
-                      { color: '#f97316', name: '주황' },
-                      { color: '#d97706', name: '황토' },
-                      { color: '#10b981', name: '초록' },
-                      { color: '#06b6d4', name: '청록' },
-                      { color: '#3b82f6', name: '파랑' },
-                      { color: '#6366f1', name: '남색' },
-                      { color: '#8b5cf6', name: '보라' },
-                      { color: '#ec4899', name: '핑크' },
-                      { color: '#6b7280', name: '회색' },
-                      { color: '#9ca3af', name: '연회색' },
-                    ].map((item) => (
-                      <button
-                        key={item.color}
-                        type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => handleApplyTextColor(item.color)}
-                        className="p-2.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:scale-105 transition-transform flex flex-col items-center gap-1.5 bg-stone-50 dark:bg-[#252525]"
-                      >
-                        <div
-                          className="w-7 h-7 rounded-full border border-black/15 shadow-2xs"
-                          style={{ backgroundColor: item.color }}
-                        />
-                        <span className="text-[11px] text-stone-600 dark:text-stone-300 font-medium">{item.name}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between">
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleResetTextColor}
-                      className="px-3 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      색상 초기화 (기본색)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="px-4 py-1.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-bold transition-colors"
-                    >
-                      닫기
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* DIALOG 7: 형광펜 (Highlight Dialog) */}
-              {activeTopDialog === 'highlight' && (
-                <div className="p-5 space-y-4">
-                  <div className="flex items-center justify-between pb-3 border-b border-stone-100 dark:border-stone-800">
-                    <div className="flex items-center gap-2.5">
-                      <div className="p-2 rounded-xl bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                        <Highlighter className="w-5 h-5" />
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100">
-                          형광펜 배경색 선택
-                        </h3>
-                        <p className="text-[11px] text-stone-500 dark:text-stone-400">
-                          {savedSelectionRef.current && savedSelectionRef.current.from !== savedSelectionRef.current.to
-                            ? '선택된 텍스트 영역에 형광펜 배경색을 적용합니다'
-                            : '선택된 텍스트 또는 커서 위치에 형광펜 강조 효과를 적용합니다'}
-                        </p>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 transition-colors"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="grid grid-cols-3 gap-2.5">
-                    {[
-                      { color: '#fef08a', name: '노랑 형광펜' },
-                      { color: '#bbf7d0', name: '연두 형광펜' },
-                      { color: '#bae6fd', name: '하늘 형광펜' },
-                      { color: '#fbcfe8', name: '분홍 형광펜' },
-                      { color: '#ddd6fe', name: '연보라 형광펜' },
-                      { color: '#fed7aa', name: '살구 형광펜' },
-                    ].map((item) => (
-                      <button
-                        key={item.color}
-                        type="button"
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={() => handleApplyHighlight(item.color)}
-                        className="p-3 rounded-xl border border-stone-200 dark:border-stone-700 hover:scale-105 transition-transform flex flex-col items-center gap-1.5 bg-stone-50 dark:bg-[#252525]"
-                      >
-                        <div
-                          className="w-8 h-8 rounded-lg border border-black/10 shadow-2xs"
-                          style={{ backgroundColor: item.color }}
-                        />
-                        <span className="text-xs text-stone-700 dark:text-stone-200 font-medium">{item.name}</span>
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="pt-3 border-t border-stone-100 dark:border-stone-800 flex items-center justify-between">
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleResetHighlight}
-                      className="px-3 py-1.5 rounded-xl border border-stone-200 dark:border-stone-700 text-xs font-medium text-stone-600 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors"
-                    >
-                      형광펜 지우기
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setActiveTopDialog(null)}
-                      className="px-4 py-1.5 rounded-xl bg-stone-900 dark:bg-stone-100 text-white dark:text-stone-900 text-xs font-bold transition-colors"
-                    >
-                      닫기
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        {/* TOP LEVEL DIALOGS OVERLAY */}
+        <TopDialogs
+          activeTopDialog={activeTopDialog}
+          setActiveTopDialog={setActiveTopDialog}
+          editor={editor}
+          tableDialogRows={tableDialogRows}
+          setTableDialogRows={setTableDialogRows}
+          tableDialogCols={tableDialogCols}
+          setTableDialogCols={setTableDialogCols}
+          tableDialogHeaderRow={tableDialogHeaderRow}
+          setTableDialogHeaderRow={setTableDialogHeaderRow}
+          handleInsertNewTable={handleInsertNewTable}
+          codeDialogTab={codeDialogTab}
+          setCodeDialogTab={setCodeDialogTab}
+          mdPasteInputText={mdPasteInputText}
+          setMdPasteInputText={setMdPasteInputText}
+          mdPasteActiveTab={mdPasteActiveTab}
+          setMdPasteActiveTab={setMdPasteActiveTab}
+          dataPasteFormat={dataPasteFormat}
+          setDataPasteFormat={setDataPasteFormat}
+          dataPasteDelimiter={dataPasteDelimiter}
+          setDataPasteDelimiter={setDataPasteDelimiter}
+          dataPasteHasHeader={dataPasteHasHeader}
+          setDataPasteHasHeader={setDataPasteHasHeader}
+          dataPasteOutputType={dataPasteOutputType}
+          setDataPasteOutputType={setDataPasteOutputType}
+          dataPasteTableWidth={dataPasteTableWidth}
+          setDataPasteTableWidth={setDataPasteTableWidth}
+          handleApplyMarkdownPaste={handleApplyMarkdownPaste}
+          handleAutoHighlightSelection={handleAutoHighlightSelection}
+          handleInsertCBlock={handleInsertCBlock}
+          handleInsertSqlBlock={handleInsertSqlBlock}
+          handleInsertJavaBlock={handleInsertJavaBlock}
+          handleInsertPythonBlock={handleInsertPythonBlock}
+          handleInsertBashBlock={handleInsertBashBlock}
+          handlePasteCodeFromClipboard={handlePasteCodeFromClipboard}
+          handleFormatCodeInEditor={handleFormatCodeInEditor}
+          handlePasteMarkdownFromClipboard={handlePasteMarkdownFromClipboard}
+          handleCopyAsMarkdown={handleCopyAsMarkdown}
+          handleInsertMarkdownTemplate={handleInsertMarkdownTemplate}
+          handleDownloadMarkdownTemplate={handleDownloadMarkdownTemplate}
+          MARKDOWN_LANGUAGE_TEMPLATES={MARKDOWN_LANGUAGE_TEMPLATES}
+          imageDialogTab={imageDialogTab}
+          setImageDialogTab={setImageDialogTab}
+          imageDialogUrl={imageDialogUrl}
+          setImageDialogUrl={setImageDialogUrl}
+          imageDialogAlt={imageDialogAlt}
+          setImageDialogAlt={setImageDialogAlt}
+          imageDialogWidth={imageDialogWidth}
+          setImageDialogWidth={setImageDialogWidth}
+          handleInsertImageSubmit={handleInsertImageUrl}
+          handleImageUpload={handleImageUpload}
+          linkDialogUrl={linkDialogUrl}
+          setLinkDialogUrl={setLinkDialogUrl}
+          linkDialogText={linkDialogText}
+          setLinkDialogText={setLinkDialogText}
+          linkDialogNewTab={linkDialogNewTab}
+          setLinkDialogNewTab={setLinkDialogNewTab}
+          handleInsertLinkSubmit={handleApplyLink}
+          videoDialogUrl={videoDialogUrl}
+          setVideoDialogUrl={setVideoDialogUrl}
+          handleInsertVideoSubmit={handleInsertVideo}
+          showExitConfirm={showExitConfirm}
+          setShowExitConfirm={setShowExitConfirm}
+          handleSaveAndClose={handleSaveAndClose}
+          handleDiscardAndClose={handleDiscardAndClose}
+          savedSelectionRef={savedSelectionRef}
+          setToastMessage={setToastMessage}
+        />
+
+        {/* Drag Over Overlay */}
 
         {/* Drag Over Overlay */}
         {isDraggingFile && (
@@ -5223,8 +2895,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 <span className="text-stone-300 dark:text-stone-700">•</span>
                 <span className="text-xs text-stone-500 dark:text-stone-400">행 #{row.id}</span>
               </div>
-              <h2 className="text-base font-bold text-stone-900 dark:text-stone-100 truncate">
-                {primaryTitle}
+              <h2 className="text-base font-bold text-stone-900 dark:text-stone-100 truncate max-w-md whitespace-nowrap overflow-hidden text-ellipsis">
+                {stripHtml(primaryTitle)}
               </h2>
             </div>
           </div>
@@ -5255,7 +2927,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               type="button"
               onClick={() => handleSave()}
               disabled={isSaving}
-              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
+              className={`hidden px-3 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs ${
                 hasUnsavedChanges
                   ? 'bg-amber-500 hover:bg-amber-400 text-stone-950 ring-2 ring-amber-400/40 font-extrabold cursor-pointer'
                   : 'bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-600 dark:text-stone-300'
@@ -5453,788 +3125,32 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         )}
 
         {/* Excel/Office-style Ribbon Toolbar with Home / Insert / Format Tabs */}
-        {editor && (
-          <div className="border-b border-stone-200 dark:border-stone-800 bg-stone-50/80 dark:bg-[#1a1a1a] select-none shrink-0">
-            {/* Top Ribbon Tab Headers */}
-            <div className="px-4 pt-1.5 flex items-center justify-between border-b border-stone-200/90 dark:border-stone-800/90">
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setActiveRibbonTab('home')}
-                  className={`px-3.5 py-1.5 text-xs font-semibold rounded-t-lg transition-all border-t border-x flex items-center gap-1.5 ${
-                    activeRibbonTab === 'home'
-                      ? 'bg-white dark:bg-stone-900 text-amber-600 dark:text-amber-400 border-stone-200 dark:border-stone-800 -mb-[1px] shadow-xs'
-                      : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800/60'
-                  }`}
-                >
-                  <Type className="w-3.5 h-3.5" />
-                  <span>홈</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveRibbonTab('insert')}
-                  className={`px-3.5 py-1.5 text-xs font-semibold rounded-t-lg transition-all border-t border-x flex items-center gap-1.5 ${
-                    activeRibbonTab === 'insert'
-                      ? 'bg-white dark:bg-stone-900 text-amber-600 dark:text-amber-400 border-stone-200 dark:border-stone-800 -mb-[1px] shadow-xs'
-                      : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800/60'
-                  }`}
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>삽입</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setActiveRibbonTab('format')}
-                  className={`px-3.5 py-1.5 text-xs font-semibold rounded-t-lg transition-all border-t border-x flex items-center gap-1.5 ${
-                    activeRibbonTab === 'format'
-                      ? 'bg-white dark:bg-stone-900 text-amber-600 dark:text-amber-400 border-stone-200 dark:border-stone-800 -mb-[1px] shadow-xs'
-                      : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800/60'
-                  }`}
-                >
-                  <Grid className="w-3.5 h-3.5" />
-                  <span>서식</span>
-                  {editor.isActive('table') && (
-                    <span className="flex items-center gap-1 text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 px-1.5 py-0.2 rounded-full ring-1 ring-amber-400/40">
-                      <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
-                      표
-                    </span>
-                  )}
-                </button>
-              </div>
-
-              {/* Quick Action Buttons on Top Right (Undo, Redo, Paste MD, AI Agent) */}
-              <div className="flex items-center gap-1.5 pb-1">
-                <button
-                  type="button"
-                  onClick={() => setIsAiAgentDrawerOpen(true)}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 transition-colors shadow-2xs"
-                  title="WonBee AI 에이전트 (양식 변환, 맞춤법/문체 린팅, Diff 비교, 다이어그램, RAG)"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>AI 에이전트</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handlePasteMarkdownFromClipboard}
-                  className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 hover:bg-amber-500/20 transition-colors shadow-2xs"
-                  title="클립보드에 복사된 마크다운(.md) 파일/텍스트를 에디터에 즉시 하이라이팅 서식으로 붙여넣어 적용합니다."
-                >
-                  <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                  <span>MD 붙여넣기</span>
-                </button>
-
-                <div className="w-[1px] h-3.5 bg-stone-200 dark:bg-stone-700 mx-0.5" />
-
-                <button
-                  type="button"
-                  onClick={() => editor.chain().focus().undo().run()}
-                  disabled={!editor.can().undo()}
-                  className="p-1.5 rounded hover:bg-stone-200 dark:hover:bg-stone-800 text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                  title="실행 취소 (Ctrl+Z)"
-                >
-                  <Undo2 className="w-3.5 h-3.5" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => editor.chain().focus().redo().run()}
-                  disabled={!editor.can().redo()}
-                  className="p-1.5 rounded hover:bg-stone-200 dark:hover:bg-stone-800 text-stone-500 hover:text-stone-800 dark:hover:text-stone-200 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-                  title="다시 실행 (Ctrl+Y)"
-                >
-                  <Redo2 className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Ribbon Tab Content Panel */}
-            <div className="px-4 py-2 bg-white dark:bg-stone-900 flex items-center justify-between gap-3 overflow-x-auto no-scrollbar">
-              {/* TAB 1: 홈 (Home) - Typography, Colors, Alignment, Lists */}
-              {activeRibbonTab === 'home' && (
-                <div className="flex items-center gap-1 shrink-0 flex-nowrap text-xs">
-                  {/* Font Family Selector */}
-                  <select
-                    value={editor.getAttributes('textStyle').fontFamily || 'default'}
-                    onChange={(e) => setFontFamily(e.target.value)}
-                    className="h-7 px-2 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 focus:outline-hidden focus:ring-1 focus:ring-amber-500 max-w-[105px]"
-                    title="글꼴 (Font Family)"
-                  >
-                    <option value="default">기본 글꼴</option>
-                    <option value="Pretendard, -apple-system, sans-serif">Pretendard</option>
-                    <option value="'Malgun Gothic', '맑은 고딕', sans-serif">맑은 고딕</option>
-                    <option value="'Nanum Gothic', '나눔고딕', sans-serif">나눔고딕</option>
-                    <option value="'Nanum Myeongjo', '나눔명조', serif">나눔명조</option>
-                    <option value="'Noto Sans KR', sans-serif">Noto Sans</option>
-                    <option value="sans-serif">고딕 (Sans)</option>
-                    <option value="serif">명조 (Serif)</option>
-                    <option value="ui-monospace, monospace">코딩 (Monospace)</option>
-                  </select>
-
-                  {/* Font Size Selector */}
-                  <select
-                    value={editor.getAttributes('textStyle').fontSize || 'default'}
-                    onChange={(e) => setFontSize(e.target.value)}
-                    className="h-7 px-1.5 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 focus:outline-hidden focus:ring-1 focus:ring-amber-500 w-[68px]"
-                    title="글자 크기 (Font Size)"
-                  >
-                    <option value="default">크기</option>
-                    <option value="12px">12px</option>
-                    <option value="14px">14px</option>
-                    <option value="16px">16px</option>
-                    <option value="18px">18px</option>
-                    <option value="20px">20px</option>
-                    <option value="24px">24px</option>
-                    <option value="28px">28px</option>
-                    <option value="32px">32px</option>
-                  </select>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-0.5" />
-
-                  {/* Font Styling: Bold, Italic, Underline, Strikethrough */}
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleBold().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('bold') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="굵게 (Ctrl+B)"
-                    >
-                      <Bold className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleItalic().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('italic') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="기울임 (Ctrl+I)"
-                    >
-                      <Italic className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleUnderline().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('underline') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="밑줄 (Ctrl+U)"
-                    >
-                      <UnderlineIcon className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleStrike().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('strike') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="취소선"
-                    >
-                      <Strikethrough className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Headings */}
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().setParagraph().run()}
-                      className={`px-1.5 py-1 rounded text-xs hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors font-medium ${
-                        editor.isActive('paragraph') && !editor.isActive('heading') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="본문"
-                    >
-                      본문
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('heading', { level: 1 }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="제목 1 (H1)"
-                    >
-                      <Heading1 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('heading', { level: 2 }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="제목 2 (H2)"
-                    >
-                      <Heading2 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('heading', { level: 3 }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="제목 3 (H3)"
-                    >
-                      <Heading3 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Colors & Clear Formatting */}
-                  <div className="flex items-center gap-1">
-                    {/* Text Color Picker */}
-                    <button
-                      type="button"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        if (editor && !editor.state.selection.empty) {
-                          savedSelectionRef.current = {
-                            from: editor.state.selection.from,
-                            to: editor.state.selection.to,
-                          };
-                        }
-                      }}
-                      onClick={() => {
-                        if (editor && !editor.state.selection.empty) {
-                          savedSelectionRef.current = {
-                            from: editor.state.selection.from,
-                            to: editor.state.selection.to,
-                          };
-                        }
-                        setActiveTopDialog(activeTopDialog === 'textColor' ? null : 'textColor');
-                      }}
-                      className={`px-2 py-1 rounded transition-colors flex items-center gap-1 text-xs ${
-                        activeTopDialog === 'textColor'
-                          ? 'bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-400 font-semibold'
-                          : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="글꼴 색상 선택 (최상단 대화상자)"
-                    >
-                      <Palette className="w-3.5 h-3.5 text-indigo-500" />
-                      <span>글자색</span>
-                    </button>
-
-                    {/* Highlight / Background */}
-                    <button
-                      type="button"
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        if (editor && !editor.state.selection.empty) {
-                          savedSelectionRef.current = {
-                            from: editor.state.selection.from,
-                            to: editor.state.selection.to,
-                          };
-                        }
-                      }}
-                      onClick={() => {
-                        if (editor && !editor.state.selection.empty) {
-                          savedSelectionRef.current = {
-                            from: editor.state.selection.from,
-                            to: editor.state.selection.to,
-                          };
-                        }
-                        setActiveTopDialog(activeTopDialog === 'highlight' ? null : 'highlight');
-                      }}
-                      className={`px-2 py-1 rounded transition-colors flex items-center gap-1 text-xs ${
-                        activeTopDialog === 'highlight' || editor.isActive('highlight')
-                          ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold'
-                          : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="형광펜 / 텍스트 배경색 (최상단 대화상자)"
-                    >
-                      <Highlighter className="w-3.5 h-3.5 text-amber-500" />
-                      <span>형광펜</span>
-                    </button>
-
-                    {/* Clear Formatting */}
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().unsetAllMarks().clearNodes().run()}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-500 hover:text-stone-700 dark:text-stone-400 dark:hover:text-stone-200 transition-colors"
-                      title="모든 서식 지우기 (일반 텍스트로 초기화)"
-                    >
-                      <RemoveFormatting className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Alignment */}
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().setTextAlign('left').run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive({ textAlign: 'left' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="왼쪽 정렬"
-                    >
-                      <AlignLeft className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().setTextAlign('center').run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive({ textAlign: 'center' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="가운데 정렬"
-                    >
-                      <AlignCenter className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().setTextAlign('right').run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive({ textAlign: 'right' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="오른쪽 정렬"
-                    >
-                      <AlignRight className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().setTextAlign('justify').run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive({ textAlign: 'justify' }) ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="양쪽 정렬"
-                    >
-                      <AlignJustify className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Lists & Quotes & Indent */}
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleOutdent}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
-                      title="내어쓰기 (Shift+Tab)"
-                    >
-                      <Outdent className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleIndent}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
-                      title="들여쓰기 (Tab)"
-                    >
-                      <Indent className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleBulletList().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('bulletList') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="글머리 기호 목록"
-                    >
-                      <List className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleOrderedList().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('orderedList') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="번호 매기기 목록"
-                    >
-                      <ListOrdered className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleTaskList().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('taskList') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="체크리스트 / 할 일 목록"
-                    >
-                      <CheckSquare className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().toggleBlockquote().run()}
-                      className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
-                        editor.isActive('blockquote') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
-                      }`}
-                      title="인용구"
-                    >
-                      <Quote className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => editor.chain().focus().setHorizontalRule().run()}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
-                      title="가로 구분선 삽입"
-                    >
-                      <Minus className="w-3.5 h-3.5" />
-                    </button>
-
-                    <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-0.5" />
-
-                    {/* Quick Access to Table & Code from Home Tab */}
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={openTableDialog}
-                      className="px-2 py-1 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors flex items-center gap-1 text-xs"
-                      title="새 표 삽입 (Excel 스타일 매트릭스 대화상자)"
-                    >
-                      <TableIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                      <span className="hidden sm:inline">표</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => {
-                        if (editor && !editor.state.selection.empty) {
-                          handleAutoHighlightSelection();
-                        } else {
-                          setActiveTopDialog('code');
-                        }
-                      }}
-                      className={`px-2 py-1 rounded transition-colors flex items-center gap-1 text-xs ${
-                        editor.isActive('codeBlock') || activeTopDialog === 'code'
-                          ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold'
-                          : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
-                      }`}
-                      title={editor && !editor.state.selection.empty ? '선택 데이터 자동 감지 코드 블록 변환' : '코드 & MD 대화상자 열기'}
-                    >
-                      <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                      <span className="hidden sm:inline">코드</span>
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 2: 삽입 (Insert) - Table, Image, Code & MD, Sticky Notes, Link */}
-              {activeRibbonTab === 'insert' && (
-                <div className="flex items-center gap-1 shrink-0 flex-nowrap text-xs">
-                  {/* Table Insert Button with Interactive Matrix Picker */}
-                  <button
-                    type="button"
-                    onClick={openTableDialog}
-                    className={`px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors border ${
-                      editor.isActive('table') || activeTopDialog === 'table'
-                        ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
-                        : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-                    }`}
-                    title="엑셀 스타일 새 표 삽입 (최상단 대화상자)"
-                  >
-                    <TableIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                    <span className="font-medium">새 표 삽입</span>
-                  </button>
-
-                  {/* Image Insert */}
-                  <button
-                    type="button"
-                    onClick={openImageDialog}
-                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-colors ${
-                      activeTopDialog === 'image'
-                        ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 font-semibold'
-                        : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-                    }`}
-                    title="이미지 파일 삽입 (파일 업로드 또는 웹 URL)"
-                  >
-                    <ImageIcon className="w-3.5 h-3.5 text-emerald-500" />
-                    <span className="font-medium">이미지</span>
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    className="hidden"
-                    onChange={handleImageUpload}
-                  />
-
-                  {/* Video Insert */}
-                  <button
-                    type="button"
-                    onClick={openVideoDialog}
-                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-colors ${
-                      activeTopDialog === 'video'
-                        ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-700 font-semibold'
-                        : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-                    }`}
-                    title="동영상 삽입 (YouTube 링크 또는 웹 동영상 URL)"
-                  >
-                    <Video className="w-3.5 h-3.5 text-rose-500" />
-                    <span className="font-medium">동영상</span>
-                  </button>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Code & Markdown Integrated Dropdown (Unified with MD Paste) */}
-                  <div className="relative inline-flex items-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (editor && !editor.state.selection.empty) {
-                          handleAutoHighlightSelection();
-                        } else {
-                          setCodeDialogTab('templates');
-                          setActiveTopDialog(activeTopDialog === 'code' ? null : 'code');
-                        }
-                      }}
-                      className={`px-2.5 py-1.5 rounded-l-lg flex items-center gap-1.5 transition-colors border-y border-l ${
-                        editor.isActive('codeBlock') || activeTopDialog === 'code'
-                          ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
-                          : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-                      }`}
-                      title={editor && !editor.state.selection.empty ? '선택 영역 자동 감지 코드 블록으로 변환' : '코드 템플릿 & MD 붙여넣기 통합 대화상자 열기'}
-                    >
-                      <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                      <span className="font-medium">코드 & MD</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCodeDialogTab('md_paste');
-                        setActiveTopDialog(activeTopDialog === 'code' && codeDialogTab === 'md_paste' ? null : 'code');
-                      }}
-                      className={`px-1.5 py-1.5 rounded-r-lg border-y border-r transition-colors flex items-center justify-center ${
-                        activeTopDialog === 'code' && codeDialogTab === 'md_paste'
-                          ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
-                          : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-200 border-stone-200 dark:border-stone-700'
-                      }`}
-                      title="마크다운(.md) 붙여넣기 탭으로 즉시 열기"
-                    >
-                      <ChevronDown className="w-3 h-3" />
-                    </button>
-                  </div>
-                  <input
-                    ref={mdFileInputRef}
-                    type="file"
-                    accept=".md,.markdown,.csv,.tsv,.txt,.log"
-                    className="hidden"
-                    onChange={handleMdFileUpload}
-                  />
-
-                  {/* Link Insert Button */}
-                  <button
-                    type="button"
-                    onClick={openLinkDialog}
-                    className={`px-2 py-1.5 rounded-lg border flex items-center gap-1 transition-colors ${
-                      editor.isActive('link') || activeTopDialog === 'link'
-                        ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
-                        : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-                    }`}
-                    title="링크 삽입 / 편집 (최상단 대화상자)"
-                  >
-                    <Link2 className="w-3.5 h-3.5 text-sky-500" />
-                    <span>링크</span>
-                  </button>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Sticker Notes Group */}
-                  <div className="flex items-center gap-1.5 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 rounded-lg border border-amber-200/60 dark:border-amber-900/40">
-                    <span className="text-[11px] font-bold text-amber-800 dark:text-amber-300 flex items-center gap-1">
-                      <StickyNote className="w-3 h-3" />
-                      스티커:
-                    </span>
-                    <div className="flex items-center gap-1">
-                      {(['amber', 'yellow', 'green', 'blue', 'rose', 'purple'] as const).map((color) => (
-                        <button
-                          key={color}
-                          type="button"
-                          onClick={() => handleInsertSticker(color)}
-                          className={`w-4 h-4 rounded-full border border-black/10 hover:scale-125 transition-transform ${
-                            color === 'amber' ? 'bg-amber-400' :
-                            color === 'yellow' ? 'bg-yellow-300' :
-                            color === 'green' ? 'bg-emerald-400' :
-                            color === 'blue' ? 'bg-sky-400' :
-                            color === 'rose' ? 'bg-rose-400' : 'bg-purple-400'
-                          }`}
-                          title={`${color} 스티커 추가`}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* TAB 3: 서식 (Format) - Table Borders, Cell Styles, Rows & Columns, Merge/Split */}
-              {activeRibbonTab === 'format' && (
-                <div className="flex items-center gap-1.5 shrink-0 flex-nowrap text-xs">
-                  {/* Table Border Button */}
-                  <button
-                    type="button"
-                    onClick={() => setActiveTopDialog(activeTopDialog === 'border' ? null : 'border')}
-                    className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-colors font-medium shadow-2xs ${
-                      activeTopDialog === 'border'
-                        ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
-                        : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-                    }`}
-                    title="표 테두리 설정 (모든 테두리, 바깥쪽, 굵은 테두리, 가로줄, 테두리 없음, 색상)"
-                  >
-                    <Grid className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                    <span>표 테두리</span>
-                  </button>
-
-                  {/* Cell Background Colors */}
-                  <div className="flex items-center gap-1 px-2 py-1 bg-stone-100/70 dark:bg-stone-800/60 rounded-lg border border-stone-200/60 dark:border-stone-700/60">
-                    <span className="text-[10px] font-medium text-stone-500 dark:text-stone-400 mr-0.5">셀 색:</span>
-                    {[
-                      { color: '', label: '기본(없음)' },
-                      { color: '#fef3c7', label: '연노랑' },
-                      { color: '#d1fae5', label: '연초록' },
-                      { color: '#dbeafe', label: '연파랑' },
-                      { color: '#ede9fe', label: '연보라' },
-                      { color: '#ffe4e6', label: '연분홍' },
-                    ].map((c) => (
-                      <button
-                        key={c.color || 'default'}
-                        type="button"
-                        disabled={!editor.isActive('table')}
-                        onClick={() => editor.chain().focus().setCellAttribute('backgroundColor', c.color || null).run()}
-                        className="w-5 h-5 rounded border border-stone-300 dark:border-[#555555] hover:scale-110 transition-transform flex items-center justify-center text-[9px] disabled:opacity-30 disabled:hover:scale-100"
-                        style={{ backgroundColor: c.color || 'transparent' }}
-                        title={c.label}
-                      >
-                        {!c.color && '✕'}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Cell Merge & Split */}
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().mergeCells().run()}
-                      className="px-2 py-1 rounded bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 disabled:opacity-30 transition-colors flex items-center gap-1 font-medium"
-                      title="선택한 셀 병합"
-                    >
-                      <Combine className="w-3.5 h-3.5 text-indigo-500" />
-                      <span>병합</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().splitCell().run()}
-                      className="px-2 py-1 rounded bg-stone-100 dark:bg-stone-800 hover:bg-stone-200 dark:hover:bg-stone-700 text-stone-700 dark:text-stone-300 disabled:opacity-30 transition-colors flex items-center gap-1 font-medium"
-                      title="셀 분할"
-                    >
-                      <Split className="w-3.5 h-3.5 text-sky-500" />
-                      <span>분할</span>
-                    </button>
-                  </div>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Row & Column Actions */}
-                  <div className="flex items-center gap-0.5">
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().addRowBefore().run()}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 disabled:opacity-30 transition-colors"
-                      title="위에 행 추가"
-                    >
-                      <Rows className="w-3.5 h-3.5 text-blue-500" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().addRowAfter().run()}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 disabled:opacity-30 transition-colors"
-                      title="아래에 행 추가"
-                    >
-                      <Rows className="w-3.5 h-3.5 text-blue-500 rotate-180" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().deleteRow().run()}
-                      className="p-1.5 rounded hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-500 disabled:opacity-30 transition-colors"
-                      title="현재 행 삭제"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-
-                    <div className="w-[1px] h-3 bg-stone-200 dark:bg-stone-800 mx-0.5" />
-
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().addColumnBefore().run()}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 disabled:opacity-30 transition-colors"
-                      title="왼쪽에 열 추가"
-                    >
-                      <Columns className="w-3.5 h-3.5 text-amber-500" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().addColumnAfter().run()}
-                      className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 disabled:opacity-30 transition-colors"
-                      title="오른쪽에 열 추가"
-                    >
-                      <Columns className="w-3.5 h-3.5 text-amber-500 rotate-180" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={!editor.isActive('table')}
-                      onClick={() => editor.chain().focus().deleteColumn().run()}
-                      className="p-1.5 rounded hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-500 disabled:opacity-30 transition-colors"
-                      title="현재 열 삭제"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
-
-                  {/* Delete Entire Table */}
-                  <button
-                    type="button"
-                    disabled={!editor.isActive('table')}
-                    onClick={() => editor.chain().focus().deleteTable().run()}
-                    className="px-2 py-1 rounded hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 disabled:opacity-30 font-medium transition-colors flex items-center gap-1"
-                    title="표 전체 삭제"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                    <span>표 삭제</span>
-                  </button>
-
-                  {!editor.isActive('table') && (
-                    <span className="text-[11px] text-stone-400 dark:text-stone-500 ml-2 hidden sm:inline">
-                      (본문의 표를 클릭하면 셀/테두리 서식 도구가 즉시 활성화됩니다)
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+        <RibbonToolbar
+          editor={editor}
+          activeRibbonTab={activeRibbonTab}
+          setActiveRibbonTab={setActiveRibbonTab}
+          activeTopDialog={activeTopDialog}
+          setActiveTopDialog={setActiveTopDialog}
+          savedSelectionRef={savedSelectionRef}
+          setFontFamily={setFontFamily}
+          setFontSize={setFontSize}
+          handleIndent={handleIndent}
+          handleOutdent={handleOutdent}
+          handleAutoHighlightSelection={handleAutoHighlightSelection}
+          handleInsertSticker={handleInsertSticker}
+          handlePasteMarkdownFromClipboard={handlePasteMarkdownFromClipboard}
+          handleImageUpload={handleImageUpload}
+          handleMdFileUpload={handleMdFileUpload}
+          openTableDialog={openTableDialog}
+          openImageDialog={openImageDialog}
+          openVideoDialog={openVideoDialog}
+          openLinkDialog={openLinkDialog}
+          setCodeDialogTab={setCodeDialogTab}
+          setIsAiAgentDrawerOpen={setIsAiAgentDrawerOpen}
+          handleFormatExpress={handleFormatExpress}
+          columnMap={columnMap}
+          columns={columns}
+        />
 
         {/* Table Quick Action Sub-bar when cursor is inside a table */}
         {editor && editor.isActive('table') && (
@@ -6264,7 +3180,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 type="button"
                 onClick={() => editor.chain().focus().deleteRow().run()}
                 className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 text-[11px] font-medium transition-colors"
-                title="현재 행 삭제"
+                title="선택한 행 삭제"
               >
                 - 행 삭제
               </button>
@@ -6289,7 +3205,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 type="button"
                 onClick={() => editor.chain().focus().deleteColumn().run()}
                 className="px-2 py-0.5 rounded bg-white dark:bg-[#252525] border border-rose-300 dark:border-rose-800 text-rose-600 dark:text-rose-400 hover:bg-rose-50 text-[11px] font-medium transition-colors"
-                title="현재 열 삭제"
+                title="선택한 열 삭제"
               >
                 - 열 삭제
               </button>
@@ -6523,21 +3439,29 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-2.5 border-t border-stone-200 dark:border-stone-800 bg-stone-50/60 dark:bg-stone-900/60 flex items-center justify-between text-xs text-stone-500">
-          <div className="flex items-center gap-3">
-            <span>💡 <strong>작성 팁:</strong> 자바(Java) 등 소스코드를 붙여넣으면 들여쓰기·띄어쓰기가 완벽히 보존된 코드 블록으로 자동 변환됩니다 (Tab 키 지원).</span>
+        <div className="px-6 py-2.5 border-t border-stone-200 dark:border-stone-800 bg-stone-50/60 dark:bg-stone-900/60 flex items-center justify-between text-xs text-stone-500 select-none">
+          {/* Left Info Area: Position & Selection Data */}
+          <div className="flex items-center gap-2.5 font-mono text-[11px] text-stone-600 dark:text-[#aaaaaa]">
+            <span>Ln {editorMetrics.line}, Col {editorMetrics.col}</span>
+            <span className="text-stone-300 dark:text-stone-700">|</span>
+            <span>Sel: {editorMetrics.selectedChars.toLocaleString()} chars, {editorMetrics.selectedBytes.toLocaleString()} bytes</span>
             {!loadingState.isLoading && loadingState.sizeFormatted && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 text-[11px] font-mono">
-                <Zap className="w-3 h-3" />
-                <span>데이터: {loadingState.sizeFormatted}</span>
-              </span>
+              <>
+                <span className="text-stone-300 dark:text-stone-700">|</span>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/20 text-[11px]">
+                  <Zap className="w-3 h-3" />
+                  <span>크기: {loadingState.sizeFormatted}</span>
+                </span>
+              </>
             )}
           </div>
+
+          {/* Right Action Button Group */}
           <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleRequestClose}
-              className="px-4 py-1.5 border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 font-medium rounded-lg transition-colors cursor-pointer"
+              className="px-3.5 py-1.5 border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 font-medium rounded-lg text-xs transition-colors cursor-pointer"
             >
               닫기
             </button>
@@ -6545,15 +3469,16 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               type="button"
               onClick={() => handleSave()}
               disabled={isSaving}
-              className={`px-4 py-1.5 border rounded-lg font-bold transition-all flex items-center gap-1.5 shadow-xs cursor-pointer ${
+              className={`px-3.5 py-1.5 border rounded-lg font-bold text-xs transition-all flex items-center gap-1.5 shadow-xs cursor-pointer ${
                 hasUnsavedChanges
-                  ? 'border-amber-500 bg-amber-500/15 hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 ring-2 ring-amber-400/30'
+                  ? 'border-amber-400 bg-amber-500/15 hover:bg-amber-500/25 text-amber-900 dark:text-amber-300 ring-2 ring-amber-400/30'
                   : 'border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
               }`}
             >
               {isSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
               <span>저장 (Ctrl+S)</span>
             </button>
+
             <button
               type="button"
               onClick={async () => {
@@ -6565,10 +3490,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 }
               }}
               disabled={isSaving}
-              className="px-5 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg transition-colors shadow-sm flex items-center gap-1.5 cursor-pointer"
+              className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs transition-colors shadow-xs flex items-center gap-1.5 cursor-pointer"
             >
-              <Check className="w-4 h-4" />
-              <span>{hasUnsavedChanges ? '저장 후 닫기' : '완료 및 닫기'}</span>
+              <Check className="w-3.5 h-3.5" />
+              <span>완료 및 닫기</span>
             </button>
           </div>
         </div>
@@ -6705,6 +3630,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 </div>
                 <button
                   type="button"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={handleContextCopy}
                   className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
                 >
@@ -6717,6 +3643,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
                 <button
                   type="button"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={handleContextCut}
                   className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
                 >
@@ -6729,6 +3656,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
                 <button
                   type="button"
+                  onMouseDown={(e) => e.preventDefault()}
                   onClick={handleContextPaste}
                   className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-xl hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 transition-all text-left group"
                 >
@@ -6910,7 +3838,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 transition-colors text-left"
                     >
                       <Rows className="w-3.5 h-3.5" />
-                      <span>현재 행 삭제</span>
+                      <span>선택한 행 삭제</span>
                     </button>
                     <button
                       type="button"
@@ -6918,7 +3846,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                       className="flex items-center gap-1.5 px-2 py-1.5 rounded-xl hover:bg-rose-500/10 text-rose-600 dark:text-rose-400 transition-colors text-left"
                     >
                       <Columns className="w-3.5 h-3.5" />
-                      <span>현재 열 삭제</span>
+                      <span>선택한 열 삭제</span>
                     </button>
                     <button
                       type="button"

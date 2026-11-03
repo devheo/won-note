@@ -1,5 +1,6 @@
 import express from 'express';
 import path from 'path';
+import os from 'os';
 import { createServer as createViteServer } from 'vite';
 import {
   initDatabase,
@@ -56,8 +57,12 @@ async function startServer() {
     next();
   });
 
-  // Prevent browser caching on all API responses for instant multi-PC sync
+  // Prevent browser caching on all API responses for instant multi-PC sync (excluding SSE stream)
   app.use('/api', (req, res, next) => {
+    if (req.path === '/sync/events') {
+      next();
+      return;
+    }
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
@@ -86,18 +91,22 @@ async function startServer() {
   }
 
   app.get('/api/sync/events', (req, res) => {
-    res.setHeader('Content-Type', 'text/event-stream');
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache, no-transform');
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders?.();
+
+    if (typeof res.flushHeaders === 'function') {
+      res.flushHeaders();
+    }
 
     const lastUpdated = getLastUpdatedTimestamp();
     res.write(`data: ${JSON.stringify({ type: 'connected', lastUpdated })}\n\n`);
 
     sseClients.add(res);
 
-    // Heartbeat every 20 seconds to prevent TCP timeouts
+    // Heartbeat every 15 seconds to keep connection alive
     const heartbeat = setInterval(() => {
       try {
         res.write(': heartbeat\n\n');
@@ -105,11 +114,14 @@ async function startServer() {
         clearInterval(heartbeat);
         sseClients.delete(res);
       }
-    }, 20000);
+    }, 15000);
 
     req.on('close', () => {
       clearInterval(heartbeat);
       sseClients.delete(res);
+      try {
+        res.end();
+      } catch (_) {}
     });
   });
 
@@ -248,6 +260,39 @@ async function startServer() {
     }
   });
 
+  // --- CORS Proxy Endpoint ---
+  app.all('/api/proxy', async (req, res) => {
+    const targetUrl = (req.query.url || req.body?.url) as string;
+    if (!targetUrl) {
+      res.status(400).json({ error: 'Missing target url parameter' });
+      return;
+    }
+    try {
+      const fetchOptions: RequestInit = {
+        method: req.method,
+        headers: {
+          ...(req.headers['authorization'] ? { 'Authorization': req.headers['authorization'] as string } : {}),
+          ...(req.headers['content-type'] ? { 'Content-Type': req.headers['content-type'] as string } : {}),
+        },
+      };
+      if (['POST', 'PUT', 'PATCH'].includes(req.method) && req.body) {
+        fetchOptions.body = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+      }
+
+      const response = await fetch(targetUrl, fetchOptions);
+      const text = await response.text();
+      response.headers.forEach((val, key) => {
+        if (!['content-encoding', 'transfer-encoding'].includes(key.toLowerCase())) {
+          res.setHeader(key, val);
+        }
+      });
+      res.status(response.status).send(text);
+    } catch (err: any) {
+      console.error('[API] Proxy request failed:', err);
+      res.status(500).json({ error: err.message || 'Proxy request failed' });
+    }
+  });
+
   // --- Tables Endpoints ---
   app.get('/api/tables/:id', (req, res) => {
     try {
@@ -381,6 +426,32 @@ async function startServer() {
         temperature,
       });
       res.json({ response });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Network Info Endpoint ---
+  function getLocalNetworkIps(): string[] {
+    const interfaces = os.networkInterfaces();
+    const ips: string[] = [];
+    for (const name of Object.keys(interfaces)) {
+      const netInterface = interfaces[name];
+      if (netInterface) {
+        for (const net of netInterface) {
+          if (net.family === 'IPv4' && !net.internal) {
+            ips.push(net.address);
+          }
+        }
+      }
+    }
+    return ips;
+  }
+
+  app.get('/api/network/info', (req, res) => {
+    try {
+      const ips = getLocalNetworkIps();
+      res.json({ ips, port: PORT });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

@@ -260,8 +260,11 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
   const rawLangAttr = (node?.attrs?.language as string) || 'auto';
   const rawLang = (rawLangAttr === 'markup' || rawLangAttr === 'xml') ? 'html' : rawLangAttr;
 
-  // Automatically detect language from code content when in 'auto' mode
+  // Automatically detect language from code content ONLY when in 'auto' mode
   const detectedInfo = useMemo(() => {
+    if (rawLang !== 'auto') {
+      return { language: rawLang, isCode: true };
+    }
     const text = node?.textContent || '';
     if (!text.trim()) return { language: 'plaintext', isCode: false };
     const detected = detectLanguage(text);
@@ -280,11 +283,8 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
     if (hasSqlPattern) {
       return { language: 'sql', isCode: true };
     }
-    return {
-      language: 'plaintext',
-      isCode: false,
-    };
-  }, [node?.textContent]);
+    return { language: 'c', isCode: false };
+  }, [rawLang, node?.textContent]);
 
   const effectiveLang = rawLang === 'auto' ? detectedInfo.language : rawLang;
 

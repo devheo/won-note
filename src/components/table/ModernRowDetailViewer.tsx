@@ -39,6 +39,7 @@ import { LazyImage } from '../common/LazyImage';
 import { RichHtmlRenderer } from '../common/RichHtmlRenderer';
 import { cleanTextValue, extractFirstImageSrc, isImageValue } from '../../utils/textSanitizer';
 import { isLikelyMarkdown, markdownToHtml } from '../../utils/markdownHelper';
+import { analyzeContent } from '../../utils/contentParser';
 import { SelectOrCustomInput } from '../common/SelectOrCustomInput';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
 import { ImageLightboxModal } from '../common/ImageLightboxModal';
@@ -291,9 +292,9 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
   };
 
   const getContainerWidthClass = () => {
-    if (widthMode === 'full') return 'w-full h-full max-w-none rounded-none m-0';
-    if (widthMode === 'wide') return 'w-full max-w-6xl max-h-[92vh] rounded-2xl';
-    return 'w-full max-w-4xl max-h-[88vh] rounded-2xl';
+    if (widthMode === 'full') return 'w-full h-full max-w-none rounded-none m-0 flex flex-col overflow-hidden';
+    if (widthMode === 'wide') return 'w-full max-w-6xl h-[92vh] max-h-[92vh] rounded-2xl flex flex-col overflow-hidden';
+    return 'w-full max-w-4xl h-[88vh] max-h-[88vh] rounded-2xl flex flex-col overflow-hidden';
   };
 
   return (
@@ -315,7 +316,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </div>
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-bold text-stone-900 dark:text-[#f5f5f5] truncate">
+                  <h2 className="text-sm font-bold text-stone-900 dark:text-[#f5f5f5] truncate max-w-[180px] sm:max-w-xs md:max-w-sm" title={primaryTitle}>
                     {primaryTitle}
                   </h2>
                   <span className="text-[11px] px-2 py-0.5 rounded-full bg-stone-200/60 dark:bg-[#333333] text-stone-600 dark:text-[#a0a0a0] font-medium flex-shrink-0">
@@ -365,7 +366,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </div>
 
               {/* Width Mode Toggle */}
-              <div className="flex items-center gap-1 bg-stone-100 dark:bg-[#1a1a1a] p-0.5 rounded-xl border border-stone-200 dark:border-[#333333]">
+              <div className="flex items-center gap-1 bg-stone-100 dark:bg-[#1a1a1a] p-0.5 rounded-xl border border-stone-200 dark:border-[#333333] shrink-0 whitespace-nowrap">
                 <button
                   onClick={() => handleSetWidthMode('standard')}
                   className={`px-2 py-1 text-[11px] font-semibold rounded-lg transition-colors ${
@@ -650,10 +651,10 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                           )}
                           {isUpdateDateColumn(col) && (
                             <span
-                              className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-600 dark:text-purple-400 font-bold flex items-center gap-0.5"
+                              className="text-[10px] px-1.5 py-0.2 rounded bg-purple-500/20 text-purple-600 dark:text-purple-400 font-bold flex items-center gap-0.5 shrink-0 whitespace-nowrap"
                               title="데이터 수정 시 년월일 시분으로 자동 갱신되는 열입니다 (직접 입력도 가능)"
                             >
-                              <Clock className="w-2.5 h-2.5" /> 자동 갱신
+                              <Clock className="w-2.5 h-2.5 shrink-0" /> 자동 갱신
                             </span>
                           )}
                           {imgUrl && (
@@ -863,66 +864,59 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               maxHeight={heightLimitClass}
                             />
                           ) : (() => {
-                            const strVal = String(val ?? '');
-                            if (!strVal || strVal.trim() === '') {
+                            const parsed = analyzeContent(val, col.type);
+                            if (!parsed.rawString || parsed.rawString.trim() === '') {
                               return <span className="text-stone-400 dark:text-[#777777] italic">(비어 있음)</span>;
                             }
 
-                            // 1. Pure code content (including TipTap single pre/code block or raw code)
-                            const pureCodeInfo = extractCodeBlockFromContent(strVal);
-                            if (pureCodeInfo.isPureCode) {
+                            // 1. Pure code content
+                            if (parsed.isPureCode) {
                               return (
                                 <CodeBlockViewer
-                                  code={pureCodeInfo.code}
-                                  language={pureCodeInfo.language}
+                                  code={parsed.code}
+                                  language={parsed.codeLanguage}
                                   maxHeight={heightLimitClass}
                                 />
                               );
                             }
 
-                            // 1.5. Dedicated Image Detection & Preview (Base64 data URLs, raw base64, image columns, etc.)
-                            if (col.type === 'image' || isImageValue(strVal)) {
-                              const imgSrc = extractFirstImageSrc(strVal);
-                              if (imgSrc) {
-                                return (
-                                  <div className="flex flex-col gap-2 py-1">
-                                    <div
-                                      className="relative group rounded-xl overflow-hidden border border-stone-200 dark:border-[#383838] bg-stone-100 dark:bg-[#181818] p-2 flex items-center justify-center cursor-zoom-in max-w-sm transition-all hover:border-amber-500/50"
-                                      onClick={() => setLightboxImg(imgSrc)}
-                                      title="클릭하여 원본 크기로 확대"
-                                    >
-                                      <LazyImage
-                                        src={imgSrc}
-                                        alt="이미지 미리보기"
-                                        className="max-h-64 max-w-full rounded-lg object-contain group-hover:scale-[1.02] transition-transform duration-200"
-                                      />
-                                      <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md bg-stone-900/75 backdrop-blur-xs text-white text-[11px] font-medium flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md">
-                                        <Maximize2 className="w-3 h-3" />
-                                        원본 보기
-                                      </div>
+                            // 2. Image Detection & Preview
+                            if (parsed.isImage && parsed.imageSrc) {
+                              return (
+                                <div className="flex flex-col gap-2 py-1">
+                                  <div
+                                    className="relative group rounded-xl overflow-hidden border border-stone-200 dark:border-[#383838] bg-stone-100 dark:bg-[#181818] p-2 flex items-center justify-center cursor-zoom-in max-w-sm transition-all hover:border-amber-500/50"
+                                    onClick={() => setLightboxImg(parsed.imageSrc)}
+                                    title="클릭하여 원본 크기로 확대"
+                                  >
+                                    <LazyImage
+                                      src={parsed.imageSrc}
+                                      alt="이미지 미리보기"
+                                      className="max-h-64 max-w-full rounded-lg object-contain group-hover:scale-[1.02] transition-transform duration-200"
+                                    />
+                                    <div className="absolute bottom-3 right-3 px-2 py-1 rounded-md bg-stone-900/75 backdrop-blur-xs text-white text-[11px] font-medium flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity shadow-md">
+                                      <Maximize2 className="w-3 h-3" />
+                                      원본 보기
                                     </div>
                                   </div>
-                                );
-                              }
+                                </div>
+                              );
                             }
 
-                            // 2. Check for Markdown content (code fences ```...```, headers #, markdown tables, lists, etc.)
-                            // Prioritize Markdown even if column is 'richText' or wrapped in basic HTML <p> tags
-                            const hasMarkdownFences = strVal.includes('```');
-                            const hasSticker = strVal.includes('wonbee-sticker') || strVal.includes('<sticker-node');
-                            const isMd =
-                              (hasMarkdownFences || isLikelyMarkdown(strVal)) &&
-                              !hasSticker &&
-                              !(strVal.includes('<table') && !hasMarkdownFences) &&
-                              !(strVal.includes('<img') && !hasMarkdownFences && !strVal.includes('!['));
-
-                            if (isMd) {
-                              const parsedHtml = markdownToHtml(strVal);
-                              const highlightedHtml = highlightHtmlCodeBlocks(parsedHtml);
+                            // 3. Markdown content
+                            if (parsed.isMarkdown) {
                               return (
                                 <RichHtmlRenderer
-                                  html={highlightedHtml}
-                                  className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table wonbee-markdown-content cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed overflow-y-auto ${heightLimitClass}`}
+                                  html={parsed.markdownHtml}
+                                  className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer
+                                    [&_h1]:text-xl [&_h1]:font-bold [&_h1]:my-2 [&_h1]:text-amber-600 dark:[&_h1]:text-amber-400
+                                    [&_h2]:text-lg [&_h2]:font-bold [&_h2]:my-1.5 [&_h2]:text-amber-500
+                                    [&_h3]:text-base [&_h3]:font-bold [&_h3]:my-1
+                                    [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:my-2
+                                    [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:my-2
+                                    [&_li]:my-0.5
+                                    [&_p]:mb-2 [&_p]:leading-relaxed
+                                    overflow-y-auto ${heightLimitClass}`}
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
                                     if (target.tagName === 'IMG') {
@@ -934,23 +928,12 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               );
                             }
 
-                            // 3. Rich HTML content with potential embedded pre/code blocks, images, tables
-                            const isRichHtml =
-                              (col.type === 'richText' ||
-                               strVal.includes('<img') ||
-                               strVal.includes('<table') ||
-                               strVal.includes('wonbee-sticker') ||
-                               strVal.includes('<sticker-node') ||
-                               strVal.includes('<pre') ||
-                               strVal.includes('<code')) &&
-                              (strVal.includes('<') && strVal.includes('>'));
-
-                            if (isRichHtml) {
-                              const highlightedHtml = highlightHtmlCodeBlocks(strVal);
+                            // 4. Rich HTML content
+                            if (parsed.isRichHtml) {
                               return (
                                 <RichHtmlRenderer
-                                  html={highlightedHtml}
-                                  className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_p]:leading-relaxed overflow-y-auto ${heightLimitClass}`}
+                                  html={parsed.richHtml}
+                                  className={`prose dark:prose-invert max-w-none text-xs leading-relaxed break-words tiptap wonbee-rendered-table cursor-pointer [&_p]:mb-2 [&_h1]:text-lg [&_h1]:font-bold [&_h2]:text-base [&_h2]:font-bold [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5 overflow-y-auto ${heightLimitClass}`}
                                   onClick={(e) => {
                                     const target = e.target as HTMLElement;
                                     if (target.tagName === 'IMG') {
@@ -962,21 +945,10 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                               );
                             }
 
-                            // 3. Fallback plaintext: check if detected as code
-                            const cleanedString = cleanTextValue(strVal);
-                            const detected = detectLanguage(cleanedString);
-                            if (detected.isCode && (cleanedString.includes('\n') || cleanedString.length > 20)) {
-                              return (
-                                <CodeBlockViewer
-                                  code={cleanedString}
-                                  language={detected.language}
-                                  maxHeight={heightLimitClass}
-                                />
-                              );
-                            }
+                            // 5. Fallback plaintext
                             return (
                               <div className={`whitespace-pre-wrap break-words leading-relaxed text-xs text-stone-800 dark:text-[#f0f0f0] font-sans overflow-y-auto ${heightLimitClass}`}>
-                                {cleanedString}
+                                {parsed.cleanString}
                               </div>
                             );
                           })()}
@@ -1096,7 +1068,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
               </button>
               <button
                 onClick={handleClose}
-                className="px-4 py-1.5 bg-stone-200/80 dark:bg-[#333333] hover:bg-stone-300 dark:hover:bg-[#404040] text-stone-700 dark:text-[#eeeeee] font-semibold rounded-lg text-xs transition-colors"
+                className="px-4 py-1.5 border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#eeeeee] font-semibold rounded-lg text-xs transition-colors"
               >
                 닫기 (ESC)
               </button>
@@ -1105,7 +1077,7 @@ export const ModernRowDetailViewer: React.FC<ModernRowDetailViewerProps> = ({
                   onOpenRichEditor(row, editingColId || undefined);
                   onClose();
                 }}
-                className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-colors"
+                className="px-4 py-1.5 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-xs flex items-center gap-1.5 shadow-xs transition-colors"
               >
                 <Edit3 className="w-3.5 h-3.5" />
                 리치 에디터 열기

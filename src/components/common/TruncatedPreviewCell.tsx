@@ -355,7 +355,9 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 {displayPlainText.length > 0 ? (
                   <HighlightText text={displayPlainText} highlight={highlightQuery} />
                 ) : (
-                  <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+                  <span className="text-stone-400/80 dark:text-stone-500/80 italic text-xs select-none">
+                                      더블 클릭하여 편집...
+                                    </span>
                 )}
               </div>
             ) : (pureCodeInfo.isPureCode || detectedCode.isCode) ? (
@@ -370,7 +372,9 @@ const TruncatedPreviewCellComponent: React.FC<TruncatedPreviewCellProps> = ({
                 {displayPlainText.length > 0 ? (
                   <HighlightText text={displayPlainText} highlight={highlightQuery} />
                 ) : (
-                  <span className="text-stone-400 dark:text-[#666666] italic">(비어 있음)</span>
+                  <span className="text-stone-400/80 dark:text-stone-500/80 italic text-xs select-none">
+                                      더블 클릭하여 편집...
+                                    </span>
                 )}
               </div>
             )}

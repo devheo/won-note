@@ -143,7 +143,6 @@ export const PrettyJsonModal: React.FC<PrettyJsonModalProps> = ({ isOpen, onClos
               <h2 className="text-base font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
                 Pretty JSON 뷰어 및 포매터
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 font-mono font-medium">
-                  실시간 파서
                 </span>
               </h2>
             </div>
@@ -280,7 +279,7 @@ export const PrettyJsonModal: React.FC<PrettyJsonModalProps> = ({ isOpen, onClos
 
         {/* Footer */}
         <div className="px-6 py-3 border-t border-stone-200 dark:border-stone-800 bg-stone-50/70 dark:bg-stone-900/70 flex items-center justify-between text-xs text-stone-500 shrink-0">
-          <span>💡 <strong>팁:</strong> 실시간 파싱 엔진이 대용량 JSON 데이터도 메모리 부하 없이 빠르게 포매팅합니다.</span>
+          <span></span>
           <button
             type="button"
             onClick={onClose}

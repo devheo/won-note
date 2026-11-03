@@ -40,6 +40,13 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [cleanConfirmMode, setCleanConfirmMode] = useState(false);
   const [cleanFeedback, setCleanFeedback] = useState<string | null>(null);
+  const [networkInfo, setNetworkInfo] = useState<{ ips: string[]; port: number } | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => setToastMessage(null), 2500);
+  };
 
   useEffect(() => {
     setTempUseServer(useServer);
@@ -47,6 +54,11 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
     wonbeeDB.getStorageStats().then(setStats);
     setCleanConfirmMode(false);
     setCleanFeedback(null);
+
+    fetch('/api/network/info')
+      .then((res) => res.json())
+      .then((data) => setNetworkInfo(data))
+      .catch(() => {});
   }, [isOpen, useServer, serverUrl]);
 
   if (!isOpen) return null;
@@ -72,9 +84,16 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
       onClick={onClose}
     >
       <div
-        className="bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 w-full max-w-lg overflow-hidden flex flex-col"
+        className="bg-white dark:bg-stone-900 rounded-2xl shadow-2xl border border-stone-200 dark:border-stone-800 w-full max-w-lg overflow-hidden flex flex-col relative"
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Toast Notification */}
+        {toastMessage && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-50 bg-stone-900/95 dark:bg-stone-100 text-white dark:text-stone-900 px-3.5 py-1.5 rounded-xl text-xs font-semibold shadow-xl flex items-center gap-2 backdrop-blur-sm animate-in fade-in pointer-events-none">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+            <span>{toastMessage}</span>
+          </div>
+        )}
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-stone-200 dark:border-stone-800 bg-stone-50/50 dark:bg-stone-900/50">
           <div className="flex items-center gap-3">
@@ -137,6 +156,47 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
               <p className="text-stone-500 dark:text-stone-400 text-[11px] leading-relaxed">
                 중앙 API 서버와 실시간으로 데이터를 동기화합니다. 오프라인 상태에서도 로컬 캐시로 안전하게 폴백됩니다.
               </p>
+            </div>
+          </div>
+
+          {/* LAN Network Access Guide (Server Mode vs Client Mode) */}
+          <div className="p-3.5 bg-sky-500/5 border border-sky-500/20 rounded-xl space-y-2">
+            <div className="text-[11px] font-bold text-sky-700 dark:text-sky-300 flex items-center gap-1.5">
+              <Radio className="w-3.5 h-3.5 text-sky-500 animate-pulse" />
+              <span>🌐 다른 PC 접속 가이드 (Server Mode vs Client Mode)</span>
+            </div>
+            <p className="text-[10px] text-stone-500 dark:text-stone-400 leading-relaxed">
+              현재 PC를 호스트 서버(Server Mode)로 실행하여 동일 Wi-Fi / LAN 상의 다른 PC에서 아래 주소로 접속할 수 있습니다.
+            </p>
+            {networkInfo && networkInfo.ips.length > 0 ? (
+              <div className="space-y-1 pt-1">
+                <div className="text-[10px] font-semibold text-stone-600 dark:text-stone-300">
+                  다른 PC 브라우저 주소창에 입력할 주소 (서버 호스트 주소):
+                </div>
+                {networkInfo.ips.map((ip) => {
+                  const fullUrl = `http://${ip}:${networkInfo.port}`;
+                  return (
+                    <div key={ip} className="flex items-center justify-between bg-white dark:bg-stone-900 px-2.5 py-1.5 rounded-lg border border-sky-200 dark:border-sky-900/50 font-mono text-xs">
+                      <span className="text-sky-800 dark:text-sky-300 font-bold">{fullUrl}</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(fullUrl);
+                          showToast('✓ 주소가 클립보드에 복사되었습니다.');
+                        }}
+                        className="px-2 py-0.5 rounded bg-sky-500/15 text-sky-700 dark:text-sky-300 font-semibold text-[10px] hover:bg-sky-500/25 cursor-pointer"
+                      >
+                        주소 복사
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="text-[10px] text-stone-400 italic">로컬 네트워크 IP 탐색 중...</div>
+            )}
+            <div className="text-[10px] text-stone-500 dark:text-stone-400 pt-1 border-t border-sky-500/10">
+              💡 <strong>클라이언트 모드(Client Mode):</strong> 다른 PC에서 접속 시 <strong>Server 모드</strong>를 켜고 위 서버 주소의 <code className="bg-sky-500/10 px-1 py-0.5 rounded font-mono">/api</code>를 백엔드 엔드포인트 URL로 설정하세요.
             </div>
           </div>
 

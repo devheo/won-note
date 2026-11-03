@@ -1,4 +1,5 @@
 import React, { useState, useRef, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
+import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
 import { TruncatedPreviewCell } from '../common/TruncatedPreviewCell';
@@ -25,6 +26,7 @@ import {
   savePerformanceOptions,
 } from '../../types/performance';
 import { PerformanceSettingsModal } from '../modals/PerformanceSettingsModal';
+import { useStatusBar } from '../common/GlobalStatusBar';
 import {
   Plus,
   ArrowUpDown,
@@ -79,6 +81,8 @@ import {
   ensureUpdateDateColumnInTable,
 } from '../../utils/dateColumnUtils';
 
+const EMPTY_STICKER_ARRAY: any[] = [];
+
 interface DataTableViewerProps {
   table: TableDocument;
   onUpdateTable: (updatedTable: TableDocument) => void;
@@ -92,6 +96,7 @@ interface DataTableViewerProps {
   onOpenPerfModal?: () => void;
   onOpenAiDataAssistant?: () => void;
   onOpenAiRowAssistant?: (row: TableRow) => void;
+  aiEnabled?: boolean;
 }
 
 export const DataTableViewer: React.FC<DataTableViewerProps> = ({
@@ -106,6 +111,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   onOpenPerfModal,
   onOpenAiDataAssistant,
   onOpenAiRowAssistant,
+  aiEnabled = true,
 }) => {
   // View Mode: Table (Grid) vs Kanban (Board) vs Calendar vs Memo Board
   const [internalViewMode, setInternalViewMode] = useState<'table' | 'kanban' | 'calendar' | 'memo'>('table');
@@ -114,6 +120,20 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setInternalViewMode(mode);
     onViewModeChange?.(mode);
   };
+
+  const { updateMetrics } = useStatusBar();
+
+  useEffect(() => {
+    if (table) {
+      const jsonStr = JSON.stringify(table);
+      const totalBytes = new TextEncoder().encode(jsonStr).length;
+      updateMetrics({
+        tableName: table.title || '워크스페이스',
+        lastModifiedAt: table.updatedAt || Date.now(),
+        totalBytes,
+      });
+    }
+  }, [table, updateMetrics]);
 
   // Performance Optimization Options State (User-configurable, stored in localStorage)
   const [internalPerfOptions, setInternalPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
@@ -207,6 +227,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
   // Filter Configuration Dropdown Menu State
   const [isFilterConfigOpen, setIsFilterConfigOpen] = useState(false);
+  const [filterConfigAnchorRect, setFilterConfigAnchorRect] = useState<DOMRect | null>(null);
   const filterConfigRef = useRef<HTMLDivElement | null>(null);
 
   // Reset filters, selection, and sync filter column configuration when table changes
@@ -700,9 +721,14 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     setIsRowMenuOpen(false);
   };
 
-  // Delete Single Row (e.g. from Kanban card)
+  // Delete Single Row (e.g. from Memo, Kanban card)
   const handleDeleteSingleRow = (rowId: string) => {
-    if (!window.confirm('정말 이 행을 삭제하시겠습니까?')) return;
+    const confirmMsg =
+      activeViewMode === 'memo' ? '정말 이 스티커 메모를 삭제하시겠습니까?' :
+      activeViewMode === 'kanban' ? '정말 이 카드를 삭제하시겠습니까?' :
+      activeViewMode === 'calendar' ? '정말 이 일정을 삭제하시겠습니까?' :
+      '정말 이 행을 삭제하시겠습니까?';
+    if (!window.confirm(confirmMsg)) return;
     const remainingRows = table.rows.filter((r) => r.id !== rowId);
     fetch(`/api/events/row_evt_${rowId}`, { method: 'DELETE' }).catch(() => {});
     onUpdateTable({
@@ -742,13 +768,22 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     const initialX = position ? position.x : 40 + (table.rows.length % 5) * 50;
     const initialY = position ? position.y : 40 + (table.rows.length % 5) * 35;
 
+    // Find highest zIndex across existing layouts for this table so new note appears on top (맨 앞)
+    const existingLayouts = boardLayoutStore.getLayouts(table.id);
+    let highestZ = 100;
+    Object.values(existingLayouts).forEach((layout) => {
+      if (layout.zIndex > highestZ) {
+        highestZ = layout.zIndex;
+      }
+    });
+
     boardLayoutStore.saveLayout(table.id, {
       rowId: newRowId,
       x: initialX,
       y: initialY,
       width: 280,
       height: 220,
-      zIndex: 250,
+      zIndex: highestZ + 1,
       bgColor: 'amber',
       isPinned: false,
       updatedAt: Date.now(),
@@ -1201,6 +1236,25 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
     onlyStickerFilter,
   ]);
 
+  // High-performance memoized sticker map to prevent expensive column iterations during virtual scrolling
+  const rowStickerMap = useMemo(() => {
+    const map = new Map<string, any[]>();
+    for (let i = 0; i < processedRows.length; i++) {
+      const row = processedRows[i];
+      const hasStickers =
+        (row.stickers && row.stickers.length > 0) ||
+        (row.richContent && row.richContent.includes('wonbee-sticker')) ||
+        table.columns.some((c) => {
+          const v = row.data[c.id];
+          return typeof v === 'string' && v.includes('wonbee-sticker');
+        });
+      if (hasStickers) {
+        map.set(row.id, getAllStickersFromRow(row, table.columns));
+      }
+    }
+    return map;
+  }, [processedRows, table.columns]);
+
   // High-performance Virtual Scrolling (TanStack Virtual) for 10,000+ rows
   const rowVirtualizer = useVirtualizer({
     count: processedRows.length,
@@ -1255,64 +1309,42 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   return (
     <div className="flex-1 h-screen flex flex-col overflow-hidden bg-white dark:bg-[#181818] select-none transition-colors">
       {/* Table Action Bar (Sticky Top Pinned) */}
+      {/* 🟢 메모 보드 모드가 아닐 때만 상단 헤더/툴바 표시 */}
+      {activeViewMode !== 'memo' && (
       <div className="px-4 sm:px-6 py-2.5 border-b border-stone-200/80 dark:border-[#333333] bg-stone-50/90 dark:bg-[#1e1e1e]/90 backdrop-blur-md flex items-center justify-between gap-2.5 sm:gap-3.5 flex-wrap shrink-0 sticky top-0 z-20">
         {/* Search Input, View Mode Switcher & Active Sort Notification */}
         <div className="flex items-center gap-2 sm:gap-2.5 flex-wrap flex-1 min-w-0">
-          {/* View Mode Switcher Pill (Table vs Kanban vs Calendar) */}
-          <div className="flex items-center bg-stone-200/70 dark:bg-[#252525] p-0.5 rounded-xl border border-stone-200/80 dark:border-[#383838] shadow-2xs shrink-0 whitespace-nowrap">
-            <button
-              type="button"
-              onClick={() => setViewMode('table')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                activeViewMode === 'table'
-                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
-                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
-              }`}
-              title="스프레드시트 표(그리드) 보기"
-            >
-              <TableIcon className={`w-3.5 h-3.5 ${activeViewMode === 'table' ? 'text-amber-500' : ''}`} />
-              <span>표 (Table)</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('kanban')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                activeViewMode === 'kanban'
-                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
-                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
-              }`}
-              title="상태/분류별 칸반 보드 보기"
-            >
-              <Layers className={`w-3.5 h-3.5 ${activeViewMode === 'kanban' ? 'text-amber-500' : ''}`} />
-              <span>칸반 보드</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('calendar')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                activeViewMode === 'calendar'
-                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
-                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
-              }`}
-              title="월간/주간/일간 캘린더 및 일정 매크로 보기"
-            >
-              <Calendar className={`w-3.5 h-3.5 ${activeViewMode === 'calendar' ? 'text-amber-500' : ''}`} />
-              <span>캘린더</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('memo')}
-              className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-                activeViewMode === 'memo'
-                  ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
-                  : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
-              }`}
-              title="자유 드래그 & 리사이즈 스티커 메모 보드 보기"
-            >
-              <Sparkles className={`w-3.5 h-3.5 ${activeViewMode === 'memo' ? 'text-amber-500' : ''}`} />
-              <span>메모 보드</span>
-            </button>
-          </div>
+          {/* View Mode Switcher Pill (Kanban vs Calendar only when kanban or calendar; hidden for table or memo) */}
+          {(activeViewMode === 'kanban' || activeViewMode === 'calendar') && (
+            <div className="flex items-center bg-stone-200/70 dark:bg-[#252525] p-0.5 rounded-xl border border-stone-200/80 dark:border-[#383838] shadow-2xs shrink-0 whitespace-nowrap">
+              <button
+                type="button"
+                onClick={() => setViewMode('kanban')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                  activeViewMode === 'kanban'
+                    ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
+                    : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
+                }`}
+                title="상태/분류별 칸반 보드 보기"
+              >
+                <Layers className={`w-3.5 h-3.5 ${activeViewMode === 'kanban' ? 'text-amber-500' : ''}`} />
+                <span>칸반 보드</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('calendar')}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
+                  activeViewMode === 'calendar'
+                    ? 'bg-white dark:bg-[#333333] text-stone-900 dark:text-white shadow-2xs font-bold'
+                    : 'text-stone-500 dark:text-[#999999] hover:text-stone-800 dark:hover:text-[#dddddd]'
+                }`}
+                title="월간/주간/일간 캘린더 및 일정 매크로 보기"
+              >
+                <Calendar className={`w-3.5 h-3.5 ${activeViewMode === 'calendar' ? 'text-amber-500' : ''}`} />
+                <span>캘린더</span>
+              </button>
+            </div>
+          )}
 
           <div className="relative w-48 sm:w-56 md:w-64 shrink-0">
             {isSearching ? (
@@ -1374,7 +1406,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           {/* Column Filter Selector Dropdown (Opt-in column filtering: status/select enabled by default, others opt-in) */}
           <div className="relative shrink-0" ref={filterConfigRef}>
             <button
-              onClick={() => setIsFilterConfigOpen(!isFilterConfigOpen)}
+              onClick={(e) => {
+                const rect = e.currentTarget.getBoundingClientRect();
+                setFilterConfigAnchorRect(rect);
+                setIsFilterConfigOpen(!isFilterConfigOpen);
+              }}
               className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
                 isFilterConfigOpen
                   ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm font-bold'
@@ -1398,8 +1434,17 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               <ChevronDown className="w-3 h-3 text-stone-400" />
             </button>
 
-            {isFilterConfigOpen && (
-              <div className="absolute left-0 top-full mt-1.5 w-76 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-2xl p-2.5 z-50 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
+            {isFilterConfigOpen && filterConfigAnchorRect && createPortal(
+              <div
+                style={{
+                  position: 'fixed',
+                  top: `${filterConfigAnchorRect.bottom + 4}px`,
+                  left: `${Math.min(filterConfigAnchorRect.left, window.innerWidth - 320)}px`,
+                  width: '304px',
+                  zIndex: 999999,
+                }}
+                className="bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-2xl p-2.5 text-xs animate-in fade-in zoom-in-95 duration-150 mat-shadow-3"
+              >
                 <div className="px-1.5 pb-2 border-b border-stone-200 dark:border-[#333333]">
                   <div className="font-bold text-stone-800 dark:text-[#f0f0f0] flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
@@ -1487,32 +1532,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                     </button>
                   </div>
                 </div>
-              </div>
+              </div>,
+              document.body
             )}
           </div>
-
-          {/* Quick Filter: Show Rows with Stickers */}
-          {(totalStickersCount > 0 || totalStickersCount === -1 || onlyStickerFilter) && (
-            <button
-              onClick={() => setOnlyStickerFilter((prev) => !prev)}
-              className={`px-2.5 py-1.5 rounded-xl text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
-                onlyStickerFilter
-                  ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-sm font-bold'
-                  : 'bg-amber-500/10 dark:bg-amber-500/15 text-amber-800 dark:text-amber-300 border-amber-300/70 dark:border-amber-700/60 hover:bg-amber-500/20'
-              }`}
-              title={onlyStickerFilter ? '전체 행 보기로 복귀' : '원노트 스티커 메모가 부착된 행만 모아보기'}
-            >
-              <Pin className="w-3.5 h-3.5 fill-current text-amber-500 shrink-0" />
-              <span>
-                스티커 메모 {totalStickersCount >= 0 ? `(${totalStickersCount}개)` : '필터'}
-              </span>
-              {onlyStickerFilter && (
-                <span className="text-[10px] ml-0.5 px-1 py-0.2 rounded bg-stone-900 text-amber-300 font-bold shrink-0">
-                  필터 ON
-                </span>
-              )}
-            </button>
-          )}
 
           {/* Active Sort Notification & Priority Reset Button */}
           {sortColumnId && (
@@ -1531,269 +1554,8 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
         {/* Right Toolbar Controls */}
         <div className="flex items-center gap-2 flex-wrap shrink-0">
-          {/* Wrap Cells Toggle Button (모든 데이터 한눈에 전체보기 / 줄바꿈 모드) */}
-          <button
-            onClick={toggleWrapCells}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all border shrink-0 whitespace-nowrap ${
-              isWrapCells
-                ? 'bg-amber-500 text-stone-950 border-amber-500 shadow-xs'
-                : 'bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] border-stone-200/60 dark:border-[#383838]'
-            }`}
-            title={isWrapCells ? '셀 요약 축약 보기로 전환 (호버 시 팝오버 확인)' : '모든 셀의 내용 전체 펼쳐보기 (줄바꿈 모드)'}
-          >
-            <WrapText className={`w-3.5 h-3.5 ${isWrapCells ? 'text-stone-950' : 'text-amber-500'} shrink-0`} />
-            <span>{isWrapCells ? '줄바꿈 전체보기 ON' : '줄바꿈 전체보기'}</span>
-          </button>
-
-          {/* Row Height Density Dropdown */}
-          <div className="relative shrink-0" ref={densityMenuRef}>
-            <button
-              onClick={() => setIsDensityMenuOpen(!isDensityMenuOpen)}
-              className="px-2.5 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838] shrink-0 whitespace-nowrap"
-              title="행 높이 밀도 조절"
-            >
-              <AlignJustify className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
-              <span>
-                높이: {rowDensity === 'compact' ? '좁게' : rowDensity === 'spacious' ? '넓게' : '보통'}
-              </span>
-              <ChevronDown className="w-3 h-3 text-stone-400 shrink-0" />
-            </button>
-
-            {isDensityMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-36 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
-                <button
-                  onClick={() => {
-                    handleDensityChange('compact');
-                    setIsDensityMenuOpen(false);
-                  }}
-                  className={`w-full px-2 py-1.5 rounded-lg text-left flex items-center justify-between transition-colors ${
-                    rowDensity === 'compact'
-                      ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 font-bold'
-                      : 'hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc]'
-                  }`}
-                >
-                  <span>좁게 (Compact)</span>
-                  {rowDensity === 'compact' && <span className="text-amber-500">•</span>}
-                </button>
-                <button
-                  onClick={() => {
-                    handleDensityChange('normal');
-                    setIsDensityMenuOpen(false);
-                  }}
-                  className={`w-full px-2 py-1.5 rounded-lg text-left flex items-center justify-between transition-colors ${
-                    rowDensity === 'normal'
-                      ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 font-bold'
-                      : 'hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc]'
-                  }`}
-                >
-                  <span>보통 (Normal)</span>
-                  {rowDensity === 'normal' && <span className="text-amber-500">•</span>}
-                </button>
-                <button
-                  onClick={() => {
-                    handleDensityChange('spacious');
-                    setIsDensityMenuOpen(false);
-                  }}
-                  className={`w-full px-2 py-1.5 rounded-lg text-left flex items-center justify-between transition-colors ${
-                    rowDensity === 'spacious'
-                      ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 font-bold'
-                      : 'hover:bg-stone-100 dark:hover:bg-[#2e2e2e] text-stone-700 dark:text-[#cccccc]'
-                  }`}
-                >
-                  <span>넓게 (Spacious)</span>
-                  {rowDensity === 'spacious' && <span className="text-amber-500">•</span>}
-                </button>
-              </div>
-            )}
-          </div>
-
-          {/* Row Actions Menu Button */}
-          <div className="relative shrink-0" ref={rowMenuRef}>
-            <button
-              onClick={() => setIsRowMenuOpen(!isRowMenuOpen)}
-              className="px-3 py-1.5 bg-stone-100 dark:bg-[#282828] hover:bg-stone-200 dark:hover:bg-[#333333] text-stone-700 dark:text-[#e0e0e0] rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-stone-200/60 dark:border-[#383838] shrink-0 whitespace-nowrap"
-            >
-              <Rows className="w-3.5 h-3.5 text-stone-500 dark:text-stone-400 shrink-0" />
-              <span>행 작업 ({selectedRowIds.size}개 선택)</span>
-              <ChevronDown className="w-3 h-3 text-stone-400 shrink-0" />
-            </button>
-
-            {isRowMenuOpen && (
-              <div className="absolute right-0 top-full mt-1 w-64 bg-white dark:bg-[#222222] border border-stone-200 dark:border-[#383838] rounded-xl shadow-xl p-1.5 z-40 text-xs animate-in fade-in slide-in-from-top-1 duration-150 mat-shadow-3">
-                <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
-                  새 행 추가 (팝업 대화상자)
-                </div>
-                <button
-                  onClick={() => handleOpenAddRowModal('bottom')}
-                  className="w-full px-2 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2"
-                >
-                  <Plus className="w-3.5 h-3.5 text-amber-500" />
-                  <span>맨 아래에 새 행 추가</span>
-                </button>
-                <button
-                  onClick={() => handleOpenAddRowModal('top')}
-                  className="w-full px-2 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2"
-                >
-                  <Plus className="w-3.5 h-3.5 text-amber-500" />
-                  <span>맨 위에 새 행 추가</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setImportInitialText('');
-                    setImportInitialTab('file');
-                    setIsImportRowsModalOpen(true);
-                    setIsRowMenuOpen(false);
-                  }}
-                  className="w-full px-2 py-1.5 text-left hover:bg-emerald-50 dark:hover:bg-emerald-950/40 text-stone-800 dark:text-[#eeeeee] rounded-lg flex items-center gap-2 font-medium"
-                >
-                  <Upload className="w-3.5 h-3.5 text-emerald-500" />
-                  <span>엑셀/CSV/TXT 파일에서 가져오기</span>
-                </button>
-
-                {selectedRowIds.size > 0 && (
-                  <>
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-                    <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
-                      선택된 {selectedRowIds.size}개 행 우선순위 이동
-                    </div>
-                    <button
-                      onClick={() => handleMoveSelectedRows('top')}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <ChevronsUp className="w-3.5 h-3.5 text-amber-500" />
-                      <span>최상단으로 일괄 이동</span>
-                    </button>
-                    <button
-                      onClick={() => handleMoveSelectedRows('up')}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <ArrowUp className="w-3.5 h-3.5 text-stone-500" />
-                      <span>위로 한 칸 이동</span>
-                    </button>
-                    <button
-                      onClick={() => handleMoveSelectedRows('down')}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <ArrowDown className="w-3.5 h-3.5 text-stone-500" />
-                      <span>아래로 한 칸 이동</span>
-                    </button>
-                    <button
-                      onClick={() => handleMoveSelectedRows('bottom')}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <ChevronsDown className="w-3.5 h-3.5 text-amber-500" />
-                      <span>최하단으로 일괄 이동</span>
-                    </button>
-
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-                    <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
-                      선택된 {selectedRowIds.size}개 행 내보내기 (CSV / TXT)
-                    </div>
-                    <button
-                      onClick={() => handleExportCsv()}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>선택 행 CSV 파일 다운로드</span>
-                    </button>
-                    <button
-                      onClick={() => handleExportTxt()}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-blue-500" />
-                      <span>선택 행 TXT 파일 다운로드</span>
-                    </button>
-                    <button
-                      onClick={() => handleCopyCsv()}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      {copiedBatchFormat === 'CSV' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5 text-stone-500" />
-                      )}
-                      <span>{copiedBatchFormat === 'CSV' ? 'CSV 복사 완료!' : '선택 행 CSV로 클립보드 복사'}</span>
-                    </button>
-                    <button
-                      onClick={() => handleCopyTxt()}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      {copiedBatchFormat === 'TXT' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5 text-stone-500" />
-                      )}
-                      <span>{copiedBatchFormat === 'TXT' ? 'TXT 복사 완료!' : '선택 행 TXT로 클립보드 복사'}</span>
-                    </button>
-
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-                    <button
-                      onClick={handleDuplicateSelectedRows}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <Copy className="w-3.5 h-3.5 text-blue-500" />
-                      <span>선택 행 복제하기</span>
-                    </button>
-                    <button
-                      onClick={handleDeleteSelectedRows}
-                      className="w-full px-2 py-1.5 text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-lg flex items-center gap-2 font-semibold"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>선택 행 삭제하기</span>
-                    </button>
-                  </>
-                )}
-
-                {selectedRowIds.size === 0 && (
-                  <>
-                    <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
-                    <div className="px-2 py-1 text-[10px] font-semibold text-stone-400 dark:text-[#888888] uppercase">
-                      전체 행 내보내기 ({table.rows.length}개)
-                    </div>
-                    <button
-                      onClick={() => handleExportCsv(processedRows)}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-500" />
-                      <span>전체 행 CSV 파일 다운로드</span>
-                    </button>
-                    <button
-                      onClick={() => handleExportTxt(processedRows)}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      <FileText className="w-3.5 h-3.5 text-blue-500" />
-                      <span>전체 행 TXT 파일 다운로드</span>
-                    </button>
-                    <button
-                      onClick={() => handleCopyCsv(processedRows)}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      {copiedBatchFormat === 'CSV' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5 text-stone-500" />
-                      )}
-                      <span>{copiedBatchFormat === 'CSV' ? 'CSV 복사 완료!' : '전체 행 CSV로 클립보드 복사'}</span>
-                    </button>
-                    <button
-                      onClick={() => handleCopyTxt(processedRows)}
-                      className="w-full px-2 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-[#333333] text-stone-700 dark:text-[#cccccc] rounded-lg flex items-center gap-2"
-                    >
-                      {copiedBatchFormat === 'TXT' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-500" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5 text-stone-500" />
-                      )}
-                      <span>{copiedBatchFormat === 'TXT' ? 'TXT 복사 완료!' : '전체 행 TXT로 클립보드 복사'}</span>
-                    </button>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-
           {/* AI Data Modifier Assistant Button */}
-          {onOpenAiDataAssistant && (
+          {aiEnabled && onOpenAiDataAssistant && (
             <button
               type="button"
               onClick={onOpenAiDataAssistant}
@@ -1815,9 +1577,10 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           </button>
         </div>
       </div>
+      )}
 
       {/* Active Column Filters Bar (Excel-style Applied Filters Status) */}
-      {Object.keys(columnFilters).length > 0 && (
+      {activeViewMode !== 'memo' && Object.keys(columnFilters).length > 0 && (
         <div className="px-6 py-1.5 border-b border-stone-200/60 dark:border-[#2d2d2d] bg-amber-50/40 dark:bg-[#1f1d18] flex items-center gap-2 overflow-x-auto custom-scrollbar flex-shrink-0 text-xs">
           <div className="flex items-center gap-1 text-[11px] font-bold text-amber-700 dark:text-amber-400 flex-shrink-0">
             <Filter className="w-3 h-3 text-amber-500 fill-current" />
@@ -1910,7 +1673,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
             <col className="w-auto" />
           </colgroup>
           {/* Table Header Row */}
-          <thead className="sticky top-0 z-30 bg-stone-100/95 dark:bg-[#222222]/95 backdrop-blur-md border-b border-stone-200 dark:border-[#383838] shadow-2xs">
+          <thead className="sticky top-0 z-30 bg-stone-100 dark:bg-[#222222] border-b border-stone-200 dark:border-[#383838] shadow-2xs">
             <tr>
               {/* Checkbox, Drag Handle & Priority Index Header */}
               <th
@@ -1935,7 +1698,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                 const isSorted = sortColumnId === col.id;
                 const isFilterEnabled = enabledFilterColIds.has(col.id);
                 const hasFilter = isFilterEnabled && !!columnFilters[col.id];
-
+                const isDropdownOpen = openFilterColId === col.id; // 현재 드롭다운 열림 여부
                 return (
                   <th
                     key={col.id}
@@ -1943,6 +1706,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       width: `${currentWidth}px`,
                       minWidth: `${currentWidth}px`,
                       maxWidth: `${currentWidth}px`,
+                      zIndex: isDropdownOpen ? 50 : 10, // 열린 드롭다운 컬럼에 z-index 50 부여
                     }}
                     className="relative px-3 py-2 font-semibold text-stone-800 dark:text-[#f0f0f0] border-r border-stone-200 dark:border-[#333333] select-none group/th hover:bg-stone-200/50 dark:hover:bg-[#2a2a2a] transition-colors"
                   >
@@ -1964,11 +1728,11 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                         )}
                         {isUpdateDateColumn(col) && (
                           <span
-                            className="text-[9px] px-1 py-0.2 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold tracking-tight flex items-center gap-0.5"
+                            className="text-[9px] px-1 py-0.2 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-bold tracking-tight flex items-center gap-0.5 shrink-0 whitespace-nowrap"
                             title="데이터 수정 시 년월일 시분으로 자동 갱신되는 열입니다 (직접 입력도 가능)"
                           >
-                            <Clock className="w-2.5 h-2.5" />
-                            자동
+                            <Clock className="w-2.5 h-2.5 shrink-0" />
+                            <span>자동</span>
                           </span>
                         )}
                         {isSorted && (
@@ -2071,14 +1835,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               const heightClass = getRowHeightClass();
               const isDragging = draggedRowId === row.id;
               const isDropTarget = dropTargetRowId === row.id;
-              const rowHasStickers =
-                (row.stickers && row.stickers.length > 0) ||
-                (row.richContent && row.richContent.includes('wonbee-sticker')) ||
-                table.columns.some((c) => {
-                  const v = row.data[c.id];
-                  return typeof v === 'string' && v.includes('wonbee-sticker');
-                });
-              const rowStickers = rowHasStickers ? getAllStickersFromRow(row, table.columns) : [];
+              const rowStickers = rowStickerMap.get(row.id) || EMPTY_STICKER_ARRAY;
 
               return (
                 <tr
@@ -2421,7 +2178,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
                       </button>
 
                       {/* AI Row Data Modifier Action */}
-                      {onOpenAiRowAssistant && (
+                      {aiEnabled && onOpenAiRowAssistant && (
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
@@ -2606,12 +2363,9 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           </span>
           <span>•</span>
           <span><strong className="text-stone-800 dark:text-[#f0f0f0]">{visibleColumns.length}</strong>/{table.columns.length}개 컬럼 표시중</span>
-          <span className="text-[11px] text-stone-400 dark:text-[#777777]">
-            (💡 엑셀 셀 복사 후 화면에서 바로 Ctrl+V를 누르면 일괄 가져오기가 실행됩니다)
-          </span>
         </div>
         <div>
-          <span>WonBee Realtime Data Grid</span>
+          <span></span>
         </div>
       </div>
     </>
@@ -2667,19 +2421,19 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
           const targetCol = table.columns.find((c) => c.id === openFilterColId);
           if (!targetCol) return null;
           return (
-            <ExcelColumnFilterDropdown
-              isOpen={true}
-              onClose={() => setOpenFilterColId(null)}
-              column={targetCol}
-              allRows={table.rows}
-              activeFilterValues={columnFilters[openFilterColId]}
-              isSorted={sortColumnId === openFilterColId}
-              sortDirection={sortColumnId === openFilterColId ? sortDirection : 'asc'}
-              onApplyFilter={handleApplyColumnFilter}
-              onApplySort={handleApplySort}
-              onDisableFilter={(colId) => handleToggleFilterColumn(colId, false)}
-              anchorRect={filterAnchorRect}
-            />
+                <ExcelColumnFilterDropdown
+                  isOpen={true}
+                  onClose={() => setOpenFilterColId(null)}
+                  column={targetCol}
+                  allRows={table.rows}
+                  activeFilterValues={columnFilters[openFilterColId]}
+                  isSorted={sortColumnId === openFilterColId}
+                  sortDirection={sortColumnId === openFilterColId ? sortDirection : 'asc'}
+                  onApplyFilter={handleApplyColumnFilter}
+                  onApplySort={handleApplySort}
+                  onDisableFilter={(colId) => handleToggleFilterColumn(colId, false)}
+                  anchorRect={filterAnchorRect}
+                />
           );
         })()
       )}

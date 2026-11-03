@@ -22,6 +22,10 @@ import {
   Clock,
   Settings,
   HelpCircle,
+  MessageSquare,
+  Bot,
+  User,
+  Trash2,
 } from 'lucide-react';
 import {
   ollamaClient,
@@ -51,7 +55,7 @@ interface AiAgentDrawerProps {
   onUpdateTable?: (table: TableDocument) => void;
   onUpdateRow?: (row: TableRow) => void;
   onRefreshData?: () => void;
-  initialTab?: 'data' | 'editor' | 'rag' | 'diagram' | 'action';
+  initialTab?: 'chat' | 'data' | 'editor' | 'rag' | 'diagram' | 'action';
 }
 
 export const AiAgentDrawer: React.FC<AiAgentDrawerProps> = ({
@@ -67,10 +71,56 @@ export const AiAgentDrawer: React.FC<AiAgentDrawerProps> = ({
   onUpdateTable,
   onUpdateRow,
   onRefreshData,
-  initialTab = 'data',
+  initialTab = 'chat',
 }) => {
-  // Tabs: 'data' | 'editor' | 'rag' | 'diagram' | 'action'
-  const [activeTab, setActiveTab] = useState<'data' | 'editor' | 'rag' | 'diagram' | 'action'>(initialTab);
+  // Tabs: 'chat' | 'data' | 'editor' | 'rag' | 'diagram' | 'action'
+  const [activeTab, setActiveTab] = useState<'chat' | 'data' | 'editor' | 'rag' | 'diagram' | 'action'>(initialTab);
+
+  // --- 0. Chatbot Conversational States ---
+  const [chatMessages, setChatMessages] = useState<Array<{ role: 'user' | 'assistant'; content: string; timestamp: number }>>([
+    {
+      role: 'assistant',
+      content: '안녕하세요! WonBee AI 어시스턴트(Qwen 2.5)입니다. 워크스페이스 데이터, 코드 분석, 문서 작성 또는 일반적인 질문을 편하게 대화로 물어보세요!',
+      timestamp: Date.now(),
+    },
+  ]);
+  const [chatInput, setChatInput] = useState('');
+  const [isChatLoading, setIsChatLoading] = useState(false);
+
+  const handleSendChatMessage = async (promptText?: string) => {
+    const textToSend = promptText || chatInput;
+    if (!textToSend.trim() || isChatLoading) return;
+
+    const userMsg = { role: 'user' as const, content: textToSend.trim(), timestamp: Date.now() };
+    setChatMessages((prev) => [...prev, userMsg]);
+    if (!promptText) setChatInput('');
+    setIsChatLoading(true);
+    setErrorMsg(null);
+
+    try {
+      let contextSummary = '';
+      if (table) {
+        contextSummary = `\n[현재 워크스페이스 컨텍스트]\n- 테이블 이름: ${table.title}\n- 행 개수: ${table.rows.length}개\n- 열 목록: ${table.columns.map((c) => c.name).join(', ')}`;
+      }
+
+      const systemPrompt = `당신은 WonBee 워크스페이스의 지능형 AI 어시스턴트(Qwen 2.5)입니다. 친절하고 정확하게 답변하며, 마크다운 형식으로 포맷팅하여 답변하세요.${contextSummary}`;
+
+      const response = await ollamaClient.generate({
+        prompt: textToSend.trim(),
+        systemPrompt,
+        temperature: 0.4,
+      });
+
+      const assistantMsg = { role: 'assistant' as const, content: response || '답변을 생성하지 못했습니다.', timestamp: Date.now() };
+      setChatMessages((prev) => [...prev, assistantMsg]);
+    } catch (err: any) {
+      setErrorMsg(err.message || 'AI 응답 생성 실패');
+      const errorMsgItem = { role: 'assistant' as const, content: `⚠ 에러 발생: ${err.message || '응답을 가져오지 못했습니다.'}`, timestamp: Date.now() };
+      setChatMessages((prev) => [...prev, errorMsgItem]);
+    } finally {
+      setIsChatLoading(false);
+    }
+  };
 
   // Synchronize initialTab when drawer opens or prop updates
   useEffect(() => {
@@ -734,6 +784,25 @@ export const AiAgentDrawer: React.FC<AiAgentDrawerProps> = ({
 
       {/* 5 Tab Navigation */}
       <div className="flex border-b border-stone-200 dark:border-[#2a2a2a] bg-stone-100/60 dark:bg-[#1a1a1a] p-1.5 gap-1 text-xs font-semibold overflow-x-auto">
+        {/* Tab: Chat */}
+        <button
+          type="button"
+          onClick={() => {
+            setActiveTab('chat');
+            setErrorMsg(null);
+            setSuccessMsg(null);
+          }}
+          className={`flex-1 min-w-[70px] py-2 rounded-xl flex items-center justify-center gap-1.5 transition-colors ${
+            activeTab === 'chat'
+              ? 'bg-amber-500 text-stone-950 font-bold shadow-xs'
+              : 'text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200'
+          }`}
+          title="AI 어시스턴트와 자유 챗봇 대화"
+        >
+          <MessageSquare className="w-3.5 h-3.5" />
+          <span>AI 챗봇</span>
+        </button>
+
         {/* Tab: Data Edit */}
         <button
           type="button"
@@ -841,7 +910,120 @@ export const AiAgentDrawer: React.FC<AiAgentDrawerProps> = ({
       )}
 
       {/* Content Body */}
-      <div className="flex-1 overflow-auto p-5 space-y-6 custom-scrollbar">
+      <div className="flex-1 overflow-auto p-5 space-y-6 custom-scrollbar flex flex-col">
+        {/* ==================================================== */}
+        {/* TAB CHAT: CHATBOT CONVERSATIONAL ASSISTANT */}
+        {/* ==================================================== */}
+        {activeTab === 'chat' && (
+          <div className="flex-1 flex flex-col min-h-[420px] h-full space-y-4">
+            <div className="flex items-center justify-between pb-2 border-b border-stone-200 dark:border-stone-800">
+              <div>
+                <h3 className="text-sm font-bold text-stone-900 dark:text-stone-100 flex items-center gap-2">
+                  <MessageSquare className="w-4 h-4 text-amber-500" />
+                  <span>AI 어시스턴트</span>
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setChatMessages([{ role: 'assistant', content: '대화 기록이 초기화되었습니다. 무엇을 도와드릴까요?', timestamp: Date.now() }])}
+                className="px-2.5 py-1 rounded-lg border border-stone-200 dark:border-stone-700 text-[11px] text-stone-500 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 flex items-center gap-1 transition-colors"
+                title="대화 내역 비우기"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>대화 초기화</span>
+              </button>
+            </div>
+
+            {/* Quick Prompt Suggestions */}
+            <div className="flex flex-wrap items-center gap-1.5">
+              {[
+                '현재 테이블 데이터 요약해줘',
+                '이 데이터에서 주목할 점은?',
+                '코드 작성 도와줘',
+                '안녕? 소개 좀 해줘',
+              ].map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => handleSendChatMessage(p)}
+                  disabled={isChatLoading}
+                  className="px-2.5 py-1 rounded-lg bg-stone-100 dark:bg-stone-800 hover:bg-amber-500/15 hover:text-amber-700 dark:hover:text-amber-300 text-stone-600 dark:text-stone-300 text-[11px] font-medium transition-colors border border-stone-200 dark:border-stone-700 disabled:opacity-40"
+                >
+                  💡 {p}
+                </button>
+              ))}
+            </div>
+
+            {/* Messages Scroll Area */}
+            <div className="flex-1 overflow-y-auto space-y-3 p-3 rounded-2xl bg-stone-50 dark:bg-[#151515] border border-stone-200/80 dark:border-stone-800 custom-scrollbar min-h-[280px]">
+              {chatMessages.map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={`flex gap-2.5 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+                >
+                  {msg.role === 'assistant' && (
+                    <div className="w-7 h-7 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 mt-0.5">
+                      <Bot className="w-4 h-4" />
+                    </div>
+                  )}
+                  <div
+                    className={`max-w-[82%] p-3.5 rounded-2xl text-xs leading-relaxed ${
+                      msg.role === 'user'
+                        ? 'bg-amber-500 text-stone-950 font-medium rounded-tr-xs shadow-xs'
+                        : 'bg-white dark:bg-[#222222] text-stone-800 dark:text-stone-200 border border-stone-200/80 dark:border-stone-700/80 rounded-tl-xs shadow-xs whitespace-pre-wrap break-words'
+                    }`}
+                  >
+                    {msg.content}
+                  </div>
+                  {msg.role === 'user' && (
+                    <div className="w-7 h-7 rounded-xl bg-stone-200 dark:bg-stone-700 text-stone-700 dark:text-stone-200 flex items-center justify-center shrink-0 mt-0.5">
+                      <User className="w-4 h-4" />
+                    </div>
+                  )}
+                </div>
+              ))}
+              {isChatLoading && (
+                <div className="flex gap-2.5 justify-start items-center">
+                  <div className="w-7 h-7 rounded-xl bg-amber-500/15 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0">
+                    <Bot className="w-4 h-4 animate-spin" />
+                  </div>
+                  <div className="p-3 rounded-2xl bg-white dark:bg-[#222222] text-stone-400 text-xs flex items-center gap-2 border border-stone-200 dark:border-stone-700">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-amber-500" />
+                    <span>AI가 답변을 생각하고 있습니다...</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Chat Input Bar */}
+            <div className="flex items-center gap-2 pt-2 shrink-0">
+              <input
+                type="text"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSendChatMessage();
+                  }
+                }}
+                placeholder="AI에게 무엇이든 물어보세요... (Enter 전송)"
+                disabled={isChatLoading}
+                className="flex-1 px-4 py-2.5 rounded-xl border border-stone-300 dark:border-stone-700 bg-white dark:bg-[#1a1a1a] text-xs focus:ring-2 focus:ring-amber-500 focus:outline-hidden disabled:opacity-40"
+              />
+              <button
+                type="button"
+                onClick={() => handleSendChatMessage()}
+                disabled={!chatInput.trim() || isChatLoading}
+                className="px-4 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-stone-950 font-bold text-xs flex items-center gap-1.5 transition-colors shadow-sm shrink-0 cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" />
+                <span>전송</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* ==================================================== */}
         {/* TAB 0: DATA EDIT AGENT (테이블 및 행 데이터 지능형 수정) */}
         {/* ==================================================== */}

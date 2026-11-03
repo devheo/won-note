@@ -59,7 +59,7 @@ export const WonBeeMascot: React.FC<WonBeeMascotProps> = () => {
 
       {/* Floating Mascot Speech Bubble */}
       {showSpeech && (
-        <div className="absolute left-10 bottom-0 z-50 w-64 p-3 bg-white/95 dark:bg-stone-900/95 text-stone-800 dark:text-stone-100 rounded-2xl shadow-xl border border-stone-200/90 dark:border-amber-500/40 text-xs animate-in fade-in slide-in-from-left-2 duration-150">
+        <div className="hidden absolute left-10 bottom-0 z-50 w-64 p-3 bg-white/95 dark:bg-stone-900/95 text-stone-800 dark:text-stone-100 rounded-2xl shadow-xl border border-stone-200/90 dark:border-amber-500/40 text-xs animate-in fade-in slide-in-from-left-2 duration-150">
           <div className="flex items-center justify-between pb-1.5 mb-1.5 border-b border-stone-200 dark:border-stone-800 text-[11px] text-amber-600 dark:text-amber-400 font-bold">
             <span className="flex items-center gap-1">
               <Sparkles className="w-3 h-3" />

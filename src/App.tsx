@@ -23,6 +23,7 @@ import { localFileService } from './services/storage/localFileService';
 import { INITIAL_WORKSPACE_DATA } from './data/initialData';
 import { ensureWorkspaceTree } from './utils/workspaceTreeUtils';
 import { InfiniteTreeSidebar } from './components/sidebar/InfiniteTreeSidebar';
+import { GlobalStatusBarProvider } from './components/common/GlobalStatusBar';
 import { DataTableViewer } from './components/table/DataTableViewer';
 import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer';
 import { RichEditorModal } from './components/editor/RichEditorModal';
@@ -34,18 +35,26 @@ import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
 import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
-import { SettingsMenuDropdown } from './components/common/SettingsMenuDropdown';
+import { SettingsMenuDropdown, AppThemeMode } from './components/common/SettingsMenuDropdown';
 import { PrettyJsonModal } from './components/modals/PrettyJsonModal';
 import { EncodingConverterModal } from './components/modals/EncodingConverterModal';
+import { FileDiffModal } from './components/modals/FileDiffModal';
+import { FormatExpressModal } from './components/modals/FormatExpressModal';
+import { CryptoCodecModal } from './components/modals/CryptoCodecModal';
+import { PostmanModal } from './components/modals/PostmanModal';
+import { CalculatorModal } from './components/modals/CalculatorModal';
 import { PerformanceSettingsModal } from './components/modals/PerformanceSettingsModal';
 import { DeleteTreeItemModal } from './components/modals/DeleteTreeItemModal';
 import { SampleConfirmModal } from './components/modals/SampleConfirmModal';
+import { useWorkspaceModals } from './hooks/useWorkspaceModals';
 import {
   PerformanceOptions,
   loadPerformanceOptions,
   savePerformanceOptions,
 } from './types/performance';
 import { envService } from './services/storage/envService';
+import { resolveApiUrl } from './services/httpBridge';
+import { createSseConnection } from './services/sseService';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
 import { CalendarNotificationToast } from './components/calendar/CalendarNotificationToast';
 import { AiAgentDrawer } from './components/agent/AiAgentDrawer';
@@ -56,8 +65,13 @@ import {
   Table as TableIcon,
   ChevronRight,
   Search,
+  Code,
   Code2,
   RefreshCw,
+  GitCompare,
+  Lock,
+  Terminal,
+  Calculator,
 } from 'lucide-react';
 
 export default function App() {
@@ -101,19 +115,23 @@ export default function App() {
   const [isLocalFileSaving, setIsLocalFileSaving] = useState(false);
   const isFsSupported = localFileService.isSupported();
 
-  // Theme State
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+  const LIGHT_THEMES = ['light', 'material-light', 'bootstrap-light', 'warm-light'];
+
+  // Multi-Theme State
+  const [theme, setTheme] = useState<AppThemeMode>(() => {
     if (typeof window !== 'undefined') {
-      const envTheme = envService.getEnv().theme;
-      if (envTheme) return envTheme === 'dark';
-      return (
-        localStorage.getItem('wonbee_theme') === 'dark' ||
-        (!localStorage.getItem('wonbee_theme') &&
-          window.matchMedia('(prefers-color-scheme: dark)').matches)
-      );
+      const envTheme = envService.getEnv().theme as string;
+      if (envTheme) {
+        if (envTheme === 'dark') return 'dark-soft';
+        return envTheme as any;
+      }
+      const saved = localStorage.getItem('wonbee_theme');
+      if (saved) return saved as any;
+      return 'dark-soft';
     }
-    return false;
+    return 'dark-soft';
   });
+  const isDarkMode = !LIGHT_THEMES.includes(theme);
 
   // Zoom State (persisted)
   const [zoomLevel, setZoomLevel] = useState<number>(() => {
@@ -126,11 +144,71 @@ export default function App() {
     localStorage.setItem('wonbee_zoom_level', newZoom.toString());
   };
 
-  // Switch Active Table & Persist
+  const syncToLocalFileIfConnected = useCallback(async (data: WorkspaceData) => {
+    if (localFileService.hasConnectedFile()) {
+      try {
+        setIsLocalFileSaving(true);
+        await localFileService.saveToConnectedFile(data);
+      } catch (err) {
+        console.error('Error auto-syncing to connected local file:', err);
+      } finally {
+        setIsLocalFileSaving(false);
+      }
+    }
+  }, []);
+
+  const mapDefaultViewToViewMode = (defaultView?: string): 'table' | 'kanban' | 'calendar' | 'memo' => {
+    if (defaultView === 'memo') return 'memo';
+    if (defaultView === 'cards' || defaultView === 'kanban') return 'kanban';
+    if (defaultView === 'calendar') return 'calendar';
+    return 'table';
+  };
+
+  const resolveViewModeForTable = useCallback(
+    (tableId: string): 'table' | 'kanban' | 'calendar' | 'memo' => {
+      const targetTable = workspace?.tables?.[tableId];
+      const treeItem = workspace?.tree?.find((t) => t.id === tableId);
+      const title = treeItem?.title || targetTable?.title || '';
+      const icon = treeItem?.icon || '';
+      const dv = targetTable?.defaultView as string;
+
+      // 1. Explicit specialized table types (Memo, Calendar, Kanban) take absolute precedence
+      if (dv === 'memo' || icon === 'sticky-note' || title.includes('📌') || title.includes('메모') || title.includes('스티커')) {
+        return 'memo';
+      }
+      if (dv === 'calendar' || icon === 'calendar' || title.includes('📅') || title.includes('캘린더') || title.includes('일정')) {
+        return 'calendar';
+      }
+      if (dv === 'cards' || dv === 'kanban' || icon === 'kanban' || title.includes('📋') || title.includes('칸반') || title.includes('TO-DO')) {
+        return 'kanban';
+      }
+      if (dv) {
+        return mapDefaultViewToViewMode(dv);
+      }
+
+      // 2. User saved per-table preference
+      const perTableSaved = localStorage.getItem(`wonbee_view_mode_${tableId}`);
+      if (
+        perTableSaved === 'table' ||
+        perTableSaved === 'kanban' ||
+        perTableSaved === 'calendar' ||
+        perTableSaved === 'memo'
+      ) {
+        return perTableSaved;
+      }
+
+      return 'table';
+    },
+    [workspace?.tables, workspace?.tree]
+  );
+
+  // Switch Active Table & Persist (테이블 전환 시 뷰모드 보장)
   const handleSelectActiveTable = (tableId: string | null) => {
     setActiveTableId(tableId);
     if (tableId) {
       localStorage.setItem('wonbee_active_table_id', tableId);
+      const mode = resolveViewModeForTable(tableId);
+      setViewMode(mode);
     }
   };
 
@@ -139,6 +217,18 @@ export default function App() {
       localStorage.setItem('wonbee_active_table_id', activeTableId);
     }
   }, [activeTableId]);
+
+  const prevActiveTableIdRef = useRef<string | null>(activeTableId);
+
+  // Auto-sync viewMode ONLY when activeTableId changes to a different table
+  useEffect(() => {
+    if (activeTableId && activeTableId !== prevActiveTableIdRef.current) {
+      prevActiveTableIdRef.current = activeTableId;
+      localStorage.setItem('wonbee_active_table_id', activeTableId);
+      const mode = resolveViewModeForTable(activeTableId);
+      setViewMode(mode);
+    }
+  }, [activeTableId, resolveViewModeForTable]);
 
   // Safety guard: Ensure activeTableId is never null if tables exist in workspace
   useEffect(() => {
@@ -156,25 +246,41 @@ export default function App() {
     }
   }, [workspace?.tables, activeTableId]);
 
-  // Modals state
-  const [editingRow, setEditingRow] = useState<TableRow | null>(null);
-  const [editingTargetColId, setEditingTargetColId] = useState<string | null>(null);
-  const [selectedDetailRow, setSelectedDetailRow] = useState<TableRow | null>(null);
-  const [selectedDetailRowIndex, setSelectedDetailRowIndex] = useState<number>(0);
-  const [isDataPortabilityOpen, setIsDataPortabilityOpen] = useState(false);
-  const [isTextPasteOpen, setIsTextPasteOpen] = useState(false);
-  const [isUniversalImportOpen, setIsUniversalImportOpen] = useState(false);
-  const [isServerSettingsOpen, setIsServerSettingsOpen] = useState(false);
-  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
-  const [isAiAgentOpen, setIsAiAgentOpen] = useState(false);
-  const [isPrettyJsonOpen, setIsPrettyJsonOpen] = useState(false);
-  const [isEncodingConverterOpen, setIsEncodingConverterOpen] = useState(false);
+  // Modals state management via custom hook
+  const {
+    openModal,
+    closeModal,
+    isModalOpen,
+    editingRow,
+    setEditingRow,
+    editingTargetColId,
+    setEditingTargetColId,
+    selectedDetailRow,
+    setSelectedDetailRow,
+    selectedDetailRowIndex,
+    setSelectedDetailRowIndex,
+    treeItemToDelete,
+    setTreeItemToDelete,
+  } = useWorkspaceModals();
+
   const [aiAgentInitialTab, setAiAgentInitialTab] = useState<'data' | 'editor' | 'rag' | 'diagram' | 'action'>('data');
   const [aiAgentActiveRow, setAiAgentActiveRow] = useState<TableRow | null>(null);
   const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
   const [headerTitleInput, setHeaderTitleInput] = useState('');
-  const [treeItemToDelete, setTreeItemToDelete] = useState<TreeItem | null>(null);
-  const [isSampleConfirmOpen, setIsSampleConfirmOpen] = useState(false);
+
+  // AI Enabled State from EnvService (Defaults to false in offline/file:// mode, true in server API mode)
+  const [aiEnabled, setAiEnabled] = useState<boolean>(() => {
+    const savedEnv = envService.getEnv();
+    if (localStorage.getItem('wonbee_user_env') !== null) {
+      return savedEnv.aiEnabled;
+    }
+    const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+    return useServer && !isFileProtocol;
+  });
+  const handleToggleAi = (enabled: boolean) => {
+    setAiEnabled(enabled);
+    envService.updateEnv({ aiEnabled: enabled });
+  };
 
   // Performance Optimization Options State
   const [perfOptions, setPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());
@@ -185,15 +291,124 @@ export default function App() {
     savePerformanceOptions(newOpts);
   };
 
-  // View Mode: 'table' vs 'kanban' vs 'calendar' vs 'memo' (Persisted in localStorage)
+  // View Mode: 'table' vs 'kanban' vs 'calendar' vs 'memo' (Persisted per table in localStorage)
   const [viewMode, setViewMode] = useState<'table' | 'kanban' | 'calendar' | 'memo'>(() => {
+    const savedTableId = localStorage.getItem('wonbee_active_table_id');
+    if (savedTableId) {
+      const perTableSaved = localStorage.getItem(`wonbee_view_mode_${savedTableId}`);
+      if (perTableSaved) return perTableSaved as any;
+    }
     return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban' | 'calendar' | 'memo') || 'table';
   });
 
   const handleViewModeChange = (mode: 'table' | 'kanban' | 'calendar' | 'memo') => {
     setViewMode(mode);
     localStorage.setItem('wonbee_view_mode', mode);
+    if (activeTableId) {
+      localStorage.setItem(`wonbee_view_mode_${activeTableId}`, mode);
+    }
   };
+
+  // 1. 디바운스 타이머 및 대기 중인 데이터 Ref
+  const saveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveTableRef = useRef<TableDocument | null>(null);
+  const pendingSaveWorkspaceRef = useRef<WorkspaceData | null>(null);
+
+  /**
+     * 2. 서버 모드 3초 디바운스 통합 저장 함수
+     * (메모 타이핑/드래그 시 호출되는 전용 함수)
+     */
+    const handleUpdateTableDebounced = useCallback(
+      (updatedTable: TableDocument) => {
+        const now = Date.now();
+        const updatedTableWithTime: TableDocument = {
+          ...updatedTable,
+          updatedAt: now,
+        };
+
+        // ⚡️ [0ms 즉시 실행] React UI State는 지연 없이 즉시 반영하여 부드러운 타이핑/드래그 보장
+        const updatedTables = {
+          ...workspace.tables,
+          [updatedTableWithTime.id]: updatedTableWithTime,
+        };
+
+        const updatedTree = workspace.tree.map((item) => {
+          if (item.id === updatedTableWithTime.id) {
+            return { ...item, title: updatedTableWithTime.title, updatedAt: now };
+          }
+          return item;
+        });
+
+        const updatedWs: WorkspaceData = {
+          ...workspace,
+          tree: updatedTree,
+          tables: updatedTables,
+          exportedAt: now,
+        };
+
+        setWorkspace(updatedWs);
+        pendingSaveTableRef.current = updatedTableWithTime;
+        pendingSaveWorkspaceRef.current = updatedWs;
+
+        // ⏱️ 서버 변경 알림이 발행되기 전에 편집을 합치도록 서버 저장은 3초 디바운스
+        if (saveDebounceTimerRef.current) {
+          clearTimeout(saveDebounceTimerRef.current);
+        }
+
+        const debounceDelay = useServer ? 3000 : 300;
+
+        saveDebounceTimerRef.current = setTimeout(async () => {
+          try {
+            if (useServer) {
+              // 서버 모드: Dexie 로컬 캐시 + 백엔드 DB 저장 + Push Sync (3초 후 발동)
+              await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+              await repository.saveTable(updatedTableWithTime);
+
+              if (repository.pushSync) {
+                await repository.pushSync();
+              }
+            } else {
+              // 서버리스 모드: 로컬 IndexedDB / Dexie에 저장
+              await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+              await repository.saveWorkspace(updatedWs);
+            }
+
+            await syncToLocalFileIfConnected(updatedWs);
+            if (pendingSaveTableRef.current?.updatedAt === updatedTableWithTime.updatedAt) {
+              pendingSaveTableRef.current = null;
+              pendingSaveWorkspaceRef.current = null;
+            }
+          } catch (err) {
+            console.warn('[Memo Save Error] 메모 동기화 실패:', err);
+          }
+        }, debounceDelay);
+      },
+      [workspace, useServer, repository, syncToLocalFileIfConnected]
+    );
+
+    // 3. 🛡️ [안전장치] 3초 대기 도중 앱/탭이 닫히면 대기 중인 메모 데이터 즉시 저장 (Flush)
+    useEffect(() => {
+      const handleBeforeUnload = () => {
+        if (saveDebounceTimerRef.current && pendingSaveTableRef.current) {
+          clearTimeout(saveDebounceTimerRef.current);
+          const targetTable = pendingSaveTableRef.current;
+          const targetWorkspace = pendingSaveWorkspaceRef.current;
+          if (useServer) {
+            repository.saveTable(targetTable).catch(() => {});
+            if (repository.pushSync) repository.pushSync().catch(() => {});
+          }
+          if (targetWorkspace) {
+            wonbeeDexieDB.saveFullWorkspace(targetWorkspace, 1).catch(() => {});
+            if (!useServer) repository.saveWorkspace(targetWorkspace).catch(() => {});
+          }
+        }
+      };
+
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      return () => {
+        window.removeEventListener('beforeunload', handleBeforeUnload);
+      };
+    }, [useServer, repository]);
 
   // Calendar Reminders & Background Notification Monitor
   const {
@@ -207,32 +422,22 @@ export default function App() {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
-        setIsCommandPaletteOpen((prev) => !prev);
+        if (isModalOpen('commandPalette')) closeModal();
+        else openModal('commandPalette');
       }
     };
     window.addEventListener('keydown', handleGlobalKeyDown);
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
-  }, []);
-
-  // Sync to local file if connected
-  const syncToLocalFileIfConnected = useCallback(async (data: WorkspaceData) => {
-    if (localFileService.hasConnectedFile()) {
-      try {
-        setIsLocalFileSaving(true);
-        await localFileService.saveToConnectedFile(data);
-      } catch (err) {
-        console.error('Error auto-syncing to connected local file:', err);
-      } finally {
-        setIsLocalFileSaving(false);
-      }
-    }
-  }, []);
+  }, [isModalOpen, openModal, closeModal]);
 
   const lastEtagRef = useRef<string | null>(null);
+  const workspaceExportedAtRef = useRef(workspace.exportedAt || 0);
+  workspaceExportedAtRef.current = workspace.exportedAt || 0;
 
   // Event-Driven Multi-User Sync (SSE) + Specific Event Triggers (ZERO setInterval polling!)
   useEffect(() => {
-    if (!useServer) return;
+    const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+    if (!useServer || isFileProtocol) return;
 
     let isChecking = false;
 
@@ -240,7 +445,7 @@ export default function App() {
     const checkServerVersion = async () => {
       if (isChecking) return;
       // Do not sync while user is actively typing in a header or has a modal open
-      if (isEditingHeaderTitle || editingRow || isDataPortabilityOpen || isUniversalImportOpen || isServerSettingsOpen) {
+      if (isEditingHeaderTitle || editingRow || isModalOpen('dataPortability') || isModalOpen('universalImport') || isModalOpen('serverSettings')) {
         return;
       }
 
@@ -267,7 +472,7 @@ export default function App() {
         if (etag) lastEtagRef.current = etag;
 
         const info = await res.json();
-        const localTime = Math.max(lastLoadedTimestampRef.current, workspace.exportedAt || 0);
+        const localTime = Math.max(lastLoadedTimestampRef.current, workspaceExportedAtRef.current);
 
         // If server was updated after our local state
         if (info.lastUpdated && info.lastUpdated > localTime + 600) {
@@ -303,65 +508,47 @@ export default function App() {
     window.addEventListener('online', handleOnline);
 
     // Trigger 4: Multi-User Real-time Synchronization via SSE (Server-Sent Events) - Zero polling!
-    let eventSource: EventSource | null = null;
-    try {
-      eventSource = new EventSource(`${serverUrl}/sync/events`);
+    const closeSse = createSseConnection(serverUrl, async (payload) => {
+      // ⭐️ 서버리스 모드이거나 로컬 파일 모드일 경우 서버 수신 로직 스킵
+        const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+        if (!useServer || isFileProtocol) return;
 
-      eventSource.onmessage = async (e) => {
-        try {
-          const payload = JSON.parse(e.data);
-          if (payload.type === 'connected') return;
+        const localTime = Math.max(lastLoadedTimestampRef.current, workspaceExportedAtRef.current);
 
-          const localTime = Math.max(lastLoadedTimestampRef.current, workspace.exportedAt || 0);
-          if (payload.lastUpdated && payload.lastUpdated > localTime) {
-            console.log('[SSE Multi-User Sync] Real-time mutation event received:', payload.type);
-            lastLoadedTimestampRef.current = payload.lastUpdated;
-            if (repository.syncNotes) {
-              await repository.syncNotes(localTime);
-            }
-            await loadWorkspaceData(true);
+        if (payload.lastUpdated && payload.lastUpdated > localTime) {
+          console.log('[SSE Multi-User Sync] 서버 변경 감지! 자동 리렌더링 실행:', payload.type);
+          lastLoadedTimestampRef.current = payload.lastUpdated;
+
+          // 1. 차분(Delta) 데이터 수신 및 로컬 DB 안착
+          if (repository.syncNotes) {
+            await repository.syncNotes(localTime);
           }
-        } catch (err) {
-          console.warn('[SSE] Failed to parse message:', err);
-        }
-      };
 
-      eventSource.onerror = () => {
-        // Browser EventSource automatically reconnects on disconnections
-      };
-    } catch (err) {
-      console.warn('[SSE] EventSource initialization failed:', err);
-    }
+          // 2. 최신 워크스페이스 로드 및 React State 반영 (새로고침 없이 화면 자동 리렌더링)
+          await loadWorkspaceData(true);
+        }
+  });
 
     return () => {
       window.removeEventListener('focus', handleFocus);
       window.removeEventListener('online', handleOnline);
-      if (eventSource) {
-        eventSource.close();
-      }
+      closeSse();
     };
   }, [
     useServer,
     serverUrl,
-    workspace.exportedAt,
     loadWorkspaceData,
     isEditingHeaderTitle,
     editingRow,
-    isDataPortabilityOpen,
-    isUniversalImportOpen,
-    isServerSettingsOpen,
+    isModalOpen,
   ]);
 
   // Theme effect
   useEffect(() => {
-    if (isDarkMode) {
-      document.documentElement.classList.add('dark');
-      localStorage.setItem('wonbee_theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('wonbee_theme', 'light');
-    }
-  }, [isDarkMode]);
+    document.documentElement.setAttribute('data-theme', theme);
+    document.documentElement.classList.toggle('dark', !LIGHT_THEMES.includes(theme));
+    localStorage.setItem('wonbee_theme', theme);
+  }, [theme]);
 
   // Active Table
   const activeTable: TableDocument | null = useMemo(() => {
@@ -461,12 +648,19 @@ export default function App() {
       titleChanged = true;
     }
 
-    const updatedWs = ensureWorkspaceTree({
-      ...workspace,
-      tree: updatedTree,
-      tables: updatedTables,
-      exportedAt: now,
-    });
+    const updatedWs: WorkspaceData = (!titleChanged && foundInTree)
+      ? {
+          ...workspace,
+          tree: updatedTree,
+          tables: updatedTables,
+          exportedAt: now,
+        }
+      : ensureWorkspaceTree({
+          ...workspace,
+          tree: updatedTree,
+          tables: updatedTables,
+          exportedAt: now,
+        });
     setWorkspace(updatedWs);
 
     // Fast path: Save table incrementally (avoids uploading entire 40MB database)
@@ -495,6 +689,7 @@ export default function App() {
       id: newTableId,
       title: newTableTitle,
       description: '새로 생성된 원비 데이터 테이블입니다.',
+      defaultView: 'grid',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       columns: [
@@ -510,7 +705,7 @@ export default function App() {
             { id: 'done', label: '완료됨', color: '#10B981' },
           ],
         },
-        { id: 'col-note', name: '상세 노트 & 호버 툴팁', type: 'richText', width: 320 },
+        { id: 'col-note', name: '상세 노트', type: 'richText', width: 320 },
         {
           id: 'col-updated-at',
           name: '수정일',
@@ -525,7 +720,6 @@ export default function App() {
           data: {
             'col-name': '첫 번째 데이터 레코드',
             'col-status': 'progress',
-            'col-note': '더블 클릭하여 편집하거나 우측 리치 에디터 버튼을 눌러 서식을 작성하세요.',
             'col-updated-at': formatDateTime(Date.now()),
           },
           richContent: '',
@@ -547,7 +741,7 @@ export default function App() {
 
     const updatedWs: WorkspaceData = {
       ...workspace,
-      tree: [...workspace.tree, newTreeItem],
+      tree: [newTreeItem, ...workspace.tree],
       tables: {
         ...workspace.tables,
         [newTableId]: newTable,
@@ -558,6 +752,10 @@ export default function App() {
     setWorkspace(updatedWs);
     setActiveTableId(newTableId);
     localStorage.setItem('wonbee_active_table_id', newTableId);
+
+    // 🟢 일반 테이블 추가 시 ViewMode를 명시적으로 'table' 그리드로 지정
+    handleViewModeChange('table');
+
     try {
       await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
       await repository.saveWorkspace(updatedWs);
@@ -576,6 +774,7 @@ export default function App() {
       id: newTableId,
       title: newTableTitle,
       description: '칸반 보드로 드래그 앤 드롭 관리하는 TO-DO 리스트입니다.',
+      defaultView: 'cards',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       columns: [
@@ -618,15 +817,15 @@ export default function App() {
         {
           id: 'row-todo-1',
           data: {
-            'col-task': '호버 툴팁 라이트/다크 테마 동기화 점검',
+            'col-task': '툴팁 라이트/다크 테마 동기화 점검',
             'col-status': 'done',
             'col-priority': 'p1',
             'col-due': '2026-09-08',
             'col-assignee': '원비 🐝',
-            'col-note': '셀 호버 팝오버 및 플로팅 컨트롤러 테마 미적용 버그 해결 완료!',
+            'col-note': '셀 팝오버 및 플로팅 컨트롤러 테마 미적용 버그 해결 완료!',
             'col-updated-at': formatDateTime(Date.now()),
           },
-          richContent: '<p>✅ <strong>호버 툴팁 테마 완벽 동기화</strong></p><p>라이트 모드에서 산뜻한 화이트 테마, 다크 모드에서는 깊이감 있는 다크 테마가 적용되었습니다.</p>',
+          richContent: '<p>✅ <strong>툴팁 테마 완벽 동기화</strong></p><p>라이트 모드에서 산뜻한 화이트 테마, 다크 모드에서는 깊이감 있는 다크 테마가 적용되었습니다.</p>',
           stickers: [{ id: 'stk-1', title: '테마 동기화', content: '테마 동기화 완료! 🎨', color: 'green', position: { x: 20, y: 20 } }],
           createdAt: Date.now() - 3600000 * 2,
           updatedAt: Date.now(),
@@ -693,7 +892,7 @@ export default function App() {
 
     const updatedWs: WorkspaceData = {
       ...workspace,
-      tree: [...workspace.tree, newTreeItem],
+      tree: [newTreeItem, ...workspace.tree],
       tables: {
         ...workspace.tables,
         [newTableId]: newTable,
@@ -734,6 +933,7 @@ export default function App() {
       id: newTableId,
       title: newTableTitle,
       description: '월간/주간/일간 캘린더 및 매크로와 연동되는 오프라인 일정 관리 테이블입니다.',
+      defaultView: 'calendar',
       createdAt: Date.now(),
       updatedAt: Date.now(),
       columns: [
@@ -835,7 +1035,7 @@ export default function App() {
 
     const updatedWs: WorkspaceData = {
       ...workspace,
-      tree: [...workspace.tree, newTreeItem],
+      tree: [newTreeItem, ...workspace.tree],
       tables: {
         ...workspace.tables,
         [newTableId]: newTable,
@@ -917,7 +1117,7 @@ export default function App() {
 
     const updatedWs: WorkspaceData = {
       ...workspace,
-      tree: [...workspace.tree, newTreeItem],
+      tree: [newTreeItem, ...workspace.tree],
       tables: {
         ...workspace.tables,
         [newTableId]: newTable,
@@ -925,17 +1125,32 @@ export default function App() {
       exportedAt: Date.now(),
     };
 
-    setWorkspace(updatedWs);
-    setActiveTableId(newTableId);
-    localStorage.setItem('wonbee_active_table_id', newTableId);
-    handleViewModeChange('memo');
-    try {
-      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
-      await repository.saveWorkspace(updatedWs);
-    } catch (err) {
-      console.warn('Failed to save new Memo board:', err);
-    }
-    await syncToLocalFileIfConnected(updatedWs);
+    // 1. React UI State 반영
+        setWorkspace(updatedWs);
+        setActiveTableId(newTableId);
+        localStorage.setItem('wonbee_active_table_id', newTableId);
+        handleViewModeChange('memo');
+
+        // 2. ⭐️ 서버 모드 vs 서버리스(로컬 DB) 모드 조건부 저장 로직
+        try {
+          if (useServer) {
+            // 서버 모드: Dexie 캐시 반영 후 백엔드 테이블 전송 및 Push Sync 실행
+            await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+            await repository.saveTable(newTable);
+            if (repository.pushSync) {
+              await repository.pushSync();
+            }
+          } else {
+            // 서버리스 모드: 로컬 IndexedDB / Dexie 저장소에 바로 영구 보존
+            await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+            await repository.saveWorkspace(updatedWs);
+          }
+        } catch (err) {
+          console.warn('Failed to save new Memo board:', err);
+        }
+
+        // 3. 로컬 파일 연결 모드 시 로컬 파일 동기화
+        await syncToLocalFileIfConnected(updatedWs);
   };
 
   // Add new Folder
@@ -997,7 +1212,7 @@ export default function App() {
 
     const updatedWs: WorkspaceData = {
       ...workspace,
-      tree: [...workspace.tree, newTreeItem],
+      tree: [newTreeItem, ...workspace.tree],
       tables: {
         ...workspace.tables,
         [newTableId]: duplicatedTable,
@@ -1070,17 +1285,20 @@ export default function App() {
     // Call deleteTable for all affected tables on server repository to cascade delete SQLite data & drop physical table
     for (const id of idsToDelete) {
       try {
-        await repository.deleteTable(id);
-      } catch (err) {
-        console.warn(`[Delete] repository.deleteTable(${id}) warning:`, err);
-      }
-    }
+            await repository.deleteTable(id);
+          } catch (err) {
+            console.warn(`[Delete] repository.deleteTable(${id}) error:`, err);
+          }
+        }
 
     try {
       await repository.saveWorkspace(updatedWs);
-    } catch (saveErr) {
-      console.error('[Repository] Failed to save workspace after delete:', saveErr);
-    }
+          if (typeof wonbeeDexieDB !== 'undefined') {
+            await wonbeeDexieDB.saveFullWorkspace(updatedWs, 0);
+          }
+        } catch (saveErr) {
+          console.error('[Repository] Failed to save workspace after delete:', saveErr);
+        }
 
     // If the tree is now completely empty, trigger cleanDatabase to wipe ALL remaining orphan tables and physical tables in SQLite!
     if (updatedTree.length === 0 && repository.cleanDatabase) {
@@ -1097,7 +1315,7 @@ export default function App() {
 
   // Load Sample Templates (Roadmap, Sprint, SQL Dict, Feedback)
   const handleLoadSampleTemplates = () => {
-    setIsSampleConfirmOpen(true);
+    openModal('sampleConfirm');
   };
 
   const handleConfirmAddSampleTemplates = async () => {
@@ -1178,7 +1396,7 @@ export default function App() {
         setActiveTableId(firstNewTableId);
         localStorage.setItem('wonbee_active_table_id', firstNewTableId);
       }
-      setIsSampleConfirmOpen(false);
+      closeModal();
     } catch (err) {
       console.error('Failed to load sample templates:', err);
     } finally {
@@ -1326,7 +1544,8 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen w-screen flex overflow-hidden bg-stone-50/40 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans">
+    <GlobalStatusBarProvider>
+      <div className="h-screen w-screen flex overflow-hidden bg-stone-50/40 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans pb-7">
       {/* 1. Left Sidebar: Infinite Depth Tree */}
       <InfiniteTreeSidebar
         tree={workspace.tree}
@@ -1341,20 +1560,35 @@ export default function App() {
         onDeleteTreeItem={handleDeleteTreeItem}
         onDuplicateTable={handleDuplicateTable}
         useServer={useServer}
-        onOpenServerSettings={() => setIsServerSettingsOpen(true)}
-        onOpenDataPortability={() => setIsDataPortabilityOpen(true)}
+        onOpenServerSettings={() => openModal('serverSettings')}
+        onOpenDataPortability={() => openModal('dataPortability')}
+        theme={theme}
+        onSelectTheme={(t) => {
+          setTheme(t);
+          envService.updateEnv({ theme: t });
+        }}
+        onOpenSpeedSettings={() => openModal('perfSettings')}
+        zoomLevel={zoomLevel}
+        onChangeZoom={handleZoomChange}
+        aiEnabled={aiEnabled}
+        onToggleAi={handleToggleAi}
       />
 
       {/* 2. Main Center Area with Zoom Scale Transform */}
       <main className="flex-1 h-screen flex flex-col min-w-0 relative overflow-hidden">
         {/* Top Minimal Application Bar */}
-        <header className="h-12 border-b border-stone-200/80 dark:border-[#333333] bg-white/90 dark:bg-[#1e1e1e] backdrop-blur-md px-4 sm:px-6 flex items-center justify-between flex-shrink-0 select-none z-20">
+        <header className="h-12 border-b border-stone-200/80 dark:border-[#333333] bg-white/90 dark:bg-[#1e1e1e] backdrop-blur-md px-4 sm:px-6 flex items-center justify-between flex-shrink-0 select-none z-20 overflow-x-auto whitespace-nowrap custom-scrollbar gap-4">
           {/* Breadcrumb Navigation & File Menu */}
           <div className="flex items-center gap-3 text-xs text-stone-500">
             <span className="font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1">
               <WonBeeMascot />
               WonBee
             </span>
+            {typeof window !== 'undefined' && window.location.protocol.startsWith('file:') && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-800 dark:text-amber-300 text-[10px] font-bold border border-amber-500/30 shrink-0">
+                🔌 오프라인(로컬 DB) 모드
+              </span>
+            )}
             <ChevronRight className="w-3.5 h-3.5 text-stone-400" />
             {isEditingHeaderTitle && activeTable ? (
               <input
@@ -1413,8 +1647,8 @@ export default function App() {
             <FileMenuDropdown
               activeTable={activeTable}
               workspace={workspace}
-              onOpenUniversalImport={() => setIsUniversalImportOpen(true)}
-              onOpenDataPortability={() => setIsDataPortabilityOpen(true)}
+              onOpenUniversalImport={() => openModal('universalImport')}
+              onOpenDataPortability={() => openModal('dataPortability')}
               onAddNewTable={() => handleAddTable(null)}
               onAddNewFolder={() => handleAddFolder(null)}
               onImportCsvToNewTable={handleImportCsvToNewTable}
@@ -1428,29 +1662,18 @@ export default function App() {
               isLocalFileSaving={isLocalFileSaving}
               onEnvUpdated={() => {
                 const currentEnv = envService.getEnv();
-                if (currentEnv.theme) setIsDarkMode(currentEnv.theme === 'dark');
+                if (currentEnv.theme) {
+                  const t = currentEnv.theme as string;
+                  setTheme(t === 'dark' ? 'dark-soft' : (t as any));
+                }
                 if (currentEnv.zoomLevel) setZoomLevel(currentEnv.zoomLevel);
               }}
-            />
-
-            {/* Application Settings Menu Dropdown ("설정" 탭 - 속도 설정, 라이트/다크 모드, 서버 환경) */}
-            <SettingsMenuDropdown
-              isDarkMode={isDarkMode}
-              onToggleTheme={(dark) => {
-                setIsDarkMode(dark);
-                envService.updateEnv({ theme: dark ? 'dark' : 'light' });
-              }}
-              onOpenSpeedSettings={() => setIsPerfModalOpen(true)}
-              onOpenServerSettings={() => setIsServerSettingsOpen(true)}
-              useServer={useServer}
-              zoomLevel={zoomLevel}
-              onChangeZoom={handleZoomChange}
             />
 
             {/* Pretty JSON Utility Button */}
             <button
               type="button"
-              onClick={() => setIsPrettyJsonOpen(true)}
+              onClick={() => openModal('prettyJson')}
               className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
               title="JSON 문자열 실시간 파싱 및 정렬 포매터 열기"
             >
@@ -1461,30 +1684,87 @@ export default function App() {
             {/* Encoding Converter Utility Button */}
             <button
               type="button"
-              onClick={() => setIsEncodingConverterOpen(true)}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
+              onClick={() => openModal('encodingConverter')}
+              className="hidden x-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
               title="EUC-KR 및 레거시 인코딩 텍스트/파일 디코딩 및 UTF-8 변환"
             >
               <RefreshCw className="w-3.5 h-3.5 text-amber-500" />
               <span>인코딩 변환</span>
+            </button>
+
+            {/* File Diff Comparator Utility Button */}
+            <button
+              type="button"
+              onClick={() => openModal('fileDiff')}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="파일 및 소스 코드 정밀 Diff 비교기 열기"
+            >
+              <GitCompare className="w-3.5 h-3.5 text-amber-500" />
+              <span>소스 비교</span>
+            </button>
+
+            {/* Format Express Utility Button (format-express.dev) */}
+            <button
+              type="button"
+              onClick={() => openModal('formatExpress')}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-800 dark:text-emerald-300 border border-emerald-300/80 dark:border-emerald-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="Format Express (format-express.dev): 로그 노이즈 제거, 이중 이스케이프 복원, JSON/XML/SQL 스마트 포맷터"
+            >
+              <Code className="w-3.5 h-3.5 text-emerald-500" />
+              <span>Format Express</span>
+            </button>
+
+            {/* Crypto & Multi-Codec Utility Button */}
+            <button
+              type="button"
+              onClick={() => openModal('cryptoCodec')}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-sky-500/10 hover:bg-sky-500/25 text-sky-800 dark:text-sky-300 border border-sky-300/80 dark:border-sky-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="AES/DES/3DES 대칭키 암복호화, 해시(MD5/SHA/HMAC), Base64/Hex/URL 멀티 인코더 열기"
+            >
+              <Lock className="w-3.5 h-3.5 text-sky-500" />
+              <span>암/복호화</span>
+            </button>
+
+            {/* Postman API Client Utility Button */}
+            <button
+              type="button"
+              onClick={() => openModal('postman')}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="Postman Lite HTTP REST API 클라이언트"
+            >
+              <Terminal className="w-3.5 h-3.5 text-amber-500" />
+              <span>Postman</span>
+            </button>
+
+            {/* Calculator Utility Button */}
+            <button
+              type="button"
+              onClick={() => openModal('calculator')}
+              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-indigo-500/10 hover:bg-indigo-500/25 text-indigo-800 dark:text-indigo-300 border border-indigo-300/80 dark:border-indigo-700/80 transition-colors shadow-2xs cursor-pointer"
+              title="스마트 공학 계산기 & 단위 변환기"
+            >
+              <Calculator className="w-3.5 h-3.5 text-indigo-500" />
+              <span>계산기</span>
             </button>
           </div>
 
           {/* Top Right Action Items */}
           <div className="flex items-center gap-2">
             {/* AI Multi-Agent Trigger Button */}
-            <button
-              onClick={() => setIsAiAgentOpen(true)}
-              className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
-              title="WonBee AI 에이전트 열기 (Qwen 2.5 로컬 AI & RAG)"
-            >
-              <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-              <span>AI 어시스턴트</span>
-            </button>
+            {aiEnabled && (
+              <button
+                onClick={() => openModal('aiAgent')}
+                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
+                title="WonBee AI 에이전트 열기"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                <span>AI 어시스턴트</span>
+              </button>
+            )}
 
             {/* Command Palette Trigger Button (Ctrl+K) */}
             <button
-              onClick={() => setIsCommandPaletteOpen(true)}
+              onClick={() => openModal('commandPalette')}
               className="px-2.5 py-1 bg-stone-100 hover:bg-stone-200 dark:bg-[#282828] dark:hover:bg-[#333333] text-stone-600 dark:text-[#cccccc] border border-stone-200 dark:border-[#383838] rounded-lg text-xs font-medium flex items-center gap-1.5 transition-colors shadow-2xs"
               title="커맨드 팔레트 열기 (Ctrl+K 또는 ⌘K)"
             >
@@ -1543,7 +1823,7 @@ export default function App() {
             ) : activeTable ? (
               <DataTableViewer
                 table={activeTable}
-                onUpdateTable={handleUpdateTable}
+                onUpdateTable={handleUpdateTableDebounced}
                 onOpenRowEditor={(row, colId) => {
                   setSelectedDetailRow(null);
                   setEditingRow(row);
@@ -1558,17 +1838,18 @@ export default function App() {
                 onViewModeChange={handleViewModeChange}
                 perfOptions={perfOptions}
                 onUpdatePerfOptions={handleUpdatePerfOptions}
-                onOpenPerfModal={() => setIsPerfModalOpen(true)}
+                onOpenPerfModal={() => openModal('perfSettings')}
                 onOpenAiDataAssistant={() => {
                   setAiAgentInitialTab('data');
                   setAiAgentActiveRow(null);
-                  setIsAiAgentOpen(true);
+                  openModal('aiAgent');
                 }}
                 onOpenAiRowAssistant={(row) => {
                   setAiAgentInitialTab('data');
                   setAiAgentActiveRow(row);
-                  setIsAiAgentOpen(true);
+                  openModal('aiAgent');
                 }}
+                aiEnabled={aiEnabled}
               />
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400">
@@ -1635,7 +1916,12 @@ export default function App() {
         }}
         onDeleteRow={(rowId) => {
           if (!activeTable) return;
-          if (!window.confirm('정말 이 행을 삭제하시겠습니까?')) return;
+          const confirmMsg =
+            viewMode === 'memo' ? '정말 이 스티커 메모를 삭제하시겠습니까?' :
+            viewMode === 'kanban' ? '정말 이 카드를 삭제하시겠습니까?' :
+            viewMode === 'calendar' ? '정말 이 일정을 삭제하시겠습니까?' :
+            '정말 이 행을 삭제하시겠습니까?';
+          if (!window.confirm(confirmMsg)) return;
           const remainingRows = activeTable.rows.filter((r) => r.id !== rowId);
           setSelectedDetailRow(null);
           handleUpdateTable({
@@ -1669,8 +1955,8 @@ export default function App() {
 
       {/* 6. Data Portability Modal (Portable JSON Merge) */}
       <DataPortabilityModal
-        isOpen={isDataPortabilityOpen}
-        onClose={() => setIsDataPortabilityOpen(false)}
+        isOpen={isModalOpen('dataPortability')}
+        onClose={closeModal}
         currentWorkspace={workspace}
         onMergeWorkspace={handleMergeWorkspace}
         onLocalFileConnected={async (fileName, data) => {
@@ -1690,15 +1976,15 @@ export default function App() {
 
       {/* 7. Text / TSV / Raw Data Paste Modal */}
       <TextPasteModal
-        isOpen={isTextPasteOpen}
-        onClose={() => setIsTextPasteOpen(false)}
+        isOpen={isModalOpen('textPaste')}
+        onClose={closeModal}
         onImportNewTable={handleImportCsvToNewTable}
       />
 
       {/* 8. Server Mode Settings Modal */}
       <ServerSettingsModal
-        isOpen={isServerSettingsOpen}
-        onClose={() => setIsServerSettingsOpen(false)}
+        isOpen={isModalOpen('serverSettings')}
+        onClose={closeModal}
         useServer={useServer}
         serverUrl={serverUrl}
         onToggleUseServer={(newUseServer, newUrl) => {
@@ -1714,15 +2000,16 @@ export default function App() {
 
       {/* 9. Universal Import Modal (TXT / CSV / TSV / JSON / Excel Clipboard) */}
       <UniversalImportModal
-        isOpen={isUniversalImportOpen}
-        onClose={() => setIsUniversalImportOpen(false)}
+        isOpen={isModalOpen('universalImport')}
+        onClose={closeModal}
         activeTable={activeTable}
         onImportNewTable={handleImportCsvToNewTable}
         onAppendRowsToCurrentTable={handleAppendRowsToCurrentTable}
         onRestoreWorkspace={(newWs) => handleMergeWorkspace(newWs, 'replace')}
         onRestoreUserEnv={(newEnv) => {
           if (newEnv.theme) {
-            setIsDarkMode(newEnv.theme === 'dark');
+            const t = newEnv.theme as string;
+            setTheme(t === 'dark' ? 'dark-soft' : (t as any));
           }
           if (newEnv.zoomLevel) {
             setZoomLevel(newEnv.zoomLevel);
@@ -1735,8 +2022,8 @@ export default function App() {
 
       {/* 10. Performance & Speed Optimization Settings Modal */}
       <PerformanceSettingsModal
-        isOpen={isPerfModalOpen}
-        onClose={() => setIsPerfModalOpen(false)}
+        isOpen={isModalOpen('perfSettings')}
+        onClose={closeModal}
         options={perfOptions}
         onChangeOptions={handleUpdatePerfOptions}
         columns={activeTable?.columns || []}
@@ -1744,8 +2031,8 @@ export default function App() {
 
       {/* 11. Command Palette Modal (Ctrl+K / ⌘K) */}
       <CommandPaletteModal
-        isOpen={isCommandPaletteOpen}
-        onClose={() => setIsCommandPaletteOpen(false)}
+        isOpen={isModalOpen('commandPalette')}
+        onClose={closeModal}
         workspace={workspace}
         activeTable={activeTable}
         onSelectTable={handleSelectActiveTable}
@@ -1775,15 +2062,15 @@ export default function App() {
         currentViewMode={viewMode}
         isDarkMode={isDarkMode}
         onToggleDarkMode={() => {
-          setIsDarkMode((prev) => {
-            const next = !prev;
-            envService.updateEnv({ theme: next ? 'dark' : 'light' });
+          setTheme((prev) => {
+            const next = prev === 'light' ? 'dark-soft' : 'light';
+            envService.updateEnv({ theme: next });
             return next;
           });
         }}
-        onOpenDataPortability={() => setIsDataPortabilityOpen(true)}
-        onOpenTextPaste={() => setIsTextPasteOpen(true)}
-        onOpenUniversalImport={() => setIsUniversalImportOpen(true)}
+        onOpenDataPortability={() => openModal('dataPortability')}
+        onOpenTextPaste={() => openModal('textPaste')}
+        onOpenUniversalImport={() => openModal('universalImport')}
         onAddNewTable={() => handleAddTable(null)}
         onAddTodoBoard={() => handleAddTodoBoard(null)}
         onAddCalendarBoard={() => handleAddCalendarBoard(null)}
@@ -1801,9 +2088,9 @@ export default function App() {
 
       {/* 12. WonBee AI Multi-Agent Drawer */}
       <AiAgentDrawer
-        isOpen={isAiAgentOpen}
+        isOpen={isModalOpen('aiAgent')}
         onClose={() => {
-          setIsAiAgentOpen(false);
+          closeModal();
           setAiAgentActiveRow(null);
         }}
         activeTableId={activeTableId || undefined}
@@ -1830,14 +2117,44 @@ export default function App() {
 
       {/* 14. Pretty JSON Modal */}
       <PrettyJsonModal
-        isOpen={isPrettyJsonOpen}
-        onClose={() => setIsPrettyJsonOpen(false)}
+        isOpen={isModalOpen('prettyJson')}
+        onClose={closeModal}
       />
 
       {/* 15. Encoding Converter Modal */}
       <EncodingConverterModal
-        isOpen={isEncodingConverterOpen}
-        onClose={() => setIsEncodingConverterOpen(false)}
+        isOpen={isModalOpen('encodingConverter')}
+        onClose={closeModal}
+      />
+
+      {/* 16. File Diff Comparator Modal */}
+      <FileDiffModal
+        isOpen={isModalOpen('fileDiff')}
+        onClose={closeModal}
+      />
+
+      {/* 17. Standalone Format Express Utility Modal (format-express.dev) */}
+      <FormatExpressModal
+        isOpen={isModalOpen('formatExpress')}
+        onClose={closeModal}
+      />
+
+      {/* 18. Crypto & Multi-Codec Utility Modal */}
+      <CryptoCodecModal
+        isOpen={isModalOpen('cryptoCodec')}
+        onClose={closeModal}
+      />
+
+      {/* 19. Lightweight Postman API Client Modal */}
+      <PostmanModal
+        isOpen={isModalOpen('postman')}
+        onClose={closeModal}
+      />
+
+      {/* 20. Calculator & Unit Converter Modal */}
+      <CalculatorModal
+        isOpen={isModalOpen('calculator')}
+        onClose={closeModal}
       />
 
       {/* 14. Workspace Tree Item Deletion Confirmation Modal */}
@@ -1852,11 +2169,12 @@ export default function App() {
 
       {/* 15. Sample Template Add Confirmation Modal */}
       <SampleConfirmModal
-        isOpen={isSampleConfirmOpen}
-        onClose={() => setIsSampleConfirmOpen(false)}
+        isOpen={isModalOpen('sampleConfirm')}
+        onClose={closeModal}
         onConfirm={handleConfirmAddSampleTemplates}
         isLoading={isLoading}
       />
     </div>
+    </GlobalStatusBarProvider>
   );
 }

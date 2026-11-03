@@ -146,7 +146,7 @@ export interface StorageConfig {
 
 export interface UserEnvData {
   version: string;
-  theme: 'light' | 'dark';
+  theme: 'light' | 'material-light' | 'bootstrap-light' | 'warm-light' | 'dark-soft' | 'dark-warm' | 'dark-hard' | 'material-you' | 'bootstrap-dark' | 'material-design';
   zoomLevel: number;
   activeTableId: string | null;
   rowDensity: RowDensity;
@@ -154,6 +154,7 @@ export interface UserEnvData {
   columnWidths: Record<string, Record<string, number>>;
   // tableId -> hidden colIds[]
   hiddenColumns: Record<string, string[]>;
+  aiEnabled: boolean;
   updatedAt: number;
 }
 
