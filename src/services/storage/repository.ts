@@ -287,11 +287,45 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     return wonbeeDexieDB.markNotesClean(noteIds);
   }
 
+  private async pushDirtyAssets(): Promise<boolean> {
+    let succeeded = true;
+    const assets = await wonbeeDexieDB.getDirtyAssets();
+    for (const asset of assets) {
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => typeof reader.result === 'string'
+            ? resolve(reader.result)
+            : reject(new Error('Could not read local image asset'));
+          reader.onerror = () => reject(reader.error || new Error('Could not read local image asset'));
+          reader.readAsDataURL(asset.blob);
+        });
+        const response = await fetchBridge(`${this.serverUrl}/assets`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            assetId: asset.id,
+            filename: asset.filename,
+            blobBase64: dataUrl,
+            mimeType: asset.mime_type || asset.blob.type || 'application/octet-stream',
+          }),
+        });
+        if (!response.ok) throw new Error(`Asset push HTTP ${response.status}`);
+        await wonbeeDexieDB.markAssetsClean([asset.id]);
+      } catch (error) {
+        succeeded = false;
+        console.warn(`[Repository] Failed to sync image asset ${asset.id}:`, error);
+      }
+    }
+    return succeeded;
+  }
+
   async pushSync(notes?: any[]): Promise<{ success: boolean; upsertedCount: number; last_updated_at?: number }> {
+    const assetsSucceeded = await this.pushDirtyAssets();
     try {
       const dirtyNotes = notes && notes.length > 0 ? notes : await wonbeeDexieDB.getDirtyNotes();
       if (!dirtyNotes || dirtyNotes.length === 0) {
-        return { success: true, upsertedCount: 0 };
+        return { success: assetsSucceeded, upsertedCount: 0 };
       }
 
       let totalUpserted = 0;
@@ -317,7 +351,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         }
       }
 
-      return { success: true, upsertedCount: totalUpserted };
+      return { success: assetsSucceeded, upsertedCount: totalUpserted };
     } catch (err) {
       console.warn('[Repository] pushSync failed:', err);
       return { success: false, upsertedCount: 0 };
@@ -362,6 +396,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
           if (serverWs && Object.keys(serverWs.tables || {}).length > 0) {
             const ensuredServerWs = ensureWorkspaceTree(serverWs);
             await wonbeeDexieDB.saveFullWorkspace(ensuredServerWs, 0);
+            await this.pushDirtyAssets();
             const syncTime = ensuredServerWs.exportedAt || Date.now();
             localStorage.setItem('wonbee_last_sync_timestamp', String(syncTime));
             return ensuredServerWs;
@@ -399,6 +434,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
           await wonbeeDexieDB.saveFullWorkspace(initialWs, 0);
           await this.syncNotes(0, signal);
+          await this.pushDirtyAssets();
 
           localWs = await this.localFallback.loadWorkspace();
           const syncTime = meta.last_updated_at || Date.now();

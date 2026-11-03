@@ -560,7 +560,8 @@ export class WonBeeDexieDatabase extends Dexie {
 
   async getDirtyAssets(): Promise<DexieAsset[]> {
     try {
-      return await this.assets.where('is_dirty').equals(1).toArray();
+      // Legacy Tauri/Web IndexedDB entries may not have an is_dirty marker.
+      return (await this.assets.toArray()).filter((asset) => asset.is_dirty !== 0);
     } catch {
       return [];
     }

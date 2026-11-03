@@ -25,10 +25,14 @@ export async function resolveAssetUrl(assetUrl: string): Promise<string> {
           const response = await fetchBridge('/api/assets', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ filename: asset.filename || assetId, blobBase64: dataUrl, mimeType: asset.mime_type || asset.blob.type || 'application/octet-stream' }),
+            body: JSON.stringify({ assetId, filename: asset.filename || assetId, blobBase64: dataUrl, mimeType: asset.mime_type || asset.blob.type || 'application/octet-stream' }),
           });
           if (response.ok) {
-            const serverUrl = resolveApiUrl(`/api/assets/${encodeURIComponent(assetId)}`);
+            const result = await response.json().catch(() => ({}));
+            const storedAssetId = typeof result.url === 'string' && result.url.startsWith('asset://')
+              ? result.url.slice('asset://'.length)
+              : assetId;
+            const serverUrl = resolveApiUrl(`/api/assets/${encodeURIComponent(storedAssetId)}`);
             assetUrlCache.set(assetUrl, serverUrl);
             return serverUrl;
           }

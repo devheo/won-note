@@ -193,24 +193,30 @@ const validFolderIds = new Set<string>(
 }
 
 /**
- * Applies the server tree as the source of truth while retaining the local order
- * for items that still exist. A union merge resurrects deleted notes and folders
- * from stale local/server copies after the next sync.
+ * Merges server tree into local tree while preserving local ordering and items
+ * that may not have reached the server yet.
  */
 export function mergeTrees(localTree: TreeItem[], serverTree: TreeItem[]): TreeItem[] {
   if (!localTree || !Array.isArray(localTree)) return serverTree || [];
   if (!serverTree || !Array.isArray(serverTree)) return localTree;
 
-  const serverById = new Map(serverTree.map((item) => [item.id, item]));
-  const localOrder = localTree
-    .filter((item) => serverById.has(item.id))
-    .map((item) => {
-      const serverItem = serverById.get(item.id)!;
-      return (serverItem.updatedAt || 0) > (item.updatedAt || 0)
-        ? { ...item, ...serverItem }
-        : item;
-    });
-  const includedIds = new Set(localOrder.map((item) => item.id));
-  const newServerItems = serverTree.filter((item) => !includedIds.has(item.id));
-  return [...localOrder, ...newServerItems];
+  const localMap = new Map(localTree.map((item) => [item.id, item]));
+  const merged = [...localTree];
+
+  serverTree.forEach((serverItem) => {
+    if (!localMap.has(serverItem.id)) {
+      merged.push({ ...serverItem });
+    } else {
+      const idx = merged.findIndex((t) => t.id === serverItem.id);
+      if (idx !== -1 && (serverItem.updatedAt || 0) > (merged[idx].updatedAt || 0)) {
+        merged[idx] = {
+          ...merged[idx],
+          title: serverItem.title || merged[idx].title,
+          updatedAt: serverItem.updatedAt,
+        };
+      }
+    }
+  });
+
+  return merged;
 }

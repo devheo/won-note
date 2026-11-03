@@ -348,6 +348,7 @@ async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promis
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          assetId,
           filename,
           blobBase64: dataUrl,
           mimeType,

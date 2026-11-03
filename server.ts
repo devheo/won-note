@@ -370,14 +370,16 @@ async function startServer() {
   app.post('/api/assets', (req, res) => {
     try {
       const filename = String(req.body?.filename || '');
-      const imageId = filename.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '');
+      const requestedAssetId = String(req.body?.assetId || '');
+      const imageId = (requestedAssetId || filename.replace(/\.[^.]+$/, '')).replace(/[^a-zA-Z0-9_-]/g, '');
       const dataUrl = String(req.body?.blobBase64 || '');
       const match = dataUrl.match(/^data:([^;,]+);base64,([\s\S]+)$/);
       if (!imageId || !match) {
-        res.status(400).json({ error: 'A valid filename and base64 image are required.' });
+        res.status(400).json({ error: 'A valid asset ID and base64 image are required.' });
         return;
       }
       saveImageAsset(imageId, match[1] || String(req.body?.mimeType || 'application/octet-stream'), Buffer.from(match[2], 'base64'));
+      broadcastWorkspaceUpdate({ type: 'asset_saved', lastUpdated: getLastUpdatedTimestamp() });
       res.json({ url: `asset://${imageId}` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
