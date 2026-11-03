@@ -6,6 +6,8 @@ import {
   initDatabase,
   getWorkspaceData,
   saveWorkspaceData,
+  saveDocument,
+  deleteDocument,
   saveTree,
   getTable,
   saveTable,
@@ -21,6 +23,7 @@ import {
   insertDocumentChunk,
   searchDocumentChunks,
   getRowImage,
+  saveImageAsset,
   reloadDatabaseFromDisk,
   getWorkspaceMeta,
   getNotesCursor,
@@ -232,6 +235,27 @@ async function startServer() {
     }
   });
 
+  app.put('/api/documents/:id', (req, res) => {
+    try {
+      const document = { ...req.body, id: req.params.id };
+      saveDocument(document);
+      broadcastWorkspaceUpdate({ type: 'document_updated', lastUpdated: getLastUpdatedTimestamp() });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/documents/:id', (req, res) => {
+    try {
+      deleteDocument(req.params.id);
+      broadcastWorkspaceUpdate({ type: 'document_deleted', lastUpdated: getLastUpdatedTimestamp() });
+      res.json({ success: true });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.post('/api/database/reload', (req, res) => {
     try {
       const ws = reloadDatabaseFromDisk();
@@ -343,6 +367,38 @@ async function startServer() {
   });
 
   // --- Binary Image BLOB Endpoint ---
+  app.post('/api/assets', (req, res) => {
+    try {
+      const filename = String(req.body?.filename || '');
+      const imageId = filename.replace(/\.[^.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '');
+      const dataUrl = String(req.body?.blobBase64 || '');
+      const match = dataUrl.match(/^data:([^;,]+);base64,([\s\S]+)$/);
+      if (!imageId || !match) {
+        res.status(400).json({ error: 'A valid filename and base64 image are required.' });
+        return;
+      }
+      saveImageAsset(imageId, match[1] || String(req.body?.mimeType || 'application/octet-stream'), Buffer.from(match[2], 'base64'));
+      res.json({ url: `asset://${imageId}` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/assets/:id', (req, res) => {
+    try {
+      const img = getRowImage(req.params.id);
+      if (!img) {
+        res.status(404).json({ error: 'Image asset not found' });
+        return;
+      }
+      res.setHeader('Content-Type', img.mimeType || 'application/octet-stream');
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.send(Buffer.from(img.data));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get('/api/images/:id', (req, res) => {
     try {
       const img = getRowImage(req.params.id);

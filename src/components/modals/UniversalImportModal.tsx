@@ -3,6 +3,7 @@ import { TableDocument, WorkspaceData, TableColumn, TableRow, UserEnvData } from
 import { parseDelimitedText } from '../../utils/csvParser';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 import { extractFirstImageSrc, isImageValue } from '../../utils/textSanitizer';
+import { LazyImage } from '../common/LazyImage';
 import {
   Upload,
   FileSpreadsheet,
@@ -529,7 +530,7 @@ export const UniversalImportModal: React.FC<UniversalImportModalProps> = ({
                                   if (imgSrc) {
                                     return (
                                       <div className="flex items-center gap-1.5">
-                                        <img
+                                        <LazyImage
                                           src={imgSrc}
                                           alt="미리보기"
                                           className="w-5 h-5 rounded object-cover border border-amber-300 dark:border-amber-700 shrink-0"

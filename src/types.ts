@@ -122,12 +122,21 @@ export interface TableDocument {
   is_dirty?: number; // 1 = un-synced dirty state, 0 = synced
 }
 
+export interface WonNoteDocument {
+  id: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface WorkspaceData {
   version: string;
   exportedAt?: number;
   author?: string;
   tree: TreeItem[];
   tables: Record<string, TableDocument>;
+  documents?: Record<string, WonNoteDocument>;
   settings?: {
     theme?: 'light' | 'dark' | 'system';
     zoom?: number;
@@ -171,11 +180,13 @@ export interface IWorkspaceRepository {
   saveTable(table: TableDocument): Promise<void>;
   deleteTable(tableId: string): Promise<void>;
   saveTree(tree: TreeItem[]): Promise<void>;
+  saveDocument?(document: WonNoteDocument): Promise<void>;
+  deleteDocument?(documentId: string): Promise<void>;
   mergeWorkspace(imported: WorkspaceData, mode: 'merge' | 'replace' | 'keep_both'): Promise<WorkspaceData>;
   getStorageInfo(): Promise<{ type: 'indexeddb' | 'server'; status: 'connected' | 'offline'; totalItems: number; sizeBytes?: number }>;
   renameTable?(tableId: string, newTitle: string): Promise<void>;
   cleanDatabase?(keepTableIds?: string[]): Promise<any>;
-  getWorkspaceMeta?(): Promise<{ last_updated_at: number; total_count: number; table_count?: number; tree_count?: number }>;
+  getWorkspaceMeta?(): Promise<{ last_updated_at: number; total_count: number; table_count?: number; tree_count?: number; documents?: Record<string, WonNoteDocument> }>;
   getNotesCursor?(cursor?: string, limit?: number, tableId?: string): Promise<{ data: any[]; pagination: { next_cursor: string | null; has_more: boolean } }>;
   syncNotes?(since: number): Promise<{ data: any[]; since: number; latest_updated_at: number; count: number }>;
   pushSync?(notes?: any[]): Promise<{ success: boolean; upsertedCount: number; last_updated_at?: number }>;

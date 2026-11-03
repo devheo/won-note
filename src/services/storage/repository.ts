@@ -9,6 +9,7 @@ import {
   TreeItem,
   StorageConfig,
   CalendarEvent,
+  WonNoteDocument,
 } from '../../types';
 import { wonbeeDB } from './indexedDb';
 import { wonbeeDexieDB } from './dexieDb';
@@ -26,16 +27,19 @@ export function mergeWorkspaces(
   }
 
   const mergedTables: Record<string, TableDocument> = { ...current.tables };
+  const mergedDocuments = { ...(current.documents || {}) };
   const mergedTree: TreeItem[] = [...current.tree];
 
   const currentTreeIdMap = new Map(current.tree.map((t, idx) => [t.id, idx]));
   const currentTableIdMap = new Set(Object.keys(current.tables));
+  const importedTreeIdMap = new Map<string, string>();
 
   // 1. Handle incoming tree items
   for (const item of imported.tree) {
     if (!currentTreeIdMap.has(item.id)) {
       mergedTree.push({ ...item });
       currentTreeIdMap.set(item.id, mergedTree.length - 1);
+      importedTreeIdMap.set(item.id, item.id);
     } else if (mode === 'keep_both') {
       const newId = `${item.id}_imported_${Date.now().toString(36)}`;
       mergedTree.push({
@@ -43,6 +47,7 @@ export function mergeWorkspaces(
         id: newId,
         title: `${item.title} (가져옴)`,
       });
+      importedTreeIdMap.set(item.id, newId);
     } else {
       // In 'merge' mode: update the existing tree item with incoming item's properties
       const existingIdx = currentTreeIdMap.get(item.id)!;
@@ -97,10 +102,26 @@ export function mergeWorkspaces(
     }
   }
 
+  for (const [docId, document] of Object.entries(imported.documents || {})) {
+    let targetDocumentId = docId;
+    let targetDocument = { ...document };
+    if (mode === 'keep_both' && mergedDocuments[docId]) {
+      targetDocumentId = `${docId}_imported_${Date.now().toString(36)}`;
+      targetDocument = { ...document, id: targetDocumentId, title: `${document.title} (가져옴)` };
+      const treeId = importedTreeIdMap.get(docId);
+      if (treeId) targetDocumentId = treeId;
+      targetDocument = { ...document, id: targetDocumentId, title: `${document.title} (가져옴)` };
+      mergedDocuments[targetDocumentId] = targetDocument;
+    } else {
+      mergedDocuments[docId] = { ...document };
+    }
+  }
+
   return ensureWorkspaceTree({
     ...current,
     tree: mergedTree,
     tables: mergedTables,
+    documents: mergedDocuments,
     exportedAt: Date.now(),
   });
 }
@@ -132,6 +153,14 @@ export class IndexedDBWorkspaceRepository implements IWorkspaceRepository {
 
   async saveTree(tree: TreeItem[]): Promise<void> {
     return wonbeeDB.saveTree(tree);
+  }
+
+  async saveDocument(document: WonNoteDocument): Promise<void> {
+    return wonbeeDB.saveDocument(document);
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    return wonbeeDB.deleteDocument(documentId);
   }
 
   async mergeWorkspace(
@@ -365,6 +394,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
             settings: meta.settings,
             tree: meta.tree || [],
             tables: skeletonTables,
+            documents: meta.documents || {},
           };
 
           await wonbeeDexieDB.saveFullWorkspace(initialWs, 0);
@@ -384,6 +414,10 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
       // 3. /api/workspace/meta 조회 및 서버 트리 머지 (사용자 드래그앤드롭 순서 유지)
       const meta = await this.getWorkspaceMeta(signal);
       if (meta) {
+        if (meta.documents) {
+          localWs.documents = meta.documents;
+          await wonbeeDexieDB.saveFullWorkspace(localWs, 0);
+        }
         if (meta.tree && Array.isArray(meta.tree)) {
           const mergedTree = mergeTrees(localWs.tree, meta.tree);
           await this.localFallback.saveTree(mergedTree);
@@ -562,6 +596,30 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
       }
     } catch (err) {
       console.warn('[Repository] Server saveTree offline fallback:', err);
+    }
+  }
+
+  async saveDocument(document: WonNoteDocument): Promise<void> {
+    await this.localFallback.saveDocument(document);
+    try {
+      const res = await fetchBridge(`${this.serverUrl}/documents/${encodeURIComponent(document.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(document),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn('[Repository] Server saveDocument offline fallback:', err);
+    }
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    await this.localFallback.deleteDocument(documentId);
+    try {
+      const res = await fetchBridge(`${this.serverUrl}/documents/${encodeURIComponent(documentId)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      console.warn('[Repository] Server deleteDocument offline fallback:', err);
     }
   }
 

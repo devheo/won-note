@@ -10,6 +10,7 @@ import {
   TableRow,
   TreeItem,
   TableColumn,
+  WonNoteDocument,
 } from './types';
 import {
   formatDateTime,
@@ -27,6 +28,7 @@ import { GlobalStatusBarProvider } from './components/common/GlobalStatusBar';
 import { DataTableViewer } from './components/table/DataTableViewer';
 import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer';
 import { RichEditorModal } from './components/editor/RichEditorModal';
+import { WonNoteDocumentEditor } from './components/editor/WonNoteDocumentEditor';
 import { ZoomControls } from './components/common/ZoomControls';
 import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
 import { TextPasteModal } from './components/modals/TextPasteModal';
@@ -53,11 +55,13 @@ import {
   savePerformanceOptions,
 } from './types/performance';
 import { envService } from './services/storage/envService';
-import { resolveApiUrl } from './services/httpBridge';
+import { fetchBridge } from './services/httpBridge';
 import { createSseConnection } from './services/sseService';
+import { migrateTableToWonNoteFormat } from './utils/migrateTableToWonNoteFormat';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
 import { CalendarNotificationToast } from './components/calendar/CalendarNotificationToast';
 import { AiAgentDrawer } from './components/agent/AiAgentDrawer';
+import { WonNoteTabBar } from './components/editor/WonNoteTabBar';
 import {
   Sparkles,
   Plus,
@@ -72,11 +76,13 @@ import {
   Lock,
   Terminal,
   Calculator,
+  X,
 } from 'lucide-react';
 
 export default function App() {
   // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend (Persisted in localStorage)
   const [useServer, setUseServer] = useState<boolean>(() => {
+    if (typeof window !== 'undefined' && window.location.protocol.startsWith('file:')) return false;
     const saved = localStorage.getItem('wonbee_use_server');
     return saved !== null ? saved === 'true' : true;
   });
@@ -107,6 +113,7 @@ export default function App() {
     retryWorkspaceLoad,
     lastLoadedTimestampRef,
   } = useWorkspaceInit({ repository });
+  const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem('wonbee_active_doc_id'));
 
   // Local File System Sync State
   const [connectedFileName, setConnectedFileName] = useState<string | null>(() =>
@@ -172,21 +179,12 @@ export default function App() {
       const icon = treeItem?.icon || '';
       const dv = targetTable?.defaultView as string;
 
-      // 1. Explicit specialized table types (Memo, Calendar, Kanban) take absolute precedence
+      // 1. Memo board has absolute priority so it never gets overridden by stale perTableSaved cache
       if (dv === 'memo' || icon === 'sticky-note' || title.includes('📌') || title.includes('메모') || title.includes('스티커')) {
         return 'memo';
       }
-      if (dv === 'calendar' || icon === 'calendar' || title.includes('📅') || title.includes('캘린더') || title.includes('일정')) {
-        return 'calendar';
-      }
-      if (dv === 'cards' || dv === 'kanban' || icon === 'kanban' || title.includes('📋') || title.includes('칸반') || title.includes('TO-DO')) {
-        return 'kanban';
-      }
-      if (dv) {
-        return mapDefaultViewToViewMode(dv);
-      }
 
-      // 2. User saved per-table preference
+      // 2. User saved per-table preference for other tables (Kanban, Calendar, Table)
       const perTableSaved = localStorage.getItem(`wonbee_view_mode_${tableId}`);
       if (
         perTableSaved === 'table' ||
@@ -197,19 +195,129 @@ export default function App() {
         return perTableSaved;
       }
 
+      // 3. Other specialized table types
+      if (dv === 'calendar' || icon === 'calendar' || title.includes('📅') || title.includes('캘린더') || title.includes('일정')) {
+        return 'calendar';
+      }
+      if (dv === 'cards' || dv === 'kanban' || icon === 'kanban' || title.includes('📋') || title.includes('칸반') || title.includes('TO-DO')) {
+        return 'kanban';
+      }
+      if (dv) {
+        return mapDefaultViewToViewMode(dv);
+      }
+
       return 'table';
     },
     [workspace?.tables, workspace?.tree]
   );
 
   // Switch Active Table & Persist (테이블 전환 시 뷰모드 보장)
-  const handleSelectActiveTable = (tableId: string | null) => {
+  const activateTable = (tableId: string) => {
+    setActiveDocId(null);
+    localStorage.removeItem('wonbee_active_doc_id');
     setActiveTableId(tableId);
-    if (tableId) {
-      localStorage.setItem('wonbee_active_table_id', tableId);
-      const mode = resolveViewModeForTable(tableId);
-      setViewMode(mode);
+  };
+
+  const handleSelectActiveTable = (tableId: string | null) => {
+    if (!tableId) return;
+    const treeItem = workspace.tree.find((item) => item.id === tableId);
+    const existingDocument = workspace.documents?.[tableId];
+    if (existingDocument || treeItem?.type === 'document') {
+      const document = existingDocument || {
+        id: tableId,
+        title: treeItem?.title || '새 노트',
+        content: '<p></p>',
+        createdAt: treeItem?.createdAt || Date.now(),
+        updatedAt: Date.now(),
+      };
+      if (!existingDocument) {
+        const updatedWorkspace = {
+          ...workspace,
+          documents: { ...(workspace.documents || {}), [tableId]: document },
+          exportedAt: Date.now(),
+        };
+        setWorkspace(updatedWorkspace);
+        scheduleDocumentWorkspaceSave(document, updatedWorkspace);
+      }
+      setOpenTabIds((previous) => previous.includes(tableId) ? previous : [...previous, tableId]);
+      setActiveTableId(null);
+      setActiveDocId(tableId);
+      localStorage.setItem('wonbee_active_doc_id', tableId);
+      localStorage.removeItem('wonbee_active_table_id');
+      return;
     }
+    activateTable(tableId);
+    localStorage.setItem('wonbee_active_table_id', tableId);
+    setViewMode(resolveViewModeForTable(tableId));
+  };
+
+  const handleCloseTab = (tableId: string) => {
+    if (!workspace.documents?.[tableId]) return;
+    const closingIndex = openTabIds.indexOf(tableId);
+    const remaining = openTabIds.filter((id) => id !== tableId);
+    setOpenTabIds(remaining);
+    if (activeTableId === tableId || activeDocId === tableId) {
+      const nextId = remaining[Math.max(0, Math.min(closingIndex - 1, remaining.length - 1))] || null;
+      if (!nextId) {
+        setActiveTableId(null);
+        setActiveDocId(null);
+        localStorage.removeItem('wonbee_active_table_id');
+        localStorage.removeItem('wonbee_active_doc_id');
+      } else {
+        handleSelectActiveTable(nextId);
+      }
+    }
+  };
+
+  const handleRenameNote = (id: string, newTitle: string) => {
+    const doc = workspace.documents?.[id];
+    if (!doc) return;
+    handleUpdateDocumentDebounced({ ...doc, title: newTitle, updatedAt: Date.now() });
+  };
+
+  const handleDuplicateNote = (id: string) => {
+    const doc = workspace.documents?.[id];
+    if (!doc) return;
+    const sourceItem = workspace.tree.find((item) => item.id === id);
+    void handleAddNote(sourceItem?.parentId ?? null, `${doc.title} (복사본)`, doc.content);
+  };
+
+  const handleDeleteNote = async (id: string) => {
+    const findDescendantIds = (rootId: string): string[] => {
+      const children = workspace.tree.filter((t) => t.parentId === rootId);
+      let ids = [rootId];
+      children.forEach((c) => {
+        ids = [...ids, ...findDescendantIds(c.id)];
+      });
+      return ids;
+    };
+
+    const idsToDelete = findDescendantIds(id);
+    const updatedTree = workspace.tree.filter((t) => !idsToDelete.includes(t.id));
+    const updatedDocuments = { ...(workspace.documents || {}) };
+    idsToDelete.forEach((docId) => {
+      delete updatedDocuments[docId];
+    });
+
+    const updatedWs: WorkspaceData = {
+      ...workspace,
+      tree: updatedTree,
+      documents: updatedDocuments,
+      exportedAt: Date.now(),
+    };
+
+    setWorkspace(updatedWs);
+    await cancelPendingDocumentSaveAndWait();
+    handleCloseTab(id);
+
+    try {
+      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+      await repository.saveWorkspace(updatedWs);
+      for (const docId of idsToDelete) await repository.deleteDocument?.(docId);
+    } catch (err) {
+      console.warn('[WonNote] Failed to delete note:', err);
+    }
+    await syncToLocalFileIfConnected(updatedWs);
   };
 
   useEffect(() => {
@@ -229,22 +337,6 @@ export default function App() {
       setViewMode(mode);
     }
   }, [activeTableId, resolveViewModeForTable]);
-
-  // Safety guard: Ensure activeTableId is never null if tables exist in workspace
-  useEffect(() => {
-    if (!activeTableId && workspace?.tables) {
-      const keys = Object.keys(workspace.tables);
-      if (keys.length > 0) {
-        const saved = localStorage.getItem('wonbee_active_table_id');
-        if (saved && workspace.tables[saved]) {
-          setActiveTableId(saved);
-        } else {
-          setActiveTableId(keys[0]);
-          localStorage.setItem('wonbee_active_table_id', keys[0]);
-        }
-      }
-    }
-  }, [workspace?.tables, activeTableId]);
 
   // Modals state management via custom hook
   const {
@@ -300,6 +392,40 @@ export default function App() {
     }
     return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban' | 'calendar' | 'memo') || 'table';
   });
+  const [openTabIds, setOpenTabIds] = useState<string[]>(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('wonbee_open_tabs') || '[]');
+      return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : [];
+    } catch { return []; }
+  });
+
+  useEffect(() => {
+    localStorage.setItem('wonbee_open_tabs', JSON.stringify(openTabIds));
+  }, [openTabIds]);
+
+  useEffect(() => {
+    if (isLoading) return;
+    const validTabIds = openTabIds.filter((id) => Boolean(workspace.documents?.[id]));
+    if (activeDocId && workspace.documents?.[activeDocId] && !validTabIds.includes(activeDocId)) validTabIds.push(activeDocId);
+    if (validTabIds.length !== openTabIds.length || validTabIds.some((id, index) => id !== openTabIds[index])) setOpenTabIds(validTabIds);
+  }, [isLoading, workspace.documents, activeDocId, openTabIds]);
+
+  useEffect(() => {
+    if (isLoading || activeTableId || activeDocId || openTabIds.length === 0) return;
+    const nextId = openTabIds.find((id) => Boolean(workspace.documents?.[id]));
+    if (nextId) handleSelectActiveTable(nextId);
+  }, [isLoading, activeTableId, activeDocId, openTabIds, workspace.documents]);
+
+  useEffect(() => {
+    if (isLoading || !activeDocId) return;
+    if (workspace.documents?.[activeDocId]) {
+      setActiveTableId(null);
+      setOpenTabIds((previous) => previous.includes(activeDocId) ? previous : [...previous, activeDocId]);
+    } else {
+      setActiveDocId(null);
+      localStorage.removeItem('wonbee_active_doc_id');
+    }
+  }, [isLoading, activeDocId, workspace.documents]);
 
   const handleViewModeChange = (mode: 'table' | 'kanban' | 'calendar' | 'memo') => {
     setViewMode(mode);
@@ -313,6 +439,47 @@ export default function App() {
   const saveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSaveTableRef = useRef<TableDocument | null>(null);
   const pendingSaveWorkspaceRef = useRef<WorkspaceData | null>(null);
+  const documentSaveDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveDocumentRef = useRef<WonNoteDocument | null>(null);
+  const pendingDocumentWorkspaceRef = useRef<WorkspaceData | null>(null);
+  const documentSaveInFlightRef = useRef<Promise<void> | null>(null);
+
+  const cancelPendingDocumentSaveAndWait = async () => {
+    if (documentSaveDebounceTimerRef.current) {
+      clearTimeout(documentSaveDebounceTimerRef.current);
+      documentSaveDebounceTimerRef.current = null;
+    }
+    pendingSaveDocumentRef.current = null;
+    pendingDocumentWorkspaceRef.current = null;
+    await documentSaveInFlightRef.current?.catch(() => {});
+  };
+
+  const scheduleDocumentWorkspaceSave = useCallback((document: WonNoteDocument, updatedWorkspace: WorkspaceData) => {
+    pendingSaveDocumentRef.current = document;
+    pendingDocumentWorkspaceRef.current = updatedWorkspace;
+    if (documentSaveDebounceTimerRef.current) clearTimeout(documentSaveDebounceTimerRef.current);
+    documentSaveDebounceTimerRef.current = setTimeout(async () => {
+      const targetDocument = pendingSaveDocumentRef.current;
+      const targetWorkspace = pendingDocumentWorkspaceRef.current;
+      if (!targetDocument || !targetWorkspace) return;
+      const saveTask = (async () => {
+        try {
+          await wonbeeDexieDB.saveFullWorkspace(targetWorkspace, 1);
+          await repository.saveWorkspace(targetWorkspace);
+          await syncToLocalFileIfConnected(targetWorkspace);
+          if (pendingSaveDocumentRef.current?.updatedAt === targetDocument.updatedAt) {
+            pendingSaveDocumentRef.current = null;
+            pendingDocumentWorkspaceRef.current = null;
+          }
+        } catch (error) {
+          console.warn('[WonNote Save Error] 노트 저장/동기화 실패:', error);
+        }
+      })();
+      documentSaveInFlightRef.current = saveTask;
+      await saveTask;
+      if (documentSaveInFlightRef.current === saveTask) documentSaveInFlightRef.current = null;
+    }, useServer ? 3000 : 300);
+  }, [repository, syncToLocalFileIfConnected, useServer]);
 
   /**
      * 2. 서버 모드 3초 디바운스 통합 저장 함수
@@ -386,6 +553,22 @@ export default function App() {
       [workspace, useServer, repository, syncToLocalFileIfConnected]
     );
 
+  const handleUpdateDocumentDebounced = useCallback((document: WonNoteDocument) => {
+    const now = Date.now();
+    const updatedDocument = { ...document, updatedAt: now };
+    const updatedTree = workspace.tree.map((item) => item.id === document.id
+      ? { ...item, title: document.title, updatedAt: now }
+      : item);
+    const updatedWorkspace: WorkspaceData = {
+      ...workspace,
+      tree: updatedTree,
+      documents: { ...(workspace.documents || {}), [document.id]: updatedDocument },
+      exportedAt: now,
+    };
+    setWorkspace(updatedWorkspace);
+    scheduleDocumentWorkspaceSave(updatedDocument, updatedWorkspace);
+  }, [workspace, scheduleDocumentWorkspaceSave]);
+
     // 3. 🛡️ [안전장치] 3초 대기 도중 앱/탭이 닫히면 대기 중인 메모 데이터 즉시 저장 (Flush)
     useEffect(() => {
       const handleBeforeUnload = () => {
@@ -402,11 +585,19 @@ export default function App() {
             if (!useServer) repository.saveWorkspace(targetWorkspace).catch(() => {});
           }
         }
+        if (documentSaveDebounceTimerRef.current && pendingSaveDocumentRef.current) {
+          clearTimeout(documentSaveDebounceTimerRef.current);
+          const targetWorkspace = pendingDocumentWorkspaceRef.current;
+          if (targetWorkspace) wonbeeDexieDB.saveFullWorkspace(targetWorkspace, 1).catch(() => {});
+          if (targetWorkspace) repository.saveWorkspace(targetWorkspace).catch(() => {});
+        }
       };
 
       window.addEventListener('beforeunload', handleBeforeUnload);
       return () => {
         window.removeEventListener('beforeunload', handleBeforeUnload);
+        if (saveDebounceTimerRef.current) clearTimeout(saveDebounceTimerRef.current);
+        if (documentSaveDebounceTimerRef.current) clearTimeout(documentSaveDebounceTimerRef.current);
       };
     }, [useServer, repository]);
 
@@ -456,7 +647,7 @@ export default function App() {
           headers['If-None-Match'] = lastEtagRef.current;
         }
 
-        const res = await fetch(`${serverUrl}/workspace/version`, {
+        const res = await fetchBridge(`${serverUrl}/workspace/version`, {
           cache: 'no-store',
           headers,
         });
@@ -555,10 +746,18 @@ export default function App() {
     if (!activeTableId) return null;
     return workspace.tables[activeTableId] || null;
   }, [workspace.tables, activeTableId]);
+  const activeDocument: WonNoteDocument | null = useMemo(() => {
+    if (!activeDocId) return null;
+    return workspace.documents?.[activeDocId] || null;
+  }, [workspace.documents, activeDocId]);
 
   // Update whole tree and keep table titles in sync
   const handleUpdateTree = async (updatedTree: TreeItem[]) => {
     const updatedTables = { ...workspace.tables };
+    const updatedDocuments = { ...(workspace.documents || {}) };
+    const idsToDelete: string[] = [];
+    const documentIdsToDelete = idsToDelete.filter((id) => Boolean(updatedDocuments[id]));
+    const renamedDocumentIds: string[] = [];
     const now = Date.now();
     lastLoadedTimestampRef.current = now;
 
@@ -579,6 +778,12 @@ export default function App() {
             repository.renameTable(target.id, item.title).catch(() => {});
           }
         }
+      } else if (item.type === 'document') {
+        const document = updatedDocuments[item.id];
+        if (document && document.title !== item.title) {
+          updatedDocuments[item.id] = { ...document, title: item.title, updatedAt: item.updatedAt || now };
+          renamedDocumentIds.push(item.id);
+        }
       }
     });
 
@@ -586,6 +791,7 @@ export default function App() {
       ...workspace,
       tree: updatedTree,
       tables: updatedTables,
+      documents: updatedDocuments,
       exportedAt: now,
     });
     setWorkspace(updatedWs);
@@ -594,6 +800,7 @@ export default function App() {
       if (useServer) {
         // Fast incremental tree update: saves tree and updates titles in < 5ms
         await repository.saveTree(updatedTree);
+        for (const id of renamedDocumentIds) await repository.saveDocument?.(updatedDocuments[id]);
       } else {
         await repository.saveWorkspace(updatedWs);
       }
@@ -694,25 +901,13 @@ export default function App() {
       updatedAt: Date.now(),
       columns: [
         { id: 'col-name', name: '이름 / 항목명', type: 'text', width: 220, isPrimaryKey: true },
-        {
-          id: 'col-status',
-          name: '상태',
-          type: 'status',
-          width: 140,
-          options: [
-            { id: 'todo', label: '대기중', color: '#9CA3AF' },
-            { id: 'progress', label: '진행중', color: '#F59E0B' },
-            { id: 'done', label: '완료됨', color: '#10B981' },
-          ],
-        },
+        { id: 'col-status', name: '상태', type: 'status', width: 140, options: [
+          { id: 'todo', label: '대기중', color: '#9CA3AF' },
+          { id: 'progress', label: '진행중', color: '#F59E0B' },
+          { id: 'done', label: '완료됨', color: '#10B981' },
+        ] },
         { id: 'col-note', name: '상세 노트', type: 'richText', width: 320 },
-        {
-          id: 'col-updated-at',
-          name: '수정일',
-          type: 'date',
-          width: 155,
-          autoUpdateDate: true,
-        },
+        { id: 'col-updated-at', name: '수정일', type: 'date', width: 155, autoUpdateDate: true },
       ],
       rows: [
         {
@@ -750,10 +945,11 @@ export default function App() {
     };
 
     setWorkspace(updatedWs);
-    setActiveTableId(newTableId);
+    activateTable(newTableId);
     localStorage.setItem('wonbee_active_table_id', newTableId);
+    localStorage.removeItem('wonbee_active_doc_id');
 
-    // 🟢 일반 테이블 추가 시 ViewMode를 명시적으로 'table' 그리드로 지정
+    // 🟢 새 테이블은 기존 그리드 뷰로 진입
     handleViewModeChange('table');
 
     try {
@@ -763,6 +959,127 @@ export default function App() {
       console.warn('Failed to save new table:', err);
     }
     await syncToLocalFileIfConnected(updatedWs);
+    return newTableId;
+  };
+
+  const handleAddNote = async (parentId: string | null = null, defaultTitle?: string, content = '<p></p>') => {
+    const now = Date.now();
+    const id = `doc-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+
+    // A page may only be created under a section/root note, never under another child page.
+    let normalizedParentId = parentId;
+    let parentItem = normalizedParentId ? workspace.tree.find((item) => item.id === normalizedParentId) : undefined;
+    while (parentItem?.type === 'document' && parentItem.parentId) {
+      normalizedParentId = parentItem.parentId;
+      parentItem = workspace.tree.find((item) => item.id === normalizedParentId);
+    }
+    if (parentItem?.type === 'document' && !parentItem.parentId) normalizedParentId = parentItem.id;
+
+    let title = defaultTitle;
+    if (!title) {
+      if (normalizedParentId) {
+        const existingChildren = workspace.tree.filter((t) => t.parentId === normalizedParentId && t.type === 'document');
+        const childCount = existingChildren.length + 1;
+        title = `새 하위 노트 ${childCount > 1 ? childCount : ''}`.trim();
+      } else {
+        const existingDocs = Object.keys(workspace.documents || {}).length + 1;
+        title = `새 노트 ${existingDocs > 1 ? existingDocs : ''}`.trim();
+      }
+    }
+
+    const document = { id, title, content, createdAt: now, updatedAt: now };
+    const treeItem: TreeItem = {
+      id,
+      parentId: normalizedParentId,
+      title,
+      type: 'document',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const updatedWs: WorkspaceData = {
+      ...workspace,
+      tree: [treeItem, ...workspace.tree],
+      documents: { ...(workspace.documents || {}), [id]: document },
+      exportedAt: now,
+    };
+    setWorkspace(updatedWs);
+    setActiveTableId(null);
+    setActiveDocId(id);
+    setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== id), id]);
+    localStorage.setItem('wonbee_active_doc_id', id);
+    localStorage.removeItem('wonbee_active_table_id');
+    scheduleDocumentWorkspaceSave(document, updatedWs);
+    return id;
+  };
+
+  const handleAddParentNote = async (
+    sectionTitle = '새 노트 섹션',
+    childTitle = '새 노트',
+    content = '<p></p>'
+  ) => {
+    const now = Date.now();
+    const sectionId = `section-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const documentId = `doc-${now.toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const section: TreeItem = {
+      id: sectionId,
+      parentId: null,
+      title: sectionTitle,
+      type: 'folder',
+      isExpanded: true,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const document: WonNoteDocument = {
+      id: documentId,
+      title: childTitle,
+      content,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const child: TreeItem = {
+      id: documentId,
+      parentId: sectionId,
+      title: document.title,
+      type: 'document',
+      createdAt: now,
+      updatedAt: now,
+    };
+    const updatedWs: WorkspaceData = {
+      ...workspace,
+      tree: [child, section, ...workspace.tree],
+      documents: { ...(workspace.documents || {}), [documentId]: document },
+      exportedAt: now,
+    };
+    setWorkspace(updatedWs);
+    setActiveTableId(null);
+    setActiveDocId(documentId);
+    setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== documentId), documentId]);
+    localStorage.setItem('wonbee_active_doc_id', documentId);
+    localStorage.removeItem('wonbee_active_table_id');
+    scheduleDocumentWorkspaceSave(document, updatedWs);
+    return documentId;
+  };
+
+  const handleAddNoteFromTabBar = () => {
+    const activeItem = activeDocId ? workspace.tree.find((item) => item.id === activeDocId) : undefined;
+    if (!activeItem) {
+      void handleAddParentNote();
+      return;
+    }
+    const targetParentId = activeItem.parentId || activeItem.id;
+    void handleAddNote(targetParentId);
+  };
+
+  const handleCreateNoteFromTable = async (tableId: string) => {
+    const table = workspace.tables[tableId];
+    if (!table) return;
+    const sourceItem = workspace.tree.find((item) => item.id === tableId);
+    const migratedNote = migrateTableToWonNoteFormat(table);
+    if (sourceItem?.parentId) {
+      await handleAddNote(sourceItem.parentId, `${table.title} 노트`, migratedNote.content);
+    } else {
+      await handleAddParentNote(`${table.title} 섹션`, `${table.title} 노트`, migratedNote.content);
+    }
   };
 
   // Add new TO-DO Kanban Board
@@ -901,7 +1218,7 @@ export default function App() {
     };
 
     setWorkspace(updatedWs);
-    setActiveTableId(newTableId);
+    activateTable(newTableId);
     localStorage.setItem('wonbee_active_table_id', newTableId);
     handleViewModeChange('kanban'); // 바로 칸반보드 뷰로 보여주기
     try {
@@ -1044,7 +1361,7 @@ export default function App() {
     };
 
     setWorkspace(updatedWs);
-    setActiveTableId(newTableId);
+    activateTable(newTableId);
     localStorage.setItem('wonbee_active_table_id', newTableId);
     handleViewModeChange('calendar'); // 바로 캘린더 뷰로 보여주기
     try {
@@ -1127,7 +1444,7 @@ export default function App() {
 
     // 1. React UI State 반영
         setWorkspace(updatedWs);
-        setActiveTableId(newTableId);
+        activateTable(newTableId);
         localStorage.setItem('wonbee_active_table_id', newTableId);
         handleViewModeChange('memo');
 
@@ -1221,7 +1538,7 @@ export default function App() {
     };
 
     setWorkspace(updatedWs);
-    setActiveTableId(newTableId);
+    activateTable(newTableId);
     await repository.saveWorkspace(updatedWs);
     await syncToLocalFileIfConnected(updatedWs);
   };
@@ -1249,9 +1566,11 @@ export default function App() {
     };
 
     const idsToDelete = findDescendantIds(itemId);
+    const documentIdsToDelete = idsToDelete.filter((id) => Boolean(workspace.documents?.[id]));
     const updatedTree = workspace.tree.filter((t) => !idsToDelete.includes(t.id));
 
     const updatedTables = { ...workspace.tables };
+    const updatedDocuments = { ...(workspace.documents || {}) };
     idsToDelete.forEach((id) => {
       delete updatedTables[id];
       delete updatedTables[id.replace(/-/g, '_')];
@@ -1259,6 +1578,7 @@ export default function App() {
       delete updatedTables[id.replace(/^table[-_]/, '')];
       delete updatedTables[`table_${id.replace(/^table[-_]/, '')}`];
       delete updatedTables[`table-${id.replace(/^table[-_]/, '')}`];
+      delete updatedDocuments[id];
     });
 
     // If the entire tree is deleted, wipe all remaining tables to guarantee no ghost/orphan sample tables remain!
@@ -1273,30 +1593,45 @@ export default function App() {
       ...workspace,
       tree: updatedTree,
       tables: updatedTables,
+      documents: updatedDocuments,
       exportedAt: now,
     };
 
     setWorkspace(updatedWs);
+    await cancelPendingDocumentSaveAndWait();
+    await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+    setOpenTabIds((previous) => previous.filter((id) => !idsToDelete.includes(id)));
+    if (activeDocId && idsToDelete.includes(activeDocId)) {
+      setActiveDocId(null);
+      localStorage.removeItem('wonbee_active_doc_id');
+    }
     if (activeTableId && (idsToDelete.includes(activeTableId) || updatedTree.length === 0)) {
-      const remainingTableIds = Object.keys(updatedTables);
-      setActiveTableId(remainingTableIds[0] || null);
+      setActiveTableId(null);
+    }
+    if ((activeDocId && idsToDelete.includes(activeDocId)) || (activeTableId && idsToDelete.includes(activeTableId))) {
+      const nextId = openTabIds.find((id) => !idsToDelete.includes(id) && (updatedTables[id] || updatedDocuments[id]));
+      if (nextId) handleSelectActiveTable(nextId);
+      else {
+        setActiveTableId(null);
+        setActiveDocId(null);
+        localStorage.removeItem('wonbee_active_table_id');
+        localStorage.removeItem('wonbee_active_doc_id');
+      }
     }
 
     // Call deleteTable for all affected tables on server repository to cascade delete SQLite data & drop physical table
     for (const id of idsToDelete) {
       try {
-            await repository.deleteTable(id);
-          } catch (err) {
-            console.warn(`[Delete] repository.deleteTable(${id}) error:`, err);
-          }
-        }
+        if (workspace.tables[id]) await repository.deleteTable(id);
+        if (documentIdsToDelete.includes(id)) await repository.deleteDocument?.(id);
+      } catch (err) {
+        console.warn(`[Delete] repository.deleteTable(${id}) error:`, err);
+      }
+    }
 
     try {
       await repository.saveWorkspace(updatedWs);
-          if (typeof wonbeeDexieDB !== 'undefined') {
-            await wonbeeDexieDB.saveFullWorkspace(updatedWs, 0);
-          }
-        } catch (saveErr) {
+    } catch (saveErr) {
           console.error('[Repository] Failed to save workspace after delete:', saveErr);
         }
 
@@ -1393,7 +1728,7 @@ export default function App() {
       // Activate first newly appended sample table
       const firstNewTableId = Object.keys(newTables)[0];
       if (firstNewTableId) {
-        setActiveTableId(firstNewTableId);
+        activateTable(firstNewTableId);
         localStorage.setItem('wonbee_active_table_id', firstNewTableId);
       }
       closeModal();
@@ -1443,7 +1778,7 @@ export default function App() {
     };
 
     setWorkspace(updatedWs);
-    setActiveTableId(newTableId);
+    activateTable(newTableId);
     await repository.saveWorkspace(updatedWs);
     await syncToLocalFileIfConnected(updatedWs);
   };
@@ -1482,7 +1817,7 @@ export default function App() {
     const ensuredResult = ensureWorkspaceTree(result);
     setWorkspace(ensuredResult);
     const firstTableId = Object.keys(ensuredResult.tables)[0] || null;
-    if (firstTableId) setActiveTableId(firstTableId);
+    if (firstTableId) activateTable(firstTableId);
     await syncToLocalFileIfConnected(ensuredResult);
   };
 
@@ -1495,7 +1830,7 @@ export default function App() {
         setConnectedFileName(res.fileName);
         setWorkspace(ensuredData);
         const firstTableId = Object.keys(ensuredData.tables)[0] || null;
-        if (firstTableId) setActiveTableId(firstTableId);
+        if (firstTableId) activateTable(firstTableId);
         await repository.saveWorkspace(ensuredData);
       }
     } catch (err) {
@@ -1537,7 +1872,7 @@ export default function App() {
           🐝
         </div>
         <p className="mt-4 text-xs font-semibold text-stone-600 dark:text-stone-400">
-          WonBee 워크스페이스 로딩 중...
+          WON 노트 워크스페이스 로딩 중...
         </p>
       </div>
     );
@@ -1550,9 +1885,13 @@ export default function App() {
       <InfiniteTreeSidebar
         tree={workspace.tree}
         activeTableId={activeTableId}
+        activeDocId={activeDocId}
         onSelectTable={handleSelectActiveTable}
         onUpdateTree={handleUpdateTree}
         onAddTable={handleAddTable}
+        onAddNote={handleAddNote}
+        onAddParentNote={() => { void handleAddParentNote(); }}
+        onCreateNoteFromTable={handleCreateNoteFromTable}
         onAddTodoBoard={handleAddTodoBoard}
         onAddCalendarTable={handleAddCalendarBoard}
         onAddMemoBoard={handleAddMemoBoard}
@@ -1582,7 +1921,7 @@ export default function App() {
           <div className="flex items-center gap-3 text-xs text-stone-500">
             <span className="font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1">
               <WonBeeMascot />
-              WonBee
+              WON 노트
             </span>
             {typeof window !== 'undefined' && window.location.protocol.startsWith('file:') && (
               <span className="px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-800 dark:text-amber-300 text-[10px] font-bold border border-amber-500/30 shrink-0">
@@ -1590,30 +1929,24 @@ export default function App() {
               </span>
             )}
             <ChevronRight className="w-3.5 h-3.5 text-stone-400" />
-            {isEditingHeaderTitle && activeTable ? (
+            {isEditingHeaderTitle && (activeTable || activeDocument) ? (
               <input
                 type="text"
                 autoFocus
                 value={headerTitleInput}
                 onChange={(e) => setHeaderTitleInput(e.target.value)}
                 onBlur={() => {
-                  if (headerTitleInput.trim() && headerTitleInput.trim() !== activeTable.title) {
-                    handleUpdateTable({
-                      ...activeTable,
-                      title: headerTitleInput.trim(),
-                      updatedAt: Date.now(),
-                    });
+                  if (headerTitleInput.trim() && headerTitleInput.trim() !== (activeDocument?.title || activeTable?.title)) {
+                    if (activeDocument) handleUpdateDocumentDebounced({ ...activeDocument, title: headerTitleInput.trim() });
+                    else if (activeTable) handleUpdateTable({ ...activeTable, title: headerTitleInput.trim(), updatedAt: Date.now() });
                   }
                   setIsEditingHeaderTitle(false);
                 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') {
-                    if (headerTitleInput.trim() && headerTitleInput.trim() !== activeTable.title) {
-                      handleUpdateTable({
-                        ...activeTable,
-                        title: headerTitleInput.trim(),
-                        updatedAt: Date.now(),
-                      });
+                    if (headerTitleInput.trim() && headerTitleInput.trim() !== (activeDocument?.title || activeTable?.title)) {
+                      if (activeDocument) handleUpdateDocumentDebounced({ ...activeDocument, title: headerTitleInput.trim() });
+                      else if (activeTable) handleUpdateTable({ ...activeTable, title: headerTitleInput.trim(), updatedAt: Date.now() });
                     }
                     setIsEditingHeaderTitle(false);
                   } else if (e.key === 'Escape') {
@@ -1625,19 +1958,19 @@ export default function App() {
             ) : (
               <span
                 onClick={() => {
-                  if (activeTable) {
-                    setHeaderTitleInput(activeTable.title);
+                  if (activeTable || activeDocument) {
+                    setHeaderTitleInput(activeDocument?.title || activeTable?.title || '');
                     setIsEditingHeaderTitle(true);
                   }
                 }}
-                title={activeTable ? '클릭하여 테이블 이름 변경' : undefined}
+                title={activeTable || activeDocument ? '클릭하여 이름 변경' : undefined}
                 className={`font-medium truncate max-w-xs ${
-                  activeTable
+                  activeTable || activeDocument
                     ? 'text-stone-800 dark:text-[#f0f0f0] cursor-pointer hover:underline hover:text-amber-600 dark:hover:text-amber-400'
                     : 'text-stone-400 dark:text-stone-500'
                 }`}
               >
-                {activeTable?.title || '테이블을 선택하세요'}
+                {activeDocument?.title || activeTable?.title || '노트를 선택하세요'}
               </span>
             )}
 
@@ -1755,7 +2088,7 @@ export default function App() {
               <button
                 onClick={() => openModal('aiAgent')}
                 className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
-                title="WonBee AI 에이전트 열기"
+                title="WON 노트 AI 에이전트 열기"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-500" />
                 <span>AI 어시스턴트</span>
@@ -1777,8 +2110,26 @@ export default function App() {
           </div>
         </header>
 
+        {/* MS OneNote-style Draggable Tab Bar */}
+        {activeDocument && (
+          <WonNoteTabBar
+            openTabIds={openTabIds}
+            documents={workspace.documents || {}}
+            activeDocId={activeDocId}
+            onSelectTab={(id) => handleSelectActiveTable(id)}
+            onCloseTab={(id) => handleCloseTab(id)}
+            onReorderTabs={(newOrder) => setOpenTabIds(newOrder)}
+            onRenameTab={(id, newTitle) => handleRenameNote(id, newTitle)}
+            onDuplicateTab={(id) => handleDuplicateNote(id)}
+            onDeleteNote={handleDeleteTreeItem}
+            onAddTab={handleAddNoteFromTabBar}
+          />
+        )}
+
+        {/* Parent-Child Hierarchy Breadcrumb Sub-bar */}
+
         {/* Scalable Workspace Canvas (Zoom In / Out Container) */}
-        <div className="flex-1 w-full h-[calc(100vh-48px)] overflow-auto relative">
+        <div className="flex-1 w-full min-h-0 overflow-auto relative">
           <div
             style={{
               transform: `scale(${zoomLevel / 100})`,
@@ -1820,6 +2171,8 @@ export default function App() {
                   서버에서 최신 데이터베이스 스키마와 테이블을 안전하게 내려받고 있습니다.
                 </p>
               </div>
+            ) : activeDocument ? (
+              <WonNoteDocumentEditor key={activeDocument.id} document={activeDocument} onUpdateDocument={handleUpdateDocumentDebounced} />
             ) : activeTable ? (
               <DataTableViewer
                 table={activeTable}
@@ -1854,17 +2207,17 @@ export default function App() {
             ) : (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400">
                 <TableIcon className="w-12 h-12 stroke-1 mb-2 text-stone-300 dark:text-stone-600" />
-                <h3 className="font-semibold text-stone-600 dark:text-stone-300">선택된 테이블이 없습니다</h3>
+                <h3 className="font-semibold text-stone-600 dark:text-stone-300">열린 노트가 없습니다</h3>
                 <p className="text-xs text-stone-400 mt-1 max-w-sm">
-                  좌측 워크스페이스 트리에서 테이블을 선택하거나 새 테이블을 추가해주세요.
+                  좌측 워크스페이스 트리에서 노트를 열거나 새 WON 노트를 만들어주세요.
                 </p>
                 <div className="flex items-center gap-2.5 mt-5">
                   <button
-                    onClick={() => handleAddTable(null)}
+                    onClick={() => { void handleAddParentNote(); }}
                     className="px-4 py-2 bg-amber-400 hover:bg-amber-500 text-stone-950 font-semibold rounded-lg text-xs flex items-center gap-1.5 shadow-sm transition-all cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    새 테이블 만들기
+                    새 WON 노트 만들기
                   </button>
                   <button
                     onClick={handleLoadSampleTemplates}
@@ -1964,7 +2317,7 @@ export default function App() {
           setConnectedFileName(fileName);
           setWorkspace(ensured);
           const firstTableId = Object.keys(ensured.tables)[0] || null;
-          if (firstTableId) setActiveTableId(firstTableId);
+          if (firstTableId) activateTable(firstTableId);
           try {
             await repository.saveWorkspace(ensured);
             await syncToLocalFileIfConnected(ensured);
@@ -1988,8 +2341,10 @@ export default function App() {
         useServer={useServer}
         serverUrl={serverUrl}
         onToggleUseServer={(newUseServer, newUrl) => {
-          setUseServer(newUseServer);
-          localStorage.setItem('wonbee_use_server', String(newUseServer));
+          const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+          const nextUseServer = isFileProtocol ? false : newUseServer;
+          setUseServer(nextUseServer);
+          localStorage.setItem('wonbee_use_server', String(nextUseServer));
           if (newUrl) {
             setServerUrl(newUrl);
             localStorage.setItem('wonbee_server_url', newUrl);
@@ -2015,7 +2370,7 @@ export default function App() {
             setZoomLevel(newEnv.zoomLevel);
           }
           if (newEnv.activeTableId && workspace.tables[newEnv.activeTableId]) {
-            setActiveTableId(newEnv.activeTableId);
+            activateTable(newEnv.activeTableId);
           }
         }}
       />
@@ -2086,7 +2441,7 @@ export default function App() {
         }}
       />
 
-      {/* 12. WonBee AI Multi-Agent Drawer */}
+      {/* 12. WON 노트 AI Multi-Agent Drawer */}
       <AiAgentDrawer
         isOpen={isModalOpen('aiAgent')}
         onClose={() => {

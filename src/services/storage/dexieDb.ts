@@ -1,5 +1,5 @@
 import Dexie, { type Table } from 'dexie';
-import { WorkspaceData, TableDocument, TreeItem, TableRow, ItemType } from '../../types';
+import { WorkspaceData, TableDocument, TreeItem, TableRow, ItemType, WonNoteDocument } from '../../types';
 import { INITIAL_WORKSPACE_DATA } from '../../data/initialData';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
 
@@ -9,6 +9,7 @@ export interface DexieWorkspaceMeta {
   exportedAt: number;
   author?: string;
   settings?: any;
+  documents?: Record<string, WonNoteDocument>;
 }
 
 export interface DexieTreeItem {
@@ -92,7 +93,7 @@ export class WonBeeDexieDatabase extends Dexie {
     try {
       const meta = await this.workspace_meta.get('root_workspace');
       const tableCount = await this.table_docs.count();
-      return Boolean(meta) && tableCount > 0;
+      return Boolean(meta) && (tableCount > 0 || Object.keys(meta.documents || {}).length > 0);
     } catch {
       return false;
     }
@@ -116,6 +117,7 @@ export class WonBeeDexieDatabase extends Dexie {
           settings: meta?.settings || { theme: 'light', zoom: 100, useServer: true },
           tree: [],
           tables: {},
+          documents: meta?.documents || {},
         };
       }
 
@@ -151,6 +153,7 @@ export class WonBeeDexieDatabase extends Dexie {
         settings: meta?.settings || { theme: 'light', zoom: 100, useServer: false },
         tree: treeItems,
         tables: tablesMap,
+        documents: meta?.documents || {},
       });
     } catch (err) {
       console.warn('[Dexie] Failed to load workspace, falling back to initial data:', err);
@@ -173,6 +176,7 @@ export class WonBeeDexieDatabase extends Dexie {
         exportedAt: now,
         author: ensured.author,
         settings: ensured.settings,
+        documents: ensured.documents || {},
       });
 
       // 2. Clear old data
@@ -239,6 +243,22 @@ export class WonBeeDexieDatabase extends Dexie {
         await this.notes.bulkPut(noteEntries);
       }
     });
+  }
+
+  async saveDocument(document: WonNoteDocument): Promise<void> {
+    const workspace = await this.loadWorkspace();
+    await this.saveFullWorkspace({
+      ...workspace,
+      documents: { ...(workspace.documents || {}), [document.id]: document },
+      exportedAt: Date.now(),
+    }, 1);
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    const workspace = await this.loadWorkspace();
+    const documents = { ...(workspace.documents || {}) };
+    delete documents[documentId];
+    await this.saveFullWorkspace({ ...workspace, documents, exportedAt: Date.now() }, 1);
   }
 
   /**

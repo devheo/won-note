@@ -1,6 +1,59 @@
 import { wonbeeDexieDB } from '../services/storage/dexieDb';
+import { fetchBridge, resolveApiUrl } from '../services/httpBridge';
 
 const assetUrlCache = new Map<string, string>();
+
+export async function resolveAssetUrl(assetUrl: string): Promise<string> {
+  if (!assetUrl.startsWith('asset://')) return assetUrl;
+  const cached = assetUrlCache.get(assetUrl);
+  if (cached) return cached;
+
+  const assetId = assetUrl.slice('asset://'.length);
+  try {
+    const asset = await wonbeeDexieDB.getAsset(assetId);
+    if (asset?.blob) {
+      const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+      const useServer = typeof localStorage !== 'undefined' && !isFileProtocol && localStorage.getItem('wonbee_use_server') !== 'false';
+      if (useServer) {
+        try {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => typeof reader.result === 'string' ? resolve(reader.result) : reject(new Error('Could not read asset'));
+            reader.onerror = () => reject(reader.error || new Error('Could not read asset'));
+            reader.readAsDataURL(asset.blob);
+          });
+          const response = await fetchBridge('/api/assets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ filename: asset.filename || assetId, blobBase64: dataUrl, mimeType: asset.mime_type || asset.blob.type || 'application/octet-stream' }),
+          });
+          if (response.ok) {
+            const serverUrl = resolveApiUrl(`/api/assets/${encodeURIComponent(assetId)}`);
+            assetUrlCache.set(assetUrl, serverUrl);
+            return serverUrl;
+          }
+        } catch {
+          // Keep the local copy usable while offline; it can be uploaded on a later read.
+        }
+      }
+      const objectUrl = URL.createObjectURL(asset.blob);
+      assetUrlCache.set(assetUrl, objectUrl);
+      return objectUrl;
+    }
+  } catch (err) {
+    console.warn('[AssetResolver] Local asset lookup failed:', err);
+  }
+
+  // Legacy asset:// links may have been created on another client. Resolve them
+  // from the shared server asset store when server mode is enabled.
+  const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+  if (typeof localStorage !== 'undefined' && !isFileProtocol && localStorage.getItem('wonbee_use_server') !== 'false') {
+    const serverUrl = resolveApiUrl(`/api/assets/${encodeURIComponent(assetId)}`);
+    assetUrlCache.set(assetUrl, serverUrl);
+    return serverUrl;
+  }
+  return '';
+}
 
 /**
  * Parses HTML string containing <img src="asset://..."> and replaces asset:// URIs
@@ -20,39 +73,12 @@ export async function resolveAssetUrlsInHtml(html: string): Promise<string> {
     assetUrls.add(match[1]);
   }
 
-  const urlMap = new Map<string, string>();
-  const promises: Promise<void>[] = [];
-
   for (const assetUrl of assetUrls) {
-    if (assetUrl.startsWith('asset://')) {
-      if (assetUrlCache.has(assetUrl)) {
-        urlMap.set(assetUrl, assetUrlCache.get(assetUrl)!);
-        continue;
-      }
-      const assetId = assetUrl.replace('asset://', '');
-      promises.push(
-        wonbeeDexieDB.getAsset(assetId)
-          .then((asset) => {
-            if (asset && asset.blob) {
-              const blobUrl = URL.createObjectURL(asset.blob);
-              assetUrlCache.set(assetUrl, blobUrl);
-              urlMap.set(assetUrl, blobUrl);
-            }
-          })
-          .catch((err) => {
-            console.warn('[AssetResolver] Failed to fetch asset for HTML view:', err);
-          })
-      );
+    const resolvedUrl = await resolveAssetUrl(assetUrl);
+    if (resolvedUrl !== assetUrl) {
+      resolved = resolved.replaceAll(`src="${assetUrl}"`, `src="${resolvedUrl}"`);
+      resolved = resolved.replaceAll(`src='${assetUrl}'`, `src='${resolvedUrl}'`);
     }
-  }
-
-  if (promises.length > 0) {
-    await Promise.all(promises);
-  }
-
-  for (const [assetUrl, blobUrl] of urlMap.entries()) {
-    resolved = resolved.replaceAll(`src="${assetUrl}"`, `src="${blobUrl}"`);
-    resolved = resolved.replaceAll(`src='${assetUrl}'`, `src='${blobUrl}'`);
   }
 
   return resolved;

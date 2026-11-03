@@ -1,5 +1,5 @@
 import React from 'react';
-import { AlertTriangle, Trash2, X, Table, Folder } from 'lucide-react';
+import { AlertTriangle, Trash2, X, Table, Folder, FileText } from 'lucide-react';
 import { TreeItem, TableDocument } from '../../types';
 
 interface DeleteTreeItemModalProps {
@@ -42,6 +42,7 @@ export const DeleteTreeItemModal: React.FC<DeleteTreeItemModalProps> = ({
   );
 
   const isFolder = item.type === 'folder';
+  const isDocument = item.type === 'document';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in duration-200">
@@ -54,10 +55,10 @@ export const DeleteTreeItemModal: React.FC<DeleteTreeItemModalProps> = ({
             </div>
             <div>
               <h3 className="text-base font-bold text-stone-900 dark:text-stone-100">
-                {isFolder ? '폴더 및 하위 테이블 일괄 삭제' : '테이블 및 DB 데이터 일괄 삭제'}
+                {isDocument ? '노트 삭제' : isFolder ? '폴더 및 하위 항목 삭제' : '테이블 및 DB 데이터 일괄 삭제'}
               </h3>
               <p className="text-xs text-rose-600 dark:text-rose-400 font-medium">
-                데이터베이스(SQLite) 영구 삭제 안내
+                {isDocument ? '워크스페이스와 동기화 저장소에서 노트를 삭제합니다.' : '데이터베이스(SQLite) 영구 삭제 안내'}
               </p>
             </div>
           </div>
@@ -75,12 +76,14 @@ export const DeleteTreeItemModal: React.FC<DeleteTreeItemModalProps> = ({
           <div className="flex items-center gap-3 p-3 bg-stone-100/70 dark:bg-[#282828] rounded-xl border border-stone-200/60 dark:border-[#383838]">
             {isFolder ? (
               <Folder className="w-5 h-5 text-amber-500 shrink-0" />
+            ) : isDocument ? (
+              <FileText className="w-5 h-5 text-amber-500 shrink-0" />
             ) : (
               <Table className="w-5 h-5 text-blue-500 shrink-0" />
             )}
             <div className="min-w-0 flex-1">
               <div className="text-xs text-stone-500 dark:text-stone-400">
-                {isFolder ? '삭제 대상 폴더' : '삭제 대상 테이블'}
+                {isDocument ? '삭제 대상 노트' : isFolder ? '삭제 대상 폴더' : '삭제 대상 테이블'}
               </div>
               <div className="text-sm font-bold text-stone-900 dark:text-stone-100 truncate">
                 {item.title}
@@ -95,9 +98,15 @@ export const DeleteTreeItemModal: React.FC<DeleteTreeItemModalProps> = ({
               <span>데이터 일괄 영구 삭제 안내</span>
             </div>
             <p className="text-rose-600/90 dark:text-rose-300 leading-relaxed">
+              {isDocument ? (
+                <>선택한 노트{descendantIds.length > 1 ? '와 하위 항목' : ''}를 워크스페이스 트리, 로컬 저장소, 서버에서 삭제합니다.</>
+              ) : (
+                <>
               워크스페이스 트리에서 삭제 시, SQLite 데이터베이스에 저장된 
               <strong> 테이블 스키마, 모든 행({totalRowCount}개 레코드), 캘린더 일정 및 첨부 이미지</strong>가 
               일괄 영구 삭제됩니다.
+                </>
+              )}
             </p>
             {isFolder && affectedTables.length > 0 && (
               <p className="text-rose-700 dark:text-rose-400 font-semibold pt-1 border-t border-rose-200/50 dark:border-rose-900/40">

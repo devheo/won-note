@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Image as ImageIcon, AlertCircle } from 'lucide-react';
-import { wonbeeDexieDB } from '../../services/storage/dexieDb';
+import { resolveAssetUrl } from '../../utils/assetResolver';
 
 interface LazyImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
   src?: string | null;
@@ -31,40 +31,21 @@ export const LazyImage: React.FC<LazyImageProps> = ({
   // 1. Resolve asset:// to blob URL
   useEffect(() => {
     let isMounted = true;
-    let objectUrl: string | null = null;
 
     async function resolveSrc() {
       if (!src) {
         setResolvedSrc('');
         return;
       }
-      if (src.startsWith('asset://')) {
-        const assetId = src.replace('asset://', '');
-        try {
-          const asset = await wonbeeDexieDB.getAsset(assetId);
-          if (asset && asset.blob && isMounted) {
-            objectUrl = URL.createObjectURL(asset.blob);
-            setResolvedSrc(objectUrl);
-            return;
-          }
-        } catch (err) {
-          console.warn('[LazyImage] Failed to resolve asset:', err);
-        }
-      }
-      if (isMounted) {
-        setResolvedSrc(src);
-      }
+      const resolved = await resolveAssetUrl(src);
+      if (!isMounted) return;
+      setResolvedSrc(resolved);
     }
 
     resolveSrc();
 
     return () => {
       isMounted = false;
-      if (objectUrl) {
-        try {
-          URL.revokeObjectURL(objectUrl);
-        } catch (_) {}
-      }
     };
   }, [src]);
 
@@ -100,19 +81,6 @@ export const LazyImage: React.FC<LazyImageProps> = ({
 
     return () => {
       observer.disconnect();
-    };
-  }, [resolvedSrc]);
-
-  // 3. Memory Cleanup: Revoke Blob URLs on unmount
-  useEffect(() => {
-    return () => {
-      if (resolvedSrc && resolvedSrc.startsWith('blob:')) {
-        try {
-          URL.revokeObjectURL(resolvedSrc);
-        } catch (err) {
-          console.warn('[LazyImage] Failed to revoke blob URL:', err);
-        }
-      }
     };
   }, [resolvedSrc]);
 

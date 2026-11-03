@@ -11,6 +11,7 @@ import {
   Minimize,
   RefreshCcw,
 } from 'lucide-react';
+import { resolveAssetUrl } from '../../utils/assetResolver';
 
 interface ImageLightboxModalProps {
   isOpen: boolean;
@@ -31,6 +32,16 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const [resolvedImageUrl, setResolvedImageUrl] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    setResolvedImageUrl('');
+    if (imageUrl) {
+      resolveAssetUrl(imageUrl).then((url) => { if (!cancelled) setResolvedImageUrl(url); });
+    }
+    return () => { cancelled = true; };
+  }, [imageUrl]);
 
   // Reset controls when image changes or modal opens
   useEffect(() => {
@@ -63,17 +74,19 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
 
   if (!isOpen || !imageUrl) return null;
 
+  const displayImageUrl = imageUrl.startsWith('asset://') ? resolvedImageUrl : imageUrl;
+
   const handleDownload = () => {
     const a = document.createElement('a');
-    a.href = imageUrl;
+    a.href = displayImageUrl;
     a.download = `wonbee_image_${Date.now()}.png`;
     a.click();
   };
 
   const handleCopy = async () => {
     try {
-      if (imageUrl.startsWith('data:image/png;base64,')) {
-        const res = await fetch(imageUrl);
+      if (displayImageUrl.startsWith('data:image/png;base64,')) {
+        const res = await fetch(displayImageUrl);
         const blob = await res.blob();
         await navigator.clipboard.write([
           new ClipboardItem({ 'image/png': blob }),
@@ -81,7 +94,7 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
         setIsCopied(true);
         setTimeout(() => setIsCopied(false), 2000);
       } else {
-        await navigator.clipboard.writeText(imageUrl);
+        await navigator.clipboard.writeText(displayImageUrl);
         setIsCopied(true);
         setTimeout(() => setIsCopied(false), 2000);
       }
@@ -205,7 +218,7 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
         onMouseDown={handleMouseDown}
       >
         <img
-          src={imageUrl}
+          src={displayImageUrl}
           alt={altText}
           loading="lazy"
           decoding="async"

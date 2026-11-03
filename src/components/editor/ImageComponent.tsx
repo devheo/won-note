@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { NodeViewWrapper, ReactNodeViewProps } from '@tiptap/react';
 import { NodeSelection } from '@tiptap/pm/state';
-import { wonbeeDexieDB } from '../../services/storage/dexieDb';
+import { resolveAssetUrl } from '../../utils/assetResolver';
 import {
   AlignLeft,
   AlignCenter,
@@ -28,44 +28,26 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
   const currentWidth = (node.attrs.width as string) || 'auto';
   const layout = (node.attrs.layout as 'inline' | 'center' | 'left' | 'right') || 'inline';
 
-  const [resolvedSrc, setResolvedSrc] = useState<string>(src);
+  const [resolvedSrc, setResolvedSrc] = useState<string>(() => src.startsWith('asset://') ? '' : src);
 
   useEffect(() => {
     let isMounted = true;
-    let objectUrl: string | null = null;
 
     async function loadAsset() {
       if (!src) {
         setResolvedSrc('');
         return;
       }
-      if (src.startsWith('asset://')) {
-        const assetId = src.replace('asset://', '');
-        try {
-          const asset = await wonbeeDexieDB.getAsset(assetId);
-          if (asset && asset.blob && isMounted) {
-            objectUrl = URL.createObjectURL(asset.blob);
-            setResolvedSrc(objectUrl);
-            return;
-          }
-        } catch (err) {
-          console.warn('Failed to load Dexie asset for image:', err);
-        }
-      }
-      if (isMounted) {
-        setResolvedSrc(src);
-      }
+      if (src.startsWith('asset://')) setResolvedSrc('');
+      const resolved = await resolveAssetUrl(src);
+      if (!isMounted) return;
+      setResolvedSrc(resolved);
     }
 
     loadAsset();
 
     return () => {
       isMounted = false;
-      if (objectUrl) {
-        try {
-          URL.revokeObjectURL(objectUrl);
-        } catch (_) {}
-      }
     };
   }, [src]);
 

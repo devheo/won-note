@@ -1,7 +1,7 @@
 import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import fs from 'fs';
 import path from 'path';
-import { WorkspaceData, TableDocument, TableRow, TableColumn, TreeItem, CalendarEvent } from '../src/types';
+import { WorkspaceData, TableDocument, TableRow, TableColumn, TreeItem, CalendarEvent, WonNoteDocument } from '../src/types';
 import { ensureWorkspaceTree } from '../src/utils/workspaceTreeUtils';
 
 const DB_FILE_PATH = path.resolve(process.cwd(), 'wonbee.sqlite');
@@ -436,6 +436,9 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
     if (data.settings) {
       db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('settings', ?);", [toSqliteParam(JSON.stringify(data.settings))]);
     }
+    if (rawData.documents !== undefined) {
+      db.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('documents', ?);", [toSqliteParam(JSON.stringify(data.documents || {}))]);
+    }
 
     // 2. Tree Items
     db.run('DELETE FROM tree_items;');
@@ -636,6 +639,7 @@ export function getWorkspaceData(): WorkspaceData {
   let version = '1.0.0';
   let exportedAt = Date.now();
   let settings = {};
+  let documents: Record<string, WonNoteDocument> = {};
 
   if (metaRes.length > 0) {
     for (const [k, v] of metaRes[0].values) {
@@ -643,6 +647,9 @@ export function getWorkspaceData(): WorkspaceData {
       if (k === 'exportedAt') exportedAt = Number(v) || Date.now();
       if (k === 'settings' && typeof v === 'string') {
         try { settings = JSON.parse(v); } catch {}
+      }
+      if (k === 'documents' && typeof v === 'string') {
+        try { documents = JSON.parse(v) || {}; } catch {}
       }
     }
   }
@@ -950,6 +957,7 @@ export function getWorkspaceData(): WorkspaceData {
     tree,
     tables,
     settings,
+    documents,
   });
 }
 
@@ -958,7 +966,11 @@ export function getWorkspaceData(): WorkspaceData {
  */
 export function saveWorkspaceData(data: WorkspaceData): void {
   if (!dbInstance) throw new Error('Database not initialized');
-  const complete = ensureWorkspaceTree(data);
+  const complete = ensureWorkspaceTree({
+    ...data,
+    // Older clients do not send the documents field; keep notes created by newer clients.
+    documents: data.documents ?? getStoredDocuments(),
+  });
   importWorkspaceDataToDb(dbInstance, complete);
   persistDatabase();
   syncDbToUserDataJson();
@@ -1144,6 +1156,40 @@ export function saveTree(tree: TreeItem[]): void {
     throw err;
   }
 
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
+}
+
+function getStoredDocuments(): Record<string, WonNoteDocument> {
+  if (!dbInstance) return {};
+  const result = dbInstance.exec("SELECT value FROM workspace_meta WHERE key = 'documents';");
+  try {
+    return result[0]?.values?.[0]?.[0] ? JSON.parse(String(result[0].values[0][0])) : {};
+  } catch {
+    return {};
+  }
+}
+
+export function saveDocument(document: WonNoteDocument): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const documents = getStoredDocuments();
+  documents[document.id] = document;
+  const now = Date.now();
+  dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('documents', ?);", [JSON.stringify(documents)]);
+  dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
+  touchServerUpdate();
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
+}
+
+export function deleteDocument(documentId: string): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const documents = getStoredDocuments();
+  delete documents[documentId];
+  const now = Date.now();
+  dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('documents', ?);", [JSON.stringify(documents)]);
+  dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
+  touchServerUpdate();
   persistDatabase(false);
   syncDbToUserDataJson(false);
 }
@@ -1513,6 +1559,18 @@ export function getRowImage(imageId: string): { id: string; mimeType: string; da
   };
 }
 
+/** Store an editor image in the same SQLite image store used by table row images. */
+export function saveImageAsset(imageId: string, mimeType: string, data: Uint8Array): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const now = Date.now();
+  dbInstance.run(
+    `INSERT OR REPLACE INTO row_images (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at)
+     VALUES (?, '__assets__', ?, 'asset', ?, ?, ?, ?);`,
+    [imageId, imageId, mimeType || 'application/octet-stream', Buffer.from(data), now, now]
+  );
+  persistDatabase(true);
+}
+
 /**
  * 1.2. Workspace Metadata API (Replaces 100MB+ full workspace dumps)
  * Lightweight structural metadata (<5KB) without heavy row/note bodies.
@@ -1525,6 +1583,7 @@ export function getWorkspaceMeta(): {
   version: string;
   settings: any;
   tree: TreeItem[];
+  documents: Record<string, WonNoteDocument>;
   tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; columns: any[]; createdAt: number; updatedAt: number }>;
 } {
   if (!dbInstance) throw new Error('Database not initialized');
@@ -1620,6 +1679,7 @@ export function getWorkspaceMeta(): {
     version,
     settings,
     tree,
+    documents: getStoredDocuments(),
     tables,
   };
 }
@@ -1890,6 +1950,43 @@ export function pushSyncNotes(notes: any[]): {
     console.error('[SQLite] pushSyncNotes failed:', err);
     throw err;
   }
+}
+
+/**
+ * Delete table from SQLite tables, columns, rows, tree_items, notes, and drop the physical SQLite table if it exists
+ */
+export function deleteTable(tableId: string): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+
+  dbInstance.run('BEGIN TRANSACTION;');
+  try {
+    const cleanId = tableId.replace(/^table[-_]/, '');
+    const altIds = [tableId, `table_${cleanId}`, `table-${cleanId}`, cleanId, cleanId.replace(/-/g, '_'), cleanId.replace(/_/g, '-')];
+
+    altIds.forEach((id) => {
+      dbInstance!.run("DELETE FROM tables WHERE id = ?;", [toSqliteParam(id)]);
+      dbInstance!.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(id)]);
+      dbInstance!.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(id)]);
+      dbInstance!.run("DELETE FROM notes WHERE table_id = ?;", [toSqliteParam(id)]);
+      dbInstance!.run("DELETE FROM tree_items WHERE id = ?;", [toSqliteParam(id)]);
+      dbInstance!.run("DELETE FROM row_images WHERE table_id = ?;", [toSqliteParam(id)]);
+      dbInstance!.run("DELETE FROM calendar_events WHERE table_id = ?;", [toSqliteParam(id)]);
+
+      try {
+        dbInstance!.run(`DROP TABLE IF EXISTS "table_${id}";`);
+        dbInstance!.run(`DROP TABLE IF EXISTS "${id}";`);
+      } catch (_) {}
+    });
+
+    dbInstance.run('COMMIT;');
+  } catch (err) {
+    try { dbInstance.run('ROLLBACK;'); } catch {}
+    throw err;
+  }
+
+  touchServerUpdate();
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
 }
 
 

@@ -25,6 +25,7 @@ import { Highlight } from '@tiptap/extension-highlight';
 import { StickerExtension } from './StickerExtension';
 import { CodeBlockComponent } from './CodeBlockComponent';
 import { ImageComponent } from './ImageComponent';
+import { fetchBridge, resolveApiUrl } from '../../services/httpBridge';
 import { TableGridPicker } from './TableGridPicker';
 import { RibbonToolbar } from './RibbonToolbar';
 import { TopDialogs } from './TopDialogs';
@@ -325,7 +326,7 @@ function sanitizeExcelTableHtml(htmlData: string): string {
 }
 
 /**
- * Saves image asset to Dexie (Offline asset://{id}) or uploads to Express server (/uploads/{filename}).
+ * Saves image asset to Dexie offline or uploads it to the shared /api/assets store in server mode.
  * Prevents raw 100MB+ Base64 strings from polluting note database fields.
  */
 async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promise<string> {
@@ -343,7 +344,7 @@ async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promis
   if (isServerMode) {
     try {
       const { dataUrl } = await compressAndResizeImage(file);
-      const res = await fetch('/api/assets', {
+      const res = await fetchBridge('/api/assets', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -354,7 +355,8 @@ async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promis
       });
       if (res.ok) {
         const json = await res.json();
-        if (json.url) return json.url;
+        if (typeof json.url === 'string' && json.url.startsWith('asset://')) return json.url;
+        if (json.url) return resolveApiUrl(json.url);
       }
     } catch (err) {
       console.warn('[Asset] Server asset upload failed, falling back to Dexie storage:', err);
@@ -1910,7 +1912,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             const file = item.getAsFile();
             if (file) {
               event.preventDefault();
-              const isServerMode = localStorage.getItem('wonbee_use_server') !== 'false';
+              const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
+              const isServerMode = !isFileProtocol && localStorage.getItem('wonbee_use_server') !== 'false';
               saveOrUploadImageAsset(file, isServerMode).then((imgSrc) => {
                 const targetEd = editorRef.current || (view as any).editor;
                 if (targetEd) {

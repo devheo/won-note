@@ -17,6 +17,7 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
       },
       tree: [],
       tables: {},
+      documents: {},
     };
   }
 
@@ -54,6 +55,8 @@ export function ensureWorkspaceTree(data: Partial<WorkspaceData> | null | undefi
     });
   }
 
+  const documents = { ...((data as any)?.documents || {}) };
+
   // Robustly extract tree
   const rawTree =
     (data as any)?.tree ||
@@ -84,6 +87,21 @@ const validFolderIds = new Set<string>(
       }
       return item;
     });
+
+  // Undo the prior invalid defaultView value without changing the table's columns or rows.
+  Object.entries(tables).forEach(([tableId, table]) => {
+    if (!table || (table.defaultView as string) !== 'won-note') return;
+    const item = tree.find((entry) => entry.id === tableId || entry.id.replace(/_/g, '-') === tableId.replace(/_/g, '-'));
+    const title = item?.title || table.title || '';
+    const view = item?.icon === 'sticky-note' || title.includes('📌') || title.includes('메모') || title.includes('스티커')
+      ? 'memo'
+      : item?.icon === 'calendar' || title.includes('📅') || title.includes('캘린더') || title.includes('일정')
+        ? 'calendar'
+        : item?.icon === 'kanban' || title.includes('📋') || title.includes('칸반') || title.includes('TO-DO')
+          ? 'cards'
+          : 'grid';
+    tables[tableId] = { ...table, defaultView: view };
+  });
 
   // 1. Auto-generate tree node for any valid table that is not in the tree
   Object.keys(tables).forEach((tableId) => {
@@ -170,33 +188,29 @@ const validFolderIds = new Set<string>(
     settings,
     tree,
     tables,
+    documents,
   };
 }
 
 /**
- * Merges server tree into local tree while preserving user's custom local tree ordering and positions.
+ * Applies the server tree as the source of truth while retaining the local order
+ * for items that still exist. A union merge resurrects deleted notes and folders
+ * from stale local/server copies after the next sync.
  */
 export function mergeTrees(localTree: TreeItem[], serverTree: TreeItem[]): TreeItem[] {
   if (!localTree || !Array.isArray(localTree)) return serverTree || [];
   if (!serverTree || !Array.isArray(serverTree)) return localTree;
 
-  const localMap = new Map(localTree.map((item) => [item.id, item]));
-  const merged = [...localTree];
-
-  serverTree.forEach((serverItem) => {
-    if (!localMap.has(serverItem.id)) {
-      merged.push({ ...serverItem });
-    } else {
-      const idx = merged.findIndex((t) => t.id === serverItem.id);
-      if (idx !== -1 && (serverItem.updatedAt || 0) > (merged[idx].updatedAt || 0)) {
-        merged[idx] = {
-          ...merged[idx],
-          title: serverItem.title || merged[idx].title,
-          updatedAt: serverItem.updatedAt,
-        };
-      }
-    }
-  });
-
-  return merged;
+  const serverById = new Map(serverTree.map((item) => [item.id, item]));
+  const localOrder = localTree
+    .filter((item) => serverById.has(item.id))
+    .map((item) => {
+      const serverItem = serverById.get(item.id)!;
+      return (serverItem.updatedAt || 0) > (item.updatedAt || 0)
+        ? { ...item, ...serverItem }
+        : item;
+    });
+  const includedIds = new Set(localOrder.map((item) => item.id));
+  const newServerItems = serverTree.filter((item) => !includedIds.has(item.id));
+  return [...localOrder, ...newServerItems];
 }

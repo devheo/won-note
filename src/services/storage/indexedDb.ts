@@ -26,6 +26,14 @@ export class WonBeeIndexedDB {
     return wonbeeDexieDB.saveTree(tree);
   }
 
+  public async saveDocument(document: any): Promise<void> {
+    return wonbeeDexieDB.saveDocument?.(document);
+  }
+
+  public async deleteDocument(documentId: string): Promise<void> {
+    return wonbeeDexieDB.deleteDocument?.(documentId);
+  }
+
   public async applyDeltaNotes(notes: any[]): Promise<void> {
     return wonbeeDexieDB.applyDeltaNotes(notes);
   }
