@@ -4,12 +4,19 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "item:transfer": "tsx scripts/item-transfer.ts",
+    "test:exchange": "node --import tsx --test tests/item-exchange.test.ts",
+    "test:exchange-ui": "playwright test tests/item-exchange.spec.ts --workers=1",
+    "predev": "node scripts/prepare-pdf-assets.mjs",
+    "prebuild": "node scripts/prepare-pdf-assets.mjs",
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
+    "test:pptx": "playwright test tests/pptx-conversion.spec.ts --workers=1",
+    "test:transfer": "playwright test tests/note-transfer.spec.ts tests/pptx-conversion.spec.ts tests/pdf-large.spec.ts --workers=1",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -46,23 +53,31 @@
     "diff": "^9.0.0",
     "dotenv": "^17.2.3",
     "express": "^4.21.2",
+    "html2canvas-pro": "^2.6.0",
+    "jspdf": "^4.2.1",
+    "jszip": "^3.10.2",
     "lowlight": "^3.3.0",
     "lucide-react": "^0.546.0",
     "marked": "^18.0.12",
     "mermaid": "^12.0.0",
     "motion": "^12.23.24",
+    "pdfjs-dist": "^6.5.438",
+    "pptxgenjs": "^4.0.1",
     "prismjs": "^1.30.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "sanitize-html": "^2.18.1",
     "sql.js": "^1.14.2",
     "vite": "^6.2.3"
   },
   "devDependencies": {
+    "@playwright/test": "^1.64.1",
     "@tauri-apps/cli": "^2.12.4",
     "@types/canvas-confetti": "^1.9.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
     "@types/prismjs": "^1.26.6",
+    "@types/sanitize-html": "^2.16.2",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
     "tailwindcss": "^4.1.14",
@@ -70,5 +85,8 @@
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
     "vite-plugin-singlefile": "^2.3.3"
+  },
+  "overrides": {
+    "image-size": "^2.0.4"
   }
 }

@@ -492,6 +492,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     await this.localFallback.saveWorkspace(ensured);
 
     try {
+      if (!(await this.pushDirtyAssets())) throw new Error('Image assets are waiting for server synchronization');
       const res = await fetchBridge(`${this.serverUrl}/workspace`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -638,6 +639,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   async saveDocument(document: WonNoteDocument): Promise<void> {
     await this.localFallback.saveDocument(document);
     try {
+      if (!(await this.pushDirtyAssets())) throw new Error('Image assets are waiting for server synchronization');
       const res = await fetchBridge(`${this.serverUrl}/documents/${encodeURIComponent(document.id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },

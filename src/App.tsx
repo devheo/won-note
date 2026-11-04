@@ -56,6 +56,8 @@ import {
 } from './types/performance';
 import { envService } from './services/storage/envService';
 import { fetchBridge } from './services/httpBridge';
+import type { ReceivedItem } from './hooks/useItemExchange';
+import { packItem } from './utils/itemExchange';
 import { createSseConnection } from './services/sseService';
 import { migrateTableToWonNoteFormat } from './utils/migrateTableToWonNoteFormat';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
@@ -113,6 +115,8 @@ export default function App() {
     retryWorkspaceLoad,
     lastLoadedTimestampRef,
   } = useWorkspaceInit({ repository });
+  const latestWorkspaceRef = useRef(workspace);
+  latestWorkspaceRef.current = workspace;
   const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem('wonbee_active_doc_id'));
 
   // Local File System Sync State
@@ -568,6 +572,54 @@ export default function App() {
     setWorkspace(updatedWorkspace);
     scheduleDocumentWorkspaceSave(updatedDocument, updatedWorkspace);
   }, [workspace, scheduleDocumentWorkspaceSave]);
+
+  const handleImportSharedItem = async (received: ReceivedItem) => {
+    const dirtyDocument = pendingSaveDocumentRef.current;
+    const dirtyTable = pendingSaveTableRef.current;
+    await cancelPendingDocumentSaveAndWait();
+    if (saveDebounceTimerRef.current) clearTimeout(saveDebounceTimerRef.current);
+    pendingSaveTableRef.current = null; pendingSaveWorkspaceRef.current = null;
+    if (useServer) {
+      if (dirtyDocument) await repository.saveDocument?.(dirtyDocument);
+      if (dirtyTable) await repository.saveTable(dirtyTable);
+      // Import through the additive server endpoint, never a full-workspace replacement.
+      const bytes = await packItem({ kind: received.kind, item: { ...received.item, title: received.item.title.replace(/ \(받은 사본\)$/, '') }, tree: received.tree, events: received.events, layouts: received.layouts }, async ref => {
+        const asset = received.assets.find(asset => ref === `asset://${asset.id}`);
+        if (!asset) throw new Error('가져올 이미지가 없습니다.');
+        return { mime: asset.mime, bytes: asset.bytes };
+      });
+      const response = await fetchBridge('/api/exchange/items', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes).buffer });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '서버 가져오기에 실패했습니다.');
+      if (result.kind === 'table') {
+        localStorage.setItem(`wonbee_calendar_events_${result.id}`, JSON.stringify(result.events || []));
+        localStorage.setItem(`wonbee_memo_board_layout_${result.id}`, JSON.stringify(result.layouts || {}));
+      }
+      try {
+        const freshResponse = await fetchBridge('/api/workspace');
+        if (freshResponse.ok) {
+          const fresh = ensureWorkspaceTree(await freshResponse.json());
+          await wonbeeDexieDB.saveFullWorkspace(fresh, 0); setWorkspace(fresh);
+        }
+      } catch (error) { console.warn('교환 파일은 서버에 저장되었습니다. 워크스페이스를 새로고침해주세요.', error); }
+      if (result.kind === 'document') { setActiveDocId(result.id); setActiveTableId(null); setOpenTabIds(previous => [...previous, result.id]); }
+      else { setActiveTableId(result.id); setActiveDocId(null); }
+      return { discardLocalAssets: true };
+    }
+    const current = latestWorkspaceRef.current;
+    const merged: WorkspaceData = { ...current, tree: [...current.tree, received.tree],
+      documents: received.kind === 'document' ? { ...current.documents, [received.item.id]: received.item as WonNoteDocument } : current.documents,
+      tables: received.kind === 'table' ? { ...current.tables, [received.item.id]: received.item as TableDocument } : current.tables,
+      exportedAt: Date.now() };
+    if (received.kind === 'table') {
+      localStorage.setItem(`wonbee_calendar_events_${received.item.id}`, JSON.stringify(received.events));
+      localStorage.setItem(`wonbee_memo_board_layout_${received.item.id}`, JSON.stringify(received.layouts));
+    }
+    await wonbeeDexieDB.saveFullWorkspace(merged, 1); setWorkspace(merged);
+    if (received.kind === 'document') { setActiveDocId(received.item.id); setActiveTableId(null); setOpenTabIds(previous => [...previous, received.item.id]); }
+    else { setActiveTableId(received.item.id); setActiveDocId(null); }
+    await syncToLocalFileIfConnected(merged);
+  };
 
     // 3. 🛡️ [안전장치] 3초 대기 도중 앱/탭이 닫히면 대기 중인 메모 데이터 즉시 저장 (Flush)
     useEffect(() => {
@@ -1884,6 +1936,10 @@ export default function App() {
       {/* 1. Left Sidebar: Infinite Depth Tree */}
       <InfiniteTreeSidebar
         tree={workspace.tree}
+        documents={workspace.documents || {}}
+        tables={workspace.tables}
+        onImportSharedItem={handleImportSharedItem}
+        onUpdateDocument={handleUpdateDocumentDebounced}
         activeTableId={activeTableId}
         activeDocId={activeDocId}
         onSelectTable={handleSelectActiveTable}

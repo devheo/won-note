@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { WorkspaceData, TableDocument, TableRow, TableColumn, TreeItem, CalendarEvent, WonNoteDocument } from '../src/types';
 import { ensureWorkspaceTree } from '../src/utils/workspaceTreeUtils';
+import type { materializeItem } from '../src/utils/itemExchange';
 
 const DB_FILE_PATH = path.resolve(process.cwd(), 'wonbee.sqlite');
 const USER_DATA_PATH = path.resolve(process.cwd(), 'user_data.json');
@@ -987,10 +988,10 @@ export function getTable(tableId: string): TableDocument | null {
 /**
  * Save single TableDocument into SQLite and keep tree synchronized
  */
-export function saveTable(table: TableDocument): void {
+export function saveTable(table: TableDocument, insideTransaction = false): void {
   if (!dbInstance) throw new Error('Database not initialized');
 
-  dbInstance.run('BEGIN TRANSACTION;');
+  if (!insideTransaction) dbInstance.run('BEGIN TRANSACTION;');
   try {
     const tCreated = table.createdAt || Date.now();
     const tUpdated = table.updatedAt || Date.now();
@@ -1100,12 +1101,13 @@ export function saveTable(table: TableDocument): void {
 
     const now = Date.now();
     dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
-    dbInstance.run('COMMIT;');
+    if (!insideTransaction) dbInstance.run('COMMIT;');
   } catch (err) {
-    dbInstance.run('ROLLBACK;');
+    if (!insideTransaction) dbInstance.run('ROLLBACK;');
     throw err;
   }
 
+  if (insideTransaction) return;
   touchServerUpdate();
   persistDatabase(false);
   syncDbToUserDataJson(false);
@@ -1456,7 +1458,7 @@ export function getCalendarEvents(tableId?: string): CalendarEvent[] {
   return events;
 }
 
-export function saveCalendarEvent(event: CalendarEvent, tableId: string): void {
+export function saveCalendarEvent(event: CalendarEvent, tableId: string, persist = true): void {
   if (!dbInstance) throw new Error('Database not initialized');
   dbInstance.run(
     `INSERT OR REPLACE INTO calendar_events
@@ -1483,7 +1485,7 @@ export function saveCalendarEvent(event: CalendarEvent, tableId: string): void {
       event.updatedAt || Date.now(),
     ]
   );
-  persistDatabase();
+  if (persist) persistDatabase();
 }
 
 export function deleteCalendarEvent(eventId: string): void {
@@ -1569,6 +1571,60 @@ export function saveImageAsset(imageId: string, mimeType: string, data: Uint8Arr
     [imageId, imageId, mimeType || 'application/octet-stream', Buffer.from(data), now, now]
   );
   persistDatabase(true);
+}
+
+/** Insert one received copy. Other rows/tables are never replaced or deleted. */
+export function importSharedItem(received: ReturnType<typeof materializeItem>): void {
+  if (!dbInstance || !SQL) throw new Error('Database not initialized');
+  if (received.item.id !== received.tree.id || dbInstance.exec('SELECT id FROM tree_items WHERE id=?', [received.item.id])[0]?.values.length || getStoredDocuments()[received.item.id]) {
+    throw new Error('받은 사본의 ID가 기존 항목과 충돌합니다.');
+  }
+  if (received.tree.parentId) {
+    const parent = dbInstance.exec("SELECT id FROM tree_items WHERE id = ? AND type = 'folder'", [received.tree.parentId]);
+    if (!parent[0]?.values.length) throw new Error('가져올 대상 폴더가 존재하지 않습니다.');
+  }
+  const snapshot = dbInstance.export(), now = Date.now();
+  const temporary = `${DB_FILE_PATH}.import-${crypto.randomUUID()}`;
+  try {
+    dbInstance.run('BEGIN TRANSACTION;');
+    if (received.kind === 'table') saveTable(received.item as TableDocument, true);
+    else {
+      const docs = getStoredDocuments(); docs[received.item.id] = received.item as WonNoteDocument;
+      dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('documents', ?)", [JSON.stringify(docs)]);
+    }
+    const t = received.tree;
+    dbInstance.run(`INSERT INTO tree_items (id, parent_id, title, type, icon, color, is_expanded, created_at, updated_at, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, 0)
+      ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id, title=excluded.title, icon=excluded.icon, color=excluded.color`,
+      [t.id, t.parentId, t.title, t.type, t.icon || null, t.color || null, now, now]);
+    for (const asset of received.assets) dbInstance.run(`INSERT INTO row_images
+      (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at) VALUES (?, '__assets__', ?, 'asset', ?, ?, ?, ?)`,
+      [asset.id, asset.id, asset.mime, asset.bytes, now, now]);
+    for (const event of received.events) saveCalendarEvent(event, received.item.id, false);
+    if (received.kind === 'table' && Object.keys(received.layouts).length) {
+      const existing = dbInstance.exec("SELECT value FROM workspace_meta WHERE key='exchange_layouts'");
+      const layouts = existing[0]?.values[0]?.[0] ? JSON.parse(String(existing[0].values[0][0])) : {};
+      layouts[received.item.id] = received.layouts;
+      dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exchange_layouts', ?)", [JSON.stringify(layouts)]);
+    }
+    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?)", [String(now)]);
+    dbInstance.run('COMMIT;');
+    fs.writeFileSync(temporary, dbInstance.export());
+    fs.renameSync(temporary, DB_FILE_PATH);
+  } catch (error) {
+    // Restore the in-memory snapshot even if the filesystem write failed after commit.
+    try { dbInstance.close(); } catch { /* restore below */ }
+    dbInstance = new SQL.Database(snapshot);
+    try { fs.unlinkSync(temporary); } catch { /* no temporary file */ }
+    throw error;
+  }
+  touchServerUpdate(); syncDbToUserDataJson();
+}
+
+export function getSharedLayouts(tableId: string): Record<string, unknown> {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const result = dbInstance.exec("SELECT value FROM workspace_meta WHERE key='exchange_layouts'");
+  return result[0]?.values[0]?.[0] ? JSON.parse(String(result[0].values[0][0]))[tableId] || {} : {};
 }
 
 /**

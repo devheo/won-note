@@ -45,6 +45,7 @@ import {
 } from 'lucide-react';
 import { WonNoteDocument } from '../../types';
 import { ImageComponent } from './ImageComponent';
+import { registerNoteEditor } from '../../services/noteEditorBridge';
 
 const WonNoteImage = Image.extend({
   inline: true,
@@ -141,6 +142,8 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       updateTimerRef.current = setTimeout(flushEditorUpdate, 250);
     },
   }, [document.id]);
+
+  useEffect(() => editor ? registerNoteEditor(document.id, editor) : undefined, [editor, document.id]);
 
   useEffect(() => {
     if (!editor || editor.isDestroyed) return;

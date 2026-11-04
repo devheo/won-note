@@ -1,0 +1,72 @@
+import express from 'express';
+import { getWorkspaceData, getTable, getCalendarEvents, getRowImage, importSharedItem, getSharedLayouts } from './db';
+import { packItem, unpackItem, materializeItem } from '../src/utils/itemExchange';
+
+export function itemExchangeRoutes(onImport: (id: string) => void) {
+  const router = express.Router();
+  router.get('/', (_req, res) => {
+    const ws = getWorkspaceData();
+    res.json(
+      ws.tree
+        .filter((item) => item.type === 'document' || item.type === 'table')
+        .map((item) => ({ id: item.id, title: item.title, kind: item.type })),
+    );
+  });
+  router.get('/:id', async (req, res) => {
+    try {
+      const ws = getWorkspaceData(),
+        tree = ws.tree.find((item) => item.id === req.params.id);
+      const item = ws.documents?.[req.params.id] || getTable(req.params.id);
+      if (!tree || !item || tree.type === 'folder') {
+        res.status(404).json({ error: '전달할 노트 또는 테이블이 없습니다.' });
+        return;
+      }
+      const bytes = await packItem(
+        {
+          kind: tree.type,
+          item,
+          tree: { icon: tree.icon, color: tree.color },
+          events: tree.type === 'table' ? getCalendarEvents(item.id) : [],
+          layouts: tree.type === 'table' ? getSharedLayouts(item.id) : {},
+        },
+        async (ref) => {
+          if (ref.startsWith('data:')) {
+            const match = ref.match(/^data:([^;]+);base64,(.+)$/)!;
+            return { mime: match[1], bytes: Buffer.from(match[2], 'base64') };
+          }
+          const asset = getRowImage(ref.split('/').pop()!);
+          if (!asset) throw new Error('필요한 이미지가 서버 DB에 없습니다.');
+          return { mime: asset.mimeType, bytes: asset.data };
+        },
+      );
+      res.setHeader('Content-Disposition', `attachment; filename="${item.id}.wonnote"`);
+      res.type('application/octet-stream').send(Buffer.from(bytes));
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+  router.post('/', express.raw({ type: 'application/octet-stream', limit: '250mb' }), async (req, res) => {
+    try {
+      if (!Buffer.isBuffer(req.body)) throw new Error('교환 파일을 바이너리로 보내주세요.');
+      const shared = await unpackItem(req.body);
+      const parent = typeof req.query.parent === 'string' && req.query.parent ? req.query.parent : null;
+      const received = materializeItem(shared, parent);
+      importSharedItem(received);
+      onImport(received.item.id);
+      res
+        .status(201)
+        .json({
+          id: received.item.id,
+          title: received.item.title,
+          kind: received.kind,
+          assetCount: received.assets.length,
+          rowCount: received.kind === 'table' ? (received.item as any).rows.length : undefined,
+          layouts: received.layouts,
+          events: received.events,
+        });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+  return router;
+}

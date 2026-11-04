@@ -1,0 +1,300 @@
+import JSZip from 'jszip';
+import sanitizeHtml from 'sanitize-html';
+import type { CalendarEvent, TableDocument, TreeItem, WonNoteDocument } from '../types';
+
+export const EXCHANGE_LIMIT = 250 * 1024 * 1024;
+export interface SharedAsset {
+  id: string;
+  mime: string;
+  bytes: Uint8Array;
+}
+export interface SharedItem {
+  kind: 'document' | 'table';
+  item: WonNoteDocument | TableDocument;
+  tree: Pick<TreeItem, 'icon' | 'color'>;
+  events: CalendarEvent[];
+  layouts: Record<string, unknown>;
+  assets: SharedAsset[];
+}
+const imageRefs =
+  /asset:\/\/[a-zA-Z0-9_-]+|(?:https?:\/\/[^\s"'<>]+)?\/api\/(?:images|assets)\/[a-zA-Z0-9_-]+|data:image\/(?:png|jpe?g|gif|webp);base64,[a-zA-Z0-9+/=]+/g;
+const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
+const mimeAllowed = /^image\/(png|jpeg|gif|webp)$/;
+function strings(value: unknown, transform: (value: string) => string): any {
+  if (typeof value === 'string') return transform(value);
+  if (Array.isArray(value)) return value.map((v) => strings(v, transform));
+  if (value && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value).map(([key, v]) => {
+        if (['__proto__', 'constructor', 'prototype'].includes(key)) throw new Error('허용되지 않는 데이터 키입니다.');
+        return [key, strings(v, transform)];
+      }),
+    );
+  return value;
+}
+function validate(item: any, kind: string) {
+  if (!item || typeof item.id !== 'string' || typeof item.title !== 'string')
+    throw new Error('항목 ID 또는 제목이 올바르지 않습니다.');
+  if (kind === 'document') {
+    if (typeof item.content !== 'string') throw new Error('노트 본문이 올바르지 않습니다.');
+  } else if (kind === 'table') {
+    if (!Array.isArray(item.columns) || !Array.isArray(item.rows)) throw new Error('테이블 형식이 올바르지 않습니다.');
+    const columns = new Set<string>(),
+      rows = new Set<string>();
+    for (const col of item.columns) {
+      if (
+        typeof col?.id !== 'string' ||
+        columns.has(col.id) ||
+        typeof col.name !== 'string' ||
+        !['text', 'number', 'select', 'status', 'date', 'checkbox', 'richText', 'code', 'image'].includes(col.type)
+      )
+        throw new Error('테이블 열 정보가 올바르지 않습니다.');
+      columns.add(col.id);
+    }
+    for (const row of item.rows) {
+      if (
+        typeof row?.id !== 'string' ||
+        rows.has(row.id) ||
+        !row.data ||
+        typeof row.data !== 'object' ||
+        Array.isArray(row.data)
+      )
+        throw new Error('테이블 행 정보가 올바르지 않습니다.');
+      rows.add(row.id);
+    }
+  } else throw new Error('노트 또는 테이블만 전달할 수 있습니다.');
+}
+const cleanHtml = (html: string) =>
+  sanitizeHtml(html, {
+    allowedTags: [
+      'p',
+      'br',
+      'h1',
+      'h2',
+      'h3',
+      'h4',
+      'h5',
+      'h6',
+      'strong',
+      'em',
+      'b',
+      'i',
+      'u',
+      's',
+      'span',
+      'mark',
+      'div',
+      'blockquote',
+      'pre',
+      'code',
+      'ul',
+      'ol',
+      'li',
+      'hr',
+      'table',
+      'thead',
+      'tbody',
+      'tr',
+      'td',
+      'th',
+      'img',
+      'a',
+    ],
+    allowedAttributes: {
+      '*': ['class', 'style', 'data-type', 'data-checked'],
+      img: ['src', 'alt', 'width', 'height', 'data-width', 'data-layout'],
+      a: ['href', 'title', 'target', 'rel'],
+      td: ['colspan', 'rowspan', 'colwidth'],
+      th: ['colspan', 'rowspan', 'colwidth'],
+      code: ['class', 'data-language'],
+    },
+    allowedSchemes: ['https', 'http', 'mailto', 'asset', 'data'],
+    allowedSchemesByTag: { img: ['asset', 'data'] },
+    allowProtocolRelative: false,
+    allowedStyles: {
+      '*': {
+        color: [/^(#[\da-f]+|[a-z]+|rgba?\([\d., %]+\))$/i],
+        'background-color': [/^(#[\da-f]+|[a-z]+|rgba?\([\d., %]+\))$/i],
+        'text-align': [/^(left|right|center|justify)$/],
+        width: [/^[\d.]+(px|%|em)?$/],
+        'font-size': [/^[\d.]+(px|pt|em)$/],
+        'font-family': [/^[\w\s가-힣,"'-]+$/],
+      },
+    },
+  });
+
+export async function packItem(
+  source: Omit<SharedItem, 'assets'>,
+  readImage: (ref: string) => Promise<{ mime: string; bytes: Uint8Array }>,
+): Promise<Uint8Array> {
+  validate(source.item, source.kind);
+  const refs = new Set<string>();
+  strings(source, (text) => {
+    for (const match of text.matchAll(imageRefs)) refs.add(match[0]);
+    return text;
+  });
+  const zip = new JSZip(),
+    replacements = new Map<string, string>();
+  const assets: { id: string; path: string; mime: string; size: number }[] = [];
+  let total = 0;
+  for (const ref of refs) {
+    const asset = await readImage(ref);
+    if (!mimeAllowed.test(asset.mime)) throw new Error('지원하지 않는 이미지 형식이 포함되어 있습니다.');
+    total += asset.bytes.length;
+    if (total > EXCHANGE_LIMIT) throw new Error('교환 파일의 이미지 합계는 250MB 이하여야 합니다.');
+    const assetId = `image-${assets.length + 1}`,
+      path = `assets/${assetId}`;
+    zip.file(path, asset.bytes);
+    replacements.set(ref, `asset://${assetId}`);
+    assets.push({ id: assetId, path, mime: asset.mime, size: asset.bytes.length });
+  }
+  const payload = strings(source, (text) => text.replace(imageRefs, (ref) => replacements.get(ref) || ref));
+  zip.file(
+    'item.json',
+    JSON.stringify({ format: 'wonnote-item', version: 1, exportedAt: Date.now(), ...payload, assets }),
+  );
+  const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  if (bytes.length > EXCHANGE_LIMIT) throw new Error('교환 파일은 250MB 이하여야 합니다.');
+  return bytes;
+}
+
+export async function unpackItem(bytes: Uint8Array): Promise<SharedItem> {
+  if (bytes.length > EXCHANGE_LIMIT) throw new Error('교환 파일은 250MB 이하여야 합니다.');
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(bytes);
+  } catch {
+    throw new Error('유효한 .wonnote 교환 파일이 아닙니다.');
+  }
+  // Bound decompression before allocating entry contents.
+  let expanded = 0;
+  for (const entry of Object.values(zip.files)) {
+    expanded += Number((entry as any)._data?.uncompressedSize || 0);
+    if (expanded > EXCHANGE_LIMIT) throw new Error('압축 해제한 교환 파일이 250MB를 초과합니다.');
+  }
+  const metadata = zip.file('item.json');
+  if (!metadata || Number((metadata as any)._data?.uncompressedSize || 0) > 50 * 1024 * 1024)
+    throw new Error('교환 파일의 항목 정보를 읽을 수 없습니다.');
+  const parsed = JSON.parse(await metadata.async('string'));
+  const payload = strings(parsed, (value) => value);
+  if (payload.format !== 'wonnote-item' || payload.version !== 1 || !Array.isArray(payload.assets))
+    throw new Error('지원하지 않는 교환 파일 버전입니다.');
+  validate(payload.item, payload.kind);
+  const assets: SharedAsset[] = [],
+    ids = new Set<string>();
+  for (const asset of payload.assets) {
+    if (
+      !/^[a-zA-Z0-9_-]+$/.test(asset.id) ||
+      ids.has(asset.id) ||
+      asset.path !== `assets/${asset.id}` ||
+      !mimeAllowed.test(asset.mime)
+    )
+      throw new Error('이미지 목록이 올바르지 않습니다.');
+    ids.add(asset.id);
+    const entry = zip.file(asset.path);
+    if (!entry) throw new Error('교환 파일에 필요한 이미지가 없습니다.');
+    const content = await entry.async('uint8array');
+    if (content.length !== asset.size) throw new Error('교환 파일의 이미지 크기가 일치하지 않습니다.');
+    assets.push({ id: asset.id, mime: asset.mime, bytes: content });
+  }
+  strings(payload.item, (text) => {
+    for (const ref of text.matchAll(/asset:\/\/([a-zA-Z0-9_-]+)/g))
+      if (!ids.has(ref[1])) throw new Error('누락된 이미지가 포함된 교환 파일입니다.');
+    return text;
+  });
+  const events = payload.events || [];
+  if (
+    !Array.isArray(events) ||
+    events.some(
+      (event) =>
+        !event ||
+        typeof event.id !== 'string' ||
+        typeof event.title !== 'string' ||
+        typeof event.startDate !== 'string' ||
+        typeof event.endDate !== 'string',
+    )
+  )
+    throw new Error('일정 정보가 올바르지 않습니다.');
+  return {
+    kind: payload.kind,
+    item: payload.item,
+    tree: { icon: payload.tree?.icon, color: payload.tree?.color },
+    events,
+    layouts: payload.layouts || {},
+    assets,
+  };
+}
+
+export function materializeItem(shared: SharedItem, parentId: string | null = null) {
+  const now = Date.now(),
+    newId = id(shared.kind === 'document' ? 'doc' : 'table');
+  const assetMap = new Map(shared.assets.map((asset) => [asset.id, id('asset')]));
+  const rewrite = (text: string) =>
+    text.replace(/asset:\/\/([a-zA-Z0-9_-]+)/g, (_, old) => `asset://${assetMap.get(old) || old}`);
+  const item: any = strings(shared.item, rewrite);
+  item.id = newId;
+  item.title = `${item.title} (받은 사본)`;
+  item.createdAt = now;
+  item.updatedAt = now;
+  const rowMap = new Map<string, string>();
+  if (shared.kind === 'document') item.content = cleanHtml(item.content);
+  else {
+    const colMap = new Map<string, string>(item.columns.map((col) => [col.id, id('col')]));
+    item.columns = item.columns.map((col) => ({ ...col, id: colMap.get(col.id) }));
+    item.rows = item.rows.map((row) => {
+      const rowId = id('row');
+      rowMap.set(row.id, rowId);
+      const data = Object.fromEntries(
+        Object.entries(row.data)
+          .filter(([key]) => colMap.has(key))
+          .map(([key, value]) => [
+            colMap.get(key)!,
+            typeof value === 'string' && item.columns.find((col) => col.id === colMap.get(key))?.type === 'richText'
+              ? cleanHtml(value)
+              : value,
+          ]),
+      );
+      return {
+        ...row,
+        id: rowId,
+        data,
+        richContent: row.richContent ? cleanHtml(row.richContent) : row.richContent,
+        stickers: row.stickers?.map((s) => ({
+          ...s,
+          id: id('sticker'),
+          content: typeof s.content === 'string' ? cleanHtml(s.content) : s.content,
+        })),
+        createdAt: now,
+        updatedAt: now,
+        is_dirty: 1,
+      };
+    });
+  }
+  const tree: TreeItem = {
+    id: newId,
+    parentId,
+    title: item.title,
+    type: shared.kind,
+    ...shared.tree,
+    createdAt: now,
+    updatedAt: now,
+  };
+  return {
+    kind: shared.kind,
+    item: item as WonNoteDocument | TableDocument,
+    tree,
+    assets: shared.assets.map((asset) => ({ ...asset, id: assetMap.get(asset.id)! })),
+    events: shared.events.map((event) => ({
+      ...event,
+      id: id('event'),
+      tableRowId: event.tableRowId ? rowMap.get(event.tableRowId) : undefined,
+      createdAt: now,
+      updatedAt: now,
+    })),
+    layouts: Object.fromEntries(
+      Object.entries(shared.layouts)
+        .filter(([key]) => rowMap.has(key))
+        .map(([key, layout]) => [rowMap.get(key)!, { ...(layout as object), rowId: rowMap.get(key)! }]),
+    ),
+  };
+}

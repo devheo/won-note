@@ -44,10 +44,17 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
       setResolvedSrc(resolved);
     }
 
-    loadAsset();
+    let observer: IntersectionObserver | undefined;
+    if (src.startsWith('asset://') && typeof IntersectionObserver !== 'undefined' && containerRef.current) {
+      observer = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting)) { observer?.disconnect(); void loadAsset(); }
+      }, { rootMargin: '600px' });
+      observer.observe(containerRef.current);
+    } else { void loadAsset(); }
 
     return () => {
       isMounted = false;
+      observer?.disconnect();
     };
   }, [src]);
 
@@ -274,12 +281,15 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
 
       {/* Main Image: Scales 100% with the wrapper dimensions without arbitrary container blank space */}
       <img
-        src={resolvedSrc}
+        src={resolvedSrc || undefined}
+        loading="lazy"
+        decoding="async"
         alt={alt}
         className={`rounded-xl shadow-md border border-stone-200 dark:border-[#383838] transition-all block w-full h-auto ${
           selected ? 'ring-2 ring-amber-500 ring-offset-2 dark:ring-offset-stone-900' : ''
         }`}
         style={{
+          minHeight: !resolvedSrc && src.startsWith('asset://') ? 240 : undefined,
           width: '100%',
           height: 'auto',
           display: 'block',

@@ -1,6 +1,8 @@
 import express from 'express';
 import path from 'path';
 import os from 'os';
+import { convertLegacyPpt } from './server/pptConversion';
+import { itemExchangeRoutes } from './server/itemExchangeRoutes';
 import { createServer as createViteServer } from 'vite';
 import {
   initDatabase,
@@ -79,6 +81,18 @@ async function startServer() {
     res.json({ status: 'ok', database: 'sqlite3', timestamp: Date.now() });
   });
 
+  app.post('/api/convert/ppt', express.raw({ type: 'application/octet-stream', limit: '50mb' }), async (req, res) => {
+    // Conversion launches local Office automation; permit only requests from this app.
+    const origin = req.get('origin');
+    if (origin && origin !== `http://${req.get('host')}` && origin !== `https://${req.get('host')}` && origin !== 'tauri://localhost' && origin !== 'http://tauri.localhost') {
+      res.status(403).json({ error: '앱에서 선택한 파일만 변환할 수 있습니다.' }); return;
+    }
+    try {
+      const converted = await convertLegacyPpt(req.body);
+      res.type('application/vnd.openxmlformats-officedocument.presentationml.presentation').send(converted);
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'PPT 변환 실패' }); }
+  });
+
   // --- Real-time SSE (Server-Sent Events) Stream for Multi-User & Instant Sync ---
   const sseClients = new Set<express.Response>();
 
@@ -92,6 +106,8 @@ async function startServer() {
       }
     }
   }
+
+  app.use('/api/exchange/items', itemExchangeRoutes(id => broadcastWorkspaceUpdate({ type: 'item_imported', lastUpdated: getLastUpdatedTimestamp(), tableId: id })));
 
   app.get('/api/sync/events', (req, res) => {
     res.status(200);
@@ -567,7 +583,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  app.listen(PORT, '127.0.0.1', () => {
     console.log(`[WonBee Backend] Server running on http://localhost:${PORT}`);
   });
 }

@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { TreeItem, ItemType } from '../../types';
+import { TreeItem, ItemType, WonNoteDocument, TableDocument } from '../../types';
+import { useItemExchange, type ReceivedItem } from '../../hooks/useItemExchange';
+import { useNoteTransfer } from '../../hooks/useNoteTransfer';
 import { SettingsMenuDropdown, AppThemeMode } from '../common/SettingsMenuDropdown';
 import {
   Folder,
@@ -24,6 +26,10 @@ import {
 
 interface InfiniteTreeSidebarProps {
   tree: TreeItem[];
+  documents?: Record<string, WonNoteDocument>;
+  tables?: Record<string, TableDocument>;
+  onImportSharedItem?: (item: ReceivedItem) => Promise<void | { discardLocalAssets: boolean }>;
+  onUpdateDocument?: (document: WonNoteDocument) => void;
   activeTableId: string | null;
   activeDocId?: string | null;
   onSelectTable: (tableId: string) => void;
@@ -52,6 +58,10 @@ interface InfiniteTreeSidebarProps {
 
 export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   tree,
+  documents = {},
+  tables = {},
+  onImportSharedItem,
+  onUpdateDocument,
   activeTableId,
   activeDocId = null,
   onSelectTable,
@@ -81,8 +91,18 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [transferMenu, setTransferMenu] = useState<'import' | 'export' | null>(null);
+  const { chooseImport, exportNote, busy: noteTransferBusy, transferUi } = useNoteTransfer(documents, onUpdateDocument);
+  const exchange = useItemExchange(tree, documents, tables, onImportSharedItem);
+  const transferBusy = noteTransferBusy || exchange.busy;
   const [moveMenuOpenId, setMoveMenuOpenId] = useState<string | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
+  useEffect(() => {
+    const close = (event: PointerEvent) => { if (!(event.target as Element)?.closest('[data-note-context]')) setMenuOpenId(null); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { setMenuOpenId(null); setTransferMenu(null); } };
+    if (menuOpenId) { window.addEventListener('pointerdown', close); window.addEventListener('keydown', escape); }
+    return () => { window.removeEventListener('pointerdown', close); window.removeEventListener('keydown', escape); };
+  }, [menuOpenId]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => {
     // Default expand folders that contain active table
     const expanded = new Set<string>();
@@ -363,6 +383,12 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
 
           <div
             draggable
+            data-tree-item-id={item.id}
+            onContextMenu={(event) => {
+              event.preventDefault(); event.stopPropagation();
+              setTransferMenu(null); setMoveMenuOpenId(null); setMenuOpenId(item.id);
+              setContextMenuPosition({ right: Math.max(8, window.innerWidth - Math.max(216, event.clientX + 208)), top: Math.max(8, Math.min(event.clientY, window.innerHeight - 420)) });
+            }}
             onDragStart={(e) => handleDragStart(e, item)}
             onDragOver={(e) => handleDragOver(e, item)}
             onDragLeave={handleDragLeave}
@@ -452,6 +478,8 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
               <div className="relative">
                 <button
                   type="button"
+                  data-note-context
+                  aria-label={`${item.title} 메뉴`}
                   onClick={(e) => {
                     e.stopPropagation();
                     if (menuOpenId === item.id) {
@@ -469,6 +497,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                         : { top: rect.bottom + 4 }),
                     });
                     setMoveMenuOpenId(null);
+                    setTransferMenu(null);
                     setMenuOpenId(item.id);
                   }}
                   className="p-1 rounded hover:bg-stone-300/50 dark:hover:bg-stone-700 text-stone-500"
@@ -479,6 +508,9 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                 {/* Dropdown Context Menu */}
                 {menuOpenId === item.id && contextMenuPosition && createPortal(
                   <div
+                    data-note-context
+                    role="menu"
+                    aria-label={`${item.title} 컨텍스트 메뉴`}
                     onClick={(e) => e.stopPropagation()}
                     style={{
                       position: 'fixed',
@@ -491,6 +523,20 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                     }}
                     className="w-52 bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-xl shadow-xl py-1 text-xs animate-in fade-in"
                   >
+                    {item.type === 'document' && onUpdateDocument && (
+                      <>
+                        <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={transferMenu === 'import'} disabled={transferBusy} onMouseEnter={() => setTransferMenu('import')} onClick={() => setTransferMenu('import')} className="w-full px-3 py-2 text-left flex justify-between hover:bg-amber-50 dark:hover:bg-stone-800 disabled:opacity-50">가져오기 <ChevronRight size={14} /></button>
+                        {transferMenu === 'import' && <div role="menu" aria-label="가져오기 형식" className="border-y border-stone-100 dark:border-stone-700 bg-stone-50 dark:bg-stone-950 py-1">
+                          {(['ppt', 'pptx', 'pdf'] as const).map(format => <button key={format} type="button" role="menuitem" disabled={transferBusy} className="w-full px-6 py-2 text-left hover:bg-amber-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpenId(null); chooseImport(item.id, format); }}>{format.toUpperCase()}</button>)}
+                        </div>}
+                        <button type="button" role="menuitem" aria-haspopup="menu" aria-expanded={transferMenu === 'export'} disabled={transferBusy} onMouseEnter={() => setTransferMenu('export')} onClick={() => setTransferMenu('export')} className="w-full px-3 py-2 text-left flex justify-between hover:bg-amber-50 dark:hover:bg-stone-800 disabled:opacity-50">내보내기 <ChevronRight size={14} /></button>
+                        {transferMenu === 'export' && <div role="menu" aria-label="내보내기 형식" className="border-y border-stone-100 dark:border-stone-700 bg-stone-50 dark:bg-stone-950 py-1">
+                          <button type="button" role="menuitem" disabled={transferBusy} className="w-full px-6 py-2 text-left hover:bg-amber-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpenId(null); void exchange.exportItem(item.id); }}>교환 파일 (.wonnote)</button>
+                          {(['pptx', 'pdf'] as const).map(format => <button key={format} type="button" role="menuitem" disabled={transferBusy} className="w-full px-6 py-2 text-left hover:bg-amber-100 dark:hover:bg-stone-800" onClick={() => { setMenuOpenId(null); void exportNote(item.id, format); }}>{format.toUpperCase()}</button>)}
+                        </div>}
+                        <div className="border-b border-stone-100 dark:border-stone-800 my-1" />
+                      </>
+                    )}
                     {isFolder && (
                       <>
                         <button
@@ -561,6 +607,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
 
                     {isTable && (
                       <>
+                        <button type="button" role="menuitem" disabled={transferBusy} onClick={() => { setMenuOpenId(null); void exchange.exportItem(item.id); }} className="w-full px-3 py-2 text-left hover:bg-amber-50 dark:hover:bg-stone-800">교환 파일 내보내기 (.wonnote)</button>
                         {onCreateNoteFromTable && <button onClick={() => { onCreateNoteFromTable(item.id); setMenuOpenId(null); }} className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-700 dark:text-stone-300 font-medium"><FileText className="w-3.5 h-3.5 text-amber-500" />표 데이터를 노트로 복사</button>}
                         <button
                           onClick={() => {
@@ -809,6 +856,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
         </div>
 
         {renderTreeNodes(null, 0)}
+        {onImportSharedItem && <button type="button" disabled={transferBusy} onClick={exchange.chooseImport} className="mt-3 w-full rounded-lg border border-dashed border-stone-300 px-3 py-2 text-xs hover:bg-amber-50 dark:hover:bg-stone-800 disabled:opacity-50">교환 파일 가져오기 (.wonnote)</button>}
 
         {tree.length === 0 && (
           <div className="text-center py-8 text-stone-400 dark:text-[#888888] text-xs">
@@ -816,6 +864,8 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
           </div>
         )}
       </div>
+      {transferUi}
+      {exchange.ui}
     </aside>
   );
 };
