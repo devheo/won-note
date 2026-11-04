@@ -192,7 +192,7 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
   });
 
   const [useServerMode, setUseServerMode] = useState<boolean>(() => {
-    return localStorage.getItem('wonbee_use_server') !== 'false';
+    return localStorage.getItem('wonbee_use_server') === 'true';
   });
 
   const saveWorkspacesToStorage = (updated: PostmanWorkspace[]) => {

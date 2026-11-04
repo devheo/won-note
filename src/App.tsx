@@ -37,6 +37,10 @@ import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
 import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
+import { ToolsMenuDropdown } from './components/common/ToolsMenuDropdown';
+import { HelpMenuDropdown } from './components/common/HelpMenuDropdown';
+import { ProductGuideModal } from './components/help/ProductGuideModal';
+import type { GuideTopic } from './components/help/guideTopics';
 import { SettingsMenuDropdown, AppThemeMode } from './components/common/SettingsMenuDropdown';
 import { PrettyJsonModal } from './components/modals/PrettyJsonModal';
 import { EncodingConverterModal } from './components/modals/EncodingConverterModal';
@@ -57,7 +61,7 @@ import {
 import { envService } from './services/storage/envService';
 import { fetchBridge } from './services/httpBridge';
 import type { ReceivedItem } from './hooks/useItemExchange';
-import { packItem } from './utils/itemExchange';
+import { packItem, packFolder } from './utils/itemExchange';
 import { createSseConnection } from './services/sseService';
 import { migrateTableToWonNoteFormat } from './utils/migrateTableToWonNoteFormat';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
@@ -71,22 +75,17 @@ import {
   Table as TableIcon,
   ChevronRight,
   Search,
-  Code,
-  Code2,
-  RefreshCw,
-  GitCompare,
-  Lock,
-  Terminal,
-  Calculator,
   X,
 } from 'lucide-react';
 
 export default function App() {
-  // Server vs Serverless (USE_SERVER) State - Defaults to SQLite Backend (Persisted in localStorage)
+  // Server vs Serverless (USE_SERVER) State - Defaults to local IndexedDB (Persisted in localStorage)
   const [useServer, setUseServer] = useState<boolean>(() => {
     if (typeof window !== 'undefined' && window.location.protocol.startsWith('file:')) return false;
     const saved = localStorage.getItem('wonbee_use_server');
-    return saved !== null ? saved === 'true' : true;
+    if (saved !== null) return saved === 'true';
+    localStorage.setItem('wonbee_use_server', 'false');
+    return false;
   });
   const [serverUrl, setServerUrl] = useState<string>(() => {
     return localStorage.getItem('wonbee_server_url') || '/api';
@@ -118,6 +117,11 @@ export default function App() {
   const latestWorkspaceRef = useRef(workspace);
   latestWorkspaceRef.current = workspace;
   const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem('wonbee_active_doc_id'));
+  const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [guideTopic, setGuideTopic] = useState<GuideTopic | null>(null);
+  useEffect(() => {
+    if (selectedFolderId && !workspace.tree.some((item) => item.id === selectedFolderId && item.type === 'folder')) setSelectedFolderId(null);
+  }, [selectedFolderId, workspace.tree]);
 
   // Local File System Sync State
   const [connectedFileName, setConnectedFileName] = useState<string | null>(() =>
@@ -241,7 +245,7 @@ export default function App() {
           exportedAt: Date.now(),
         };
         setWorkspace(updatedWorkspace);
-        scheduleDocumentWorkspaceSave(document, updatedWorkspace);
+        scheduleDocumentWorkspaceSave(document, updatedWorkspace, true);
       }
       setOpenTabIds((previous) => previous.includes(tableId) ? previous : [...previous, tableId]);
       setActiveTableId(null);
@@ -364,14 +368,13 @@ export default function App() {
   const [isEditingHeaderTitle, setIsEditingHeaderTitle] = useState(false);
   const [headerTitleInput, setHeaderTitleInput] = useState('');
 
-  // AI Enabled State from EnvService (Defaults to false in offline/file:// mode, true in server API mode)
+  // AI assistant is opt-in by default; retain an existing user choice.
   const [aiEnabled, setAiEnabled] = useState<boolean>(() => {
     const savedEnv = envService.getEnv();
     if (localStorage.getItem('wonbee_user_env') !== null) {
       return savedEnv.aiEnabled;
     }
-    const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
-    return useServer && !isFileProtocol;
+    return false;
   });
   const handleToggleAi = (enabled: boolean) => {
     setAiEnabled(enabled);
@@ -458,7 +461,7 @@ export default function App() {
     await documentSaveInFlightRef.current?.catch(() => {});
   };
 
-  const scheduleDocumentWorkspaceSave = useCallback((document: WonNoteDocument, updatedWorkspace: WorkspaceData) => {
+  const scheduleDocumentWorkspaceSave = useCallback((document: WonNoteDocument, updatedWorkspace: WorkspaceData, syncTree = false) => {
     pendingSaveDocumentRef.current = document;
     pendingDocumentWorkspaceRef.current = updatedWorkspace;
     if (documentSaveDebounceTimerRef.current) clearTimeout(documentSaveDebounceTimerRef.current);
@@ -468,8 +471,8 @@ export default function App() {
       if (!targetDocument || !targetWorkspace) return;
       const saveTask = (async () => {
         try {
-          await wonbeeDexieDB.saveFullWorkspace(targetWorkspace, 1);
-          await repository.saveWorkspace(targetWorkspace);
+          await repository.saveDocument(targetDocument);
+          if (syncTree) await repository.saveTree(targetWorkspace.tree);
           await syncToLocalFileIfConnected(targetWorkspace);
           if (pendingSaveDocumentRef.current?.updatedAt === targetDocument.updatedAt) {
             pendingSaveDocumentRef.current = null;
@@ -531,17 +534,14 @@ export default function App() {
         saveDebounceTimerRef.current = setTimeout(async () => {
           try {
             if (useServer) {
-              // 서버 모드: Dexie 로컬 캐시 + 백엔드 DB 저장 + Push Sync (3초 후 발동)
-              await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+              // 테이블과 트리 변경분만 저장하고, 서버 인덱스와 자산만 동기화합니다.
               await repository.saveTable(updatedTableWithTime);
+              if (!workspace.tables[updatedTableWithTime.id] || workspace.tables[updatedTableWithTime.id].title !== updatedTableWithTime.title) await repository.saveTree(updatedTree);
 
-              if (repository.pushSync) {
-                await repository.pushSync();
-              }
             } else {
-              // 서버리스 모드: 로컬 IndexedDB / Dexie에 저장
-              await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
-              await repository.saveWorkspace(updatedWs);
+              // 서버리스 모드도 전체 워크스페이스를 지우고 다시 쓰지 않습니다.
+              await repository.saveTable(updatedTableWithTime);
+              if (!workspace.tables[updatedTableWithTime.id] || workspace.tables[updatedTableWithTime.id].title !== updatedTableWithTime.title) await repository.saveTree(updatedTree);
             }
 
             await syncToLocalFileIfConnected(updatedWs);
@@ -570,7 +570,7 @@ export default function App() {
       exportedAt: now,
     };
     setWorkspace(updatedWorkspace);
-    scheduleDocumentWorkspaceSave(updatedDocument, updatedWorkspace);
+    scheduleDocumentWorkspaceSave(updatedDocument, updatedWorkspace, workspace.documents?.[document.id]?.title !== updatedDocument.title);
   }, [workspace, scheduleDocumentWorkspaceSave]);
 
   const handleImportSharedItem = async (received: ReceivedItem) => {
@@ -588,7 +588,8 @@ export default function App() {
         if (!asset) throw new Error('가져올 이미지가 없습니다.');
         return { mime: asset.mime, bytes: asset.bytes };
       });
-      const response = await fetchBridge('/api/exchange/items', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes).buffer });
+      const parentQuery = received.tree.parentId ? `?parent=${encodeURIComponent(received.tree.parentId)}` : '';
+      const response = await fetchBridge(`/api/exchange/items${parentQuery}`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes).buffer });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '서버 가져오기에 실패했습니다.');
       if (result.kind === 'table') {
@@ -618,6 +619,42 @@ export default function App() {
     await wonbeeDexieDB.saveFullWorkspace(merged, 1); setWorkspace(merged);
     if (received.kind === 'document') { setActiveDocId(received.item.id); setActiveTableId(null); setOpenTabIds(previous => [...previous, received.item.id]); }
     else { setActiveTableId(received.item.id); setActiveDocId(null); }
+    await syncToLocalFileIfConnected(merged);
+  };
+
+  const handleImportSharedFolder = async (received: ReturnType<typeof import('./utils/itemExchange').materializeFolder>) => {
+    await cancelPendingDocumentSaveAndWait();
+    if (saveDebounceTimerRef.current) clearTimeout(saveDebounceTimerRef.current);
+    pendingSaveTableRef.current = null; pendingSaveWorkspaceRef.current = null;
+    if (useServer) {
+      const { assets, ...folder } = received;
+      const bytes = await packFolder(folder, async (ref) => {
+        const asset = assets.find((candidate) => ref === `asset://${candidate.id}`);
+        if (!asset) throw new Error('폴더 교환 파일에 필요한 이미지가 없습니다.');
+        return { mime: asset.mime, bytes: asset.bytes };
+      });
+      const response = await fetchBridge('/api/exchange/items/folders', { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: await bytes.arrayBuffer() });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || '폴더 교환 파일을 서버에 가져오지 못했습니다.');
+      const freshResponse = await fetchBridge('/api/workspace');
+      if (!freshResponse.ok) throw new Error('가져온 폴더를 불러오지 못했습니다.');
+      const fresh = ensureWorkspaceTree(await freshResponse.json());
+      await wonbeeDexieDB.saveFullWorkspace(fresh, 0);
+      setWorkspace(fresh);
+      return { discardLocalAssets: true };
+    }
+    const current = latestWorkspaceRef.current;
+    const merged: WorkspaceData = {
+      ...current,
+      tree: [...current.tree, ...received.tree],
+      documents: { ...(current.documents || {}), ...received.documents },
+      tables: { ...current.tables, ...received.tables },
+      exportedAt: Date.now(),
+    };
+    for (const [tableId, events] of Object.entries(received.events)) localStorage.setItem(`wonbee_calendar_events_${tableId}`, JSON.stringify(events));
+    for (const [tableId, layouts] of Object.entries(received.layouts)) localStorage.setItem(`wonbee_memo_board_layout_${tableId}`, JSON.stringify(layouts));
+    await wonbeeDexieDB.saveFullWorkspace(merged, 1);
+    setWorkspace(merged);
     await syncToLocalFileIfConnected(merged);
   };
 
@@ -1060,7 +1097,7 @@ export default function App() {
     setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== id), id]);
     localStorage.setItem('wonbee_active_doc_id', id);
     localStorage.removeItem('wonbee_active_table_id');
-    scheduleDocumentWorkspaceSave(document, updatedWs);
+    scheduleDocumentWorkspaceSave(document, updatedWs, true);
     return id;
   };
 
@@ -1108,7 +1145,7 @@ export default function App() {
     setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== documentId), documentId]);
     localStorage.setItem('wonbee_active_doc_id', documentId);
     localStorage.removeItem('wonbee_active_table_id');
-    scheduleDocumentWorkspaceSave(document, updatedWs);
+    scheduleDocumentWorkspaceSave(document, updatedWs, true);
     return documentId;
   };
 
@@ -1939,9 +1976,12 @@ export default function App() {
         documents={workspace.documents || {}}
         tables={workspace.tables}
         onImportSharedItem={handleImportSharedItem}
+        onImportSharedFolder={handleImportSharedFolder}
         onUpdateDocument={handleUpdateDocumentDebounced}
         activeTableId={activeTableId}
         activeDocId={activeDocId}
+        selectedFolderId={selectedFolderId}
+        onSelectFolder={setSelectedFolderId}
         onSelectTable={handleSelectActiveTable}
         onUpdateTree={handleUpdateTree}
         onAddTable={handleAddTable}
@@ -2035,6 +2075,7 @@ export default function App() {
             {/* Consolidated File Menu Dropdown (Includes Universal Import & Local File Sync) */}
             <FileMenuDropdown
               activeTable={activeTable}
+              selectedFolderId={selectedFolderId}
               workspace={workspace}
               onOpenUniversalImport={() => openModal('universalImport')}
               onOpenDataPortability={() => openModal('dataPortability')}
@@ -2058,83 +2099,8 @@ export default function App() {
                 if (currentEnv.zoomLevel) setZoomLevel(currentEnv.zoomLevel);
               }}
             />
-
-            {/* Pretty JSON Utility Button */}
-            <button
-              type="button"
-              onClick={() => openModal('prettyJson')}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="JSON 문자열 실시간 파싱 및 정렬 포매터 열기"
-            >
-              <Code2 className="w-3.5 h-3.5 text-amber-500" />
-              <span>Pretty JSON</span>
-            </button>
-
-            {/* Encoding Converter Utility Button */}
-            <button
-              type="button"
-              onClick={() => openModal('encodingConverter')}
-              className="hidden x-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="EUC-KR 및 레거시 인코딩 텍스트/파일 디코딩 및 UTF-8 변환"
-            >
-              <RefreshCw className="w-3.5 h-3.5 text-amber-500" />
-              <span>인코딩 변환</span>
-            </button>
-
-            {/* File Diff Comparator Utility Button */}
-            <button
-              type="button"
-              onClick={() => openModal('fileDiff')}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="파일 및 소스 코드 정밀 Diff 비교기 열기"
-            >
-              <GitCompare className="w-3.5 h-3.5 text-amber-500" />
-              <span>소스 비교</span>
-            </button>
-
-            {/* Format Express Utility Button (format-express.dev) */}
-            <button
-              type="button"
-              onClick={() => openModal('formatExpress')}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-800 dark:text-emerald-300 border border-emerald-300/80 dark:border-emerald-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="Format Express (format-express.dev): 로그 노이즈 제거, 이중 이스케이프 복원, JSON/XML/SQL 스마트 포맷터"
-            >
-              <Code className="w-3.5 h-3.5 text-emerald-500" />
-              <span>Format Express</span>
-            </button>
-
-            {/* Crypto & Multi-Codec Utility Button */}
-            <button
-              type="button"
-              onClick={() => openModal('cryptoCodec')}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-sky-500/10 hover:bg-sky-500/25 text-sky-800 dark:text-sky-300 border border-sky-300/80 dark:border-sky-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="AES/DES/3DES 대칭키 암복호화, 해시(MD5/SHA/HMAC), Base64/Hex/URL 멀티 인코더 열기"
-            >
-              <Lock className="w-3.5 h-3.5 text-sky-500" />
-              <span>암/복호화</span>
-            </button>
-
-            {/* Postman API Client Utility Button */}
-            <button
-              type="button"
-              onClick={() => openModal('postman')}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-amber-500/10 hover:bg-amber-500/25 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="Postman Lite HTTP REST API 클라이언트"
-            >
-              <Terminal className="w-3.5 h-3.5 text-amber-500" />
-              <span>Postman</span>
-            </button>
-
-            {/* Calculator Utility Button */}
-            <button
-              type="button"
-              onClick={() => openModal('calculator')}
-              className="px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 bg-indigo-500/10 hover:bg-indigo-500/25 text-indigo-800 dark:text-indigo-300 border border-indigo-300/80 dark:border-indigo-700/80 transition-colors shadow-2xs cursor-pointer"
-              title="스마트 공학 계산기 & 단위 변환기"
-            >
-              <Calculator className="w-3.5 h-3.5 text-indigo-500" />
-              <span>계산기</span>
-            </button>
+            <ToolsMenuDropdown onOpen={(tool) => openModal(tool)} />
+            <HelpMenuDropdown onOpenGuide={setGuideTopic} />
           </div>
 
           {/* Top Right Action Items */}
@@ -2408,6 +2374,9 @@ export default function App() {
         }}
         onRefreshData={loadWorkspaceData}
       />
+
+      {/* Product feature guide */}
+      {guideTopic && <ProductGuideModal initialTopic={guideTopic} onClose={() => setGuideTopic(null)} />}
 
       {/* 9. Universal Import Modal (TXT / CSV / TSV / JSON / Excel Clipboard) */}
       <UniversalImportModal

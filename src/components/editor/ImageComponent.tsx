@@ -48,7 +48,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
     if (src.startsWith('asset://') && typeof IntersectionObserver !== 'undefined' && containerRef.current) {
       observer = new IntersectionObserver(entries => {
         if (entries.some(entry => entry.isIntersecting)) { observer?.disconnect(); void loadAsset(); }
-      }, { rootMargin: '600px' });
+      }, { rootMargin: '300px' });
       observer.observe(containerRef.current);
     } else { void loadAsset(); }
 

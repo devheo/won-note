@@ -246,19 +246,33 @@ export class WonBeeDexieDatabase extends Dexie {
   }
 
   async saveDocument(document: WonNoteDocument): Promise<void> {
-    const workspace = await this.loadWorkspace();
-    await this.saveFullWorkspace({
-      ...workspace,
-      documents: { ...(workspace.documents || {}), [document.id]: document },
-      exportedAt: Date.now(),
-    }, 1);
+    await this.transaction('rw', [this.workspace_meta], async () => {
+      const meta = await this.workspace_meta.get('root_workspace');
+      await this.workspace_meta.put({
+        id: 'root_workspace',
+        version: meta?.version || '1.0.0',
+        exportedAt: Date.now(),
+        author: meta?.author,
+        settings: meta?.settings,
+        documents: { ...(meta?.documents || {}), [document.id]: document },
+      });
+    });
   }
 
   async deleteDocument(documentId: string): Promise<void> {
-    const workspace = await this.loadWorkspace();
-    const documents = { ...(workspace.documents || {}) };
-    delete documents[documentId];
-    await this.saveFullWorkspace({ ...workspace, documents, exportedAt: Date.now() }, 1);
+    await this.transaction('rw', [this.workspace_meta], async () => {
+      const meta = await this.workspace_meta.get('root_workspace');
+      const documents = { ...(meta?.documents || {}) };
+      delete documents[documentId];
+      await this.workspace_meta.put({
+        id: 'root_workspace',
+        version: meta?.version || '1.0.0',
+        exportedAt: Date.now(),
+        author: meta?.author,
+        settings: meta?.settings,
+        documents,
+      });
+    });
   }
 
   /**
@@ -573,6 +587,13 @@ export class WonBeeDexieDatabase extends Dexie {
       for (const id of ids) {
         await this.assets.update(id, { is_dirty: 0 });
       }
+    });
+  }
+
+  async markTableClean(tableId: string): Promise<void> {
+    await this.transaction('rw', [this.table_docs, this.notes], async () => {
+      await this.table_docs.update(tableId, { is_dirty: 0 });
+      await this.notes.where('table_id').equals(tableId).modify({ is_dirty: 0 });
     });
   }
 }

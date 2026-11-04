@@ -54,6 +54,13 @@ const WonNoteImage = Image.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
+      src: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-asset-src') || element.getAttribute('src'),
+        renderHTML: (attributes) => typeof attributes.src === 'string' && attributes.src.startsWith('asset://')
+          ? { 'data-asset-src': attributes.src }
+          : { src: attributes.src },
+      },
       width: {
         default: 'auto',
         parseHTML: (element) => element.getAttribute('data-width') || element.getAttribute('width') || element.style.width || 'auto',
@@ -197,16 +204,6 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[#fffdf8] dark:bg-[#171717]">
-      {/* Header bar */}
-      <div className="flex min-h-12 items-center justify-between border-b border-stone-200 bg-white/80 px-5 dark:border-stone-800 dark:bg-stone-900/80">
-        <div className="flex items-center gap-2 text-xs text-stone-500">
-          <span className="font-semibold text-amber-600">WON 노트</span>
-          <span>/</span>
-          <span className="max-w-[40vw] truncate font-medium text-stone-800 dark:text-stone-100">{document.title}</span>
-        </div>
-        <span className="text-[11px] text-stone-400">입력 즉시 반영 · 자동 저장</span>
-      </div>
-
       {/* Enhanced Rich Toolbar matching RichEditorModal */}
       <div className="flex flex-wrap items-center gap-1 border-b border-stone-200 bg-white px-4 py-2 dark:border-stone-800 dark:bg-stone-900 text-xs shrink-0">
         {/* Text Styling */}

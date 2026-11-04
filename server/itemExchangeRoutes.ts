@@ -1,6 +1,6 @@
 import express from 'express';
-import { getWorkspaceData, getTable, getCalendarEvents, getRowImage, importSharedItem, getSharedLayouts } from './db';
-import { packItem, unpackItem, materializeItem } from '../src/utils/itemExchange';
+import { getWorkspaceData, getTable, getCalendarEvents, getRowImage, importSharedItem, getSharedLayouts, saveWorkspaceData, saveImageAsset, saveCalendarEvent, saveSharedLayouts } from './db';
+import { packItem, unpackItem, materializeItem, unpackFolder } from '../src/utils/itemExchange';
 
 export function itemExchangeRoutes(onImport: (id: string) => void) {
   const router = express.Router();
@@ -64,6 +64,31 @@ export function itemExchangeRoutes(onImport: (id: string) => void) {
           layouts: received.layouts,
           events: received.events,
         });
+    } catch (error) {
+      res.status(400).json({ error: (error as Error).message });
+    }
+  });
+  router.post('/folders', express.raw({ type: 'application/octet-stream', limit: '250mb' }), async (req, res) => {
+    try {
+      if (!Buffer.isBuffer(req.body)) throw new Error('폴더 교환 파일을 바이너리로 보내주세요.');
+      const folder = await unpackFolder(new Uint8Array(req.body));
+      const current = getWorkspaceData();
+      const existingIds = new Set(current.tree.map((item) => item.id));
+      if (folder.tree.some((item) => existingIds.has(item.id))) throw new Error('가져올 폴더 항목 ID가 기존 항목과 충돌합니다. 다시 내보낸 파일을 사용해주세요.');
+      if (folder.root.parentId && !current.tree.some((item) => item.id === folder.root.parentId && item.type === 'folder'))
+        throw new Error('가져올 대상 폴더가 존재하지 않습니다.');
+      for (const asset of folder.assets) saveImageAsset(asset.id, asset.mime, asset.bytes);
+      saveWorkspaceData({
+        ...current,
+        tree: [...current.tree, ...folder.tree],
+        documents: { ...(current.documents || {}), ...folder.documents },
+        tables: { ...current.tables, ...folder.tables },
+        exportedAt: Date.now(),
+      });
+      for (const [tableId, events] of Object.entries(folder.events)) for (const event of events) saveCalendarEvent(event, tableId, false);
+      for (const [tableId, layouts] of Object.entries(folder.layouts)) saveSharedLayouts(tableId, layouts);
+      onImport(folder.root.id);
+      res.status(201).json({ id: folder.root.id, count: folder.tree.length, assets: folder.assets.length });
     } catch (error) {
       res.status(400).json({ error: (error as Error).message });
     }

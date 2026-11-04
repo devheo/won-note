@@ -1627,6 +1627,15 @@ export function getSharedLayouts(tableId: string): Record<string, unknown> {
   return result[0]?.values[0]?.[0] ? JSON.parse(String(result[0].values[0][0]))[tableId] || {} : {};
 }
 
+export function saveSharedLayouts(tableId: string, value: Record<string, unknown>): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const result = dbInstance.exec("SELECT value FROM workspace_meta WHERE key='exchange_layouts'");
+  const layouts = result[0]?.values[0]?.[0] ? JSON.parse(String(result[0].values[0][0])) : {};
+  layouts[tableId] = value;
+  dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exchange_layouts', ?)", [JSON.stringify(layouts)]);
+  persistDatabase();
+}
+
 /**
  * 1.2. Workspace Metadata API (Replaces 100MB+ full workspace dumps)
  * Lightweight structural metadata (<5KB) without heavy row/note bodies.

@@ -184,6 +184,11 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleClear();
+        return;
+      }
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
         return;
       }
@@ -212,15 +217,12 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
       } else if (e.key === 'Backspace' || e.key === 'Delete') {
         e.preventDefault();
         setDisplayValue((prev) => (prev.length > 1 ? prev.slice(0, -1) : '0'));
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        onClose();
       }
     };
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, handleCalculate, onClose]);
+  }, [isOpen, handleCalculate]);
 
   const handleClearHistory = () => {
     setHistory([]);

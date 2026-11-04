@@ -290,7 +290,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
   private async pushDirtyAssets(): Promise<boolean> {
     let succeeded = true;
     const assets = await wonbeeDexieDB.getDirtyAssets();
-    for (const asset of assets) {
+    const upload = async (asset: (typeof assets)[number]) => {
       try {
         const dataUrl = await new Promise<string>((resolve, reject) => {
           const reader = new FileReader();
@@ -316,6 +316,10 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         succeeded = false;
         console.warn(`[Repository] Failed to sync image asset ${asset.id}:`, error);
       }
+    };
+    // A small bounded batch avoids serial latency without flooding the API or memory.
+    for (let i = 0; i < assets.length; i += 4) {
+      await Promise.all(assets.slice(i, i + 4).map(upload));
     }
     return succeeded;
   }
@@ -523,6 +527,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     await this.localFallback.saveTable(table);
 
     try {
+      if (!(await this.pushDirtyAssets())) throw new Error('Image assets are waiting for server synchronization');
       const res = await fetchBridge(`${this.serverUrl}/tables/${table.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
@@ -532,6 +537,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
+      await wonbeeDexieDB.markTableClean(table.id);
     } catch (err) {
       console.warn('[Repository] Server saveTable offline fallback:', err);
     }

@@ -27,6 +27,7 @@ import {
 
 interface FileMenuDropdownProps {
   activeTable: TableDocument | null;
+  selectedFolderId?: string | null;
   workspace: WorkspaceData;
   onOpenUniversalImport: () => void;
   onOpenDataPortability: () => void;
@@ -47,6 +48,7 @@ interface FileMenuDropdownProps {
 
 export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
   activeTable,
+  selectedFolderId = null,
   workspace,
   onOpenUniversalImport,
   onOpenDataPortability,
@@ -66,6 +68,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
   const [isOpen, setIsOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [transferSubmenu, setTransferSubmenu] = useState<'import' | 'export' | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const portalRef = useRef<HTMLDivElement | null>(null);
 
@@ -348,6 +351,14 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
 
           <div className="my-1 border-t border-stone-200 dark:border-[#333333]" />
 
+          <div className="relative" onMouseLeave={() => setTransferSubmenu(null)}>
+            <button type="button" onMouseEnter={() => setTransferSubmenu('import')} onClick={() => setTransferSubmenu(transferSubmenu === 'import' ? null : 'import')} className="w-full px-2.5 py-2 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between font-semibold"><span className="flex items-center gap-2"><Upload className="w-3.5 h-3.5 text-amber-500" />가져오기</span><ChevronDown className="w-3 h-3 -rotate-90" /></button>
+            {transferSubmenu === 'import' && <div role="menu" className="absolute left-full top-0 ml-1 w-52 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-1 shadow-xl">{[['PDF 문서', 'import:pdf'], ['PPT 문서', 'import:ppt'], ['PPTX 문서', 'import:pptx'], ['WONNOTE 교환 파일', 'exchange-import']].map(([label, action]) => <button key={action} type="button" role="menuitem" onClick={() => { window.dispatchEvent(new CustomEvent('wonbee:file-transfer', { detail: action })); setIsOpen(false); }} className="w-full px-3 py-2 rounded text-left hover:bg-amber-50 dark:hover:bg-stone-800">{label}</button>)}</div>}
+          </div>
+          <div className="relative" onMouseLeave={() => setTransferSubmenu(null)}>
+            <button type="button" onMouseEnter={() => setTransferSubmenu('export')} onClick={() => setTransferSubmenu(transferSubmenu === 'export' ? null : 'export')} className="w-full px-2.5 py-2 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between font-semibold"><span className="flex items-center gap-2"><Download className="w-3.5 h-3.5 text-amber-500" />내보내기</span><ChevronDown className="w-3 h-3 -rotate-90" /></button>
+            {transferSubmenu === 'export' && <div role="menu" className="absolute left-full top-0 ml-1 w-52 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-1 shadow-xl">{[['PDF 문서 만들기', 'export:pdf'], ['PPTX 문서 만들기', 'export:pptx'], [selectedFolderId ? 'WONNOTE 폴더 내보내기' : 'WONNOTE 파일 내보내기', selectedFolderId ? 'export:folder' : 'export:wonnote']].map(([label, action]) => <button key={action} type="button" role="menuitem" onClick={() => { window.dispatchEvent(new CustomEvent('wonbee:file-transfer', { detail: action })); setIsOpen(false); }} className="w-full px-3 py-2 rounded text-left hover:bg-amber-50 dark:hover:bg-stone-800">{label}</button>)}</div>}
+          </div>
           {/* Section 2: Unified Import */}
           <div className="px-2.5 py-1 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider flex items-center justify-between">
             <span>데이터 가져오기 (통합)</span>

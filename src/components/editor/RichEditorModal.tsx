@@ -1092,6 +1092,13 @@ const CustomImage = Image.extend({
   addAttributes() {
     return {
       ...this.parent?.(),
+      src: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-asset-src') || element.getAttribute('src'),
+        renderHTML: (attributes) => typeof attributes.src === 'string' && attributes.src.startsWith('asset://')
+          ? { 'data-asset-src': attributes.src }
+          : { src: attributes.src },
+      },
       width: {
         default: 'auto',
         parseHTML: (element) => element.getAttribute('data-width') || element.getAttribute('width') || element.style.width || 'auto',

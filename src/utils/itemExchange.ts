@@ -16,6 +16,16 @@ export interface SharedItem {
   layouts: Record<string, unknown>;
   assets: SharedAsset[];
 }
+export interface SharedFolder {
+  kind: 'folder';
+  root: TreeItem;
+  tree: TreeItem[];
+  documents: Record<string, WonNoteDocument>;
+  tables: Record<string, TableDocument>;
+  events: Record<string, CalendarEvent[]>;
+  layouts: Record<string, Record<string, unknown>>;
+  assets: SharedAsset[];
+}
 const imageRefs =
   /asset:\/\/[a-zA-Z0-9_-]+|(?:https?:\/\/[^\s"'<>]+)?\/api\/(?:images|assets)\/[a-zA-Z0-9_-]+|data:image\/(?:png|jpe?g|gif|webp);base64,[a-zA-Z0-9+/=]+/g;
 const id = (prefix: string) => `${prefix}-${crypto.randomUUID()}`;
@@ -144,7 +154,7 @@ export async function packItem(
     if (total > EXCHANGE_LIMIT) throw new Error('교환 파일의 이미지 합계는 250MB 이하여야 합니다.');
     const assetId = `image-${assets.length + 1}`,
       path = `assets/${assetId}`;
-    zip.file(path, asset.bytes);
+    zip.file(path, asset.bytes, { compression: 'STORE' });
     replacements.set(ref, `asset://${assetId}`);
     assets.push({ id: assetId, path, mime: asset.mime, size: asset.bytes.length });
   }
@@ -153,9 +163,107 @@ export async function packItem(
     'item.json',
     JSON.stringify({ format: 'wonnote-item', version: 1, exportedAt: Date.now(), ...payload, assets }),
   );
-  const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
+  const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 3 } });
   if (bytes.length > EXCHANGE_LIMIT) throw new Error('교환 파일은 250MB 이하여야 합니다.');
   return bytes;
+}
+
+export async function packFolder(
+  source: Omit<SharedFolder, 'assets'>,
+  readImage: (ref: string) => Promise<{ mime: string; bytes: Uint8Array }>,
+): Promise<Blob> {
+  if (!source.root || source.root.type !== 'folder' || !source.tree.some((item) => item.id === source.root.id))
+    throw new Error('폴더 정보가 올바르지 않습니다.');
+  const ids = new Set<string>();
+  for (const item of source.tree) {
+    if (!item?.id || ids.has(item.id)) throw new Error('폴더 안에 중복되거나 잘못된 항목이 있습니다.');
+    ids.add(item.id);
+  }
+  if (source.tree.some((item) => item.id !== source.root.id && (!item.parentId || !ids.has(item.parentId))))
+    throw new Error('폴더에 포함된 항목의 위치 정보가 올바르지 않습니다.');
+  for (const item of source.tree) {
+    if (item.type === 'document') validate(source.documents[item.id], 'document');
+    if (item.type === 'table') validate(source.tables[item.id], 'table');
+  }
+  const refs = new Set<string>();
+  strings(source, (text) => { for (const match of text.matchAll(imageRefs)) refs.add(match[0]); return text; });
+  const zip = new JSZip(), replacements = new Map<string, string>();
+  const assets: { id: string; path: string; mime: string; size: number }[] = [];
+  let total = 0;
+  for (const ref of refs) {
+    const asset = await readImage(ref);
+    if (!mimeAllowed.test(asset.mime)) throw new Error('지원하지 않는 이미지 형식이 포함되어 있습니다.');
+    total += asset.bytes.length;
+    if (total > EXCHANGE_LIMIT) throw new Error('교환 파일의 이미지 합계는 250MB 이하여야 합니다.');
+    const assetId = `image-${assets.length + 1}`, path = `assets/${assetId}`;
+    zip.file(path, asset.bytes, { compression: 'STORE' }); replacements.set(ref, `asset://${assetId}`);
+    assets.push({ id: assetId, path, mime: asset.mime, size: asset.bytes.length });
+  }
+  const payload = strings(source, (text) => text.replace(imageRefs, (ref) => replacements.get(ref) || ref));
+  zip.file('folder.json', JSON.stringify({ format: 'wonnote-folder', version: 1, exportedAt: Date.now(), ...payload, assets }));
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 3 } });
+  if (blob.size > EXCHANGE_LIMIT) throw new Error('교환 파일은 250MB 이하여야 합니다.');
+  return blob;
+}
+
+export async function unpackFolder(bytes: Uint8Array): Promise<SharedFolder> {
+  if (bytes.length > EXCHANGE_LIMIT) throw new Error('교환 파일은 250MB 이하여야 합니다.');
+  const zip = await JSZip.loadAsync(bytes);
+  let expanded = 0;
+  for (const entry of Object.values(zip.files)) {
+    expanded += Number((entry as any)._data?.uncompressedSize || 0);
+    if (expanded > EXCHANGE_LIMIT) throw new Error('압축 해제한 교환 파일이 250MB를 초과합니다.');
+  }
+  const metadata = zip.file('folder.json');
+  if (!metadata || Number((metadata as any)._data?.uncompressedSize || 0) > 50 * 1024 * 1024)
+    throw new Error('폴더 교환 파일 정보를 읽을 수 없습니다.');
+  const payload = JSON.parse(await metadata.async('string'));
+  if (payload.format !== 'wonnote-folder' || payload.version !== 1 || !Array.isArray(payload.assets) || !Array.isArray(payload.tree))
+    throw new Error('지원하지 않는 폴더 교환 파일 버전입니다.');
+  if (!payload.root || payload.root.type !== 'folder' || !payload.tree.some((item: TreeItem) => item.id === payload.root.id))
+    throw new Error('폴더 정보가 올바르지 않습니다.');
+  const assets: SharedAsset[] = [], assetIds = new Set<string>();
+  for (const asset of payload.assets) {
+    if (!/^[\w-]+$/.test(asset.id) || assetIds.has(asset.id) || asset.path !== `assets/${asset.id}` || !mimeAllowed.test(asset.mime))
+      throw new Error('이미지 목록이 올바르지 않습니다.');
+    assetIds.add(asset.id);
+    const entry = zip.file(asset.path);
+    if (!entry) throw new Error('교환 파일에 필요한 이미지가 없습니다.');
+    const content = await entry.async('uint8array');
+    if (content.length !== asset.size) throw new Error('교환 파일 이미지 크기가 일치하지 않습니다.');
+    assets.push({ id: asset.id, mime: asset.mime, bytes: content });
+  }
+  const ids = new Set<string>();
+  for (const item of payload.tree as TreeItem[]) {
+    if (!item?.id || ids.has(item.id) || !['folder', 'document', 'table'].includes(item.type)) throw new Error('폴더 안의 항목 정보가 올바르지 않습니다.');
+    ids.add(item.id);
+    if (item.id !== payload.root.id && (!item.parentId || !payload.tree.some((parent: TreeItem) => parent.id === item.parentId))) throw new Error('폴더 항목의 상위 위치가 없습니다.');
+    if (item.type === 'document') validate(payload.documents?.[item.id], 'document');
+    if (item.type === 'table') validate(payload.tables?.[item.id], 'table');
+  }
+  strings({ documents: payload.documents || {}, tables: payload.tables || {} }, (text) => {
+    for (const ref of text.matchAll(/asset:\/\/([a-zA-Z0-9_-]+)/g)) if (!assetIds.has(ref[1])) throw new Error('누락된 이미지가 포함된 폴더 파일입니다.');
+    return text;
+  });
+  return { kind: 'folder', root: payload.root, tree: payload.tree, documents: payload.documents || {}, tables: payload.tables || {}, events: payload.events || {}, layouts: payload.layouts || {}, assets };
+}
+
+export function materializeFolder(shared: SharedFolder, targetParentId: string | null = null) {
+  const idMap = new Map(shared.tree.map((item) => [item.id, id(item.type === 'folder' ? 'folder' : item.type === 'table' ? 'table' : 'doc')]));
+  const assetMap = new Map(shared.assets.map((asset) => [asset.id, id('asset')]));
+  const rewrite = (text: string) => text.replace(/asset:\/\/([a-zA-Z0-9_-]+)/g, (_, old) => `asset://${assetMap.get(old) || old}`);
+  const tree = shared.tree.map((item) => ({ ...item, id: idMap.get(item.id)!, parentId: item.id === shared.root.id ? targetParentId : item.parentId ? idMap.get(item.parentId) || null : null,
+    title: item.id === shared.root.id ? `${item.title} (받은 사본)` : item.title, createdAt: Date.now(), updatedAt: Date.now() }));
+  const documents = Object.fromEntries(Object.entries(shared.documents).map(([oldId, doc]) => {
+    const item = strings(doc, rewrite) as WonNoteDocument; item.id = idMap.get(oldId)!; return [item.id, item];
+  }));
+  const tables = Object.fromEntries(Object.entries(shared.tables).map(([oldId, table]) => {
+    const item = strings(table, rewrite) as TableDocument; item.id = idMap.get(oldId)!; return [item.id, item];
+  }));
+  const events: Record<string, CalendarEvent[]> = {}, layouts: Record<string, Record<string, unknown>> = {};
+  for (const [oldId, newId] of idMap) if (shared.tables[oldId]) { events[newId] = (shared.events[oldId] || []).map((event) => ({ ...event, id: id('event') })); layouts[newId] = shared.layouts[oldId] || {}; }
+  return { kind: 'folder' as const, root: tree.find((item) => item.id === idMap.get(shared.root.id))!, tree, documents, tables, events, layouts,
+    assets: shared.assets.map((asset) => ({ ...asset, id: assetMap.get(asset.id)! })) };
 }
 
 export async function unpackItem(bytes: Uint8Array): Promise<SharedItem> {

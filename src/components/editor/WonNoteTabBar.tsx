@@ -163,11 +163,11 @@ export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
                   e.stopPropagation();
                   onCloseTab(id);
                 }}
-                className="ml-1 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-stone-300 bg-white text-stone-700 shadow-sm hover:border-rose-400 hover:bg-rose-50 hover:text-rose-600 dark:border-stone-600 dark:bg-stone-800 dark:text-stone-200 dark:hover:border-rose-500 dark:hover:bg-rose-950/50 dark:hover:text-rose-300"
+                className="ml-1 inline-flex h-4 w-4 shrink-0 items-center justify-center border-0 bg-transparent text-stone-500 opacity-0 transition-opacity group-hover/tab:opacity-100 focus-visible:opacity-100 hover:text-rose-600 dark:text-stone-400 dark:hover:text-rose-300"
                 title="탭 닫기"
                 aria-label={`${doc.title || '새 노트'} 탭 닫기`}
               >
-                <X className="h-3 w-3" strokeWidth={2.5} />
+                <X className="h-2.5 w-2.5" strokeWidth={2} />
               </button>
             </div>
           </div>
