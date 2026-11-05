@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { Suspense, lazy, useState, useEffect } from 'react';
 import {
   X,
   Sparkles,
@@ -39,7 +39,7 @@ import {
 } from '../../services/ai/ollamaClient';
 import { TableColumn, TableRow, TableDocument } from '../../types';
 import { DiffViewModal } from './DiffViewModal';
-import { MermaidViewer } from './MermaidViewer';
+const MermaidViewer = lazy(() => import('./MermaidViewer').then(m => ({ default: m.MermaidViewer })));
 import { ActionConfirmModal } from './ActionConfirmModal';
 
 interface AiAgentDrawerProps {
@@ -1666,10 +1666,10 @@ export const AiAgentDrawer: React.FC<AiAgentDrawerProps> = ({
 
             {/* Render Mermaid Component */}
             {generatedMermaid && (
-              <MermaidViewer
+              <Suspense fallback={<div className="rounded-lg bg-stone-100 p-3 text-xs text-stone-500 dark:bg-stone-800">다이어그램을 불러오는 중…</div>}><MermaidViewer
                 code={generatedMermaid}
                 onInsertToEditor={onInsertToEditor ? (code) => onInsertToEditor(`\n\`\`\`mermaid\n${code}\n\`\`\`\n`) : undefined}
-              />
+              /></Suspense>
             )}
           </div>
         )}

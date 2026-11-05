@@ -3,6 +3,7 @@ import { TableDocument, TableRow } from '../../types';
 import { boardLayoutStore, BoardNoteLayout } from '../../services/storage/boardLayoutStore';
 import { StickyNoteCard } from './StickyNoteCard';
 import { useStatusBar, computeTextMetrics } from '../common/GlobalStatusBar';
+import { estimateTableJsonMetrics } from '../../utils/tableSizeMetrics';
 import {
   Sparkles,
   Plus,
@@ -84,10 +85,7 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
     const primaryCol = table.columns[0];
     const contentCol = table.columns.find((c) => c.type === 'richText' || c.name.includes('내용') || c.name.includes('설명')) || table.columns[1] || primaryCol;
 
-    const jsonStr = JSON.stringify(table);
-    const totalBytes = new TextEncoder().encode(jsonStr).length;
-    const totalChars = jsonStr.length;
-    const totalLines = jsonStr ? jsonStr.split('\n').length : 1;
+    const { bytes: totalBytes, chars: totalChars, lines: totalLines } = estimateTableJsonMetrics(table);
 
     if (activeMemoId) {
       const activeIdx = table.rows.findIndex((r) => r.id === activeMemoId);

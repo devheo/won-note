@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
+import React, { Suspense, lazy, useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { ReactNodeViewRenderer, useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
 import { TextSelection, NodeSelection } from '@tiptap/pm/state';
@@ -52,7 +52,7 @@ import { useEditorCodeActions } from '../../hooks/useEditorCodeActions';
 import { useEditorFormatting } from '../../hooks/useEditorFormatting';
 import { useEditorClipboard } from '../../hooks/useEditorClipboard';
 import { getEffectiveColumnOptions } from '../../utils/columnOptionsUtils';
-import { AiAgentDrawer } from '../agent/AiAgentDrawer';
+const AiAgentDrawer = lazy(() => import('../agent/AiAgentDrawer').then(m => ({ default: m.AiAgentDrawer })));
 import {
   markdownToHtml,
   htmlToMarkdown,
@@ -3665,7 +3665,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           </div>
         )}
         {/* AI Agent Drawer within Editor */}
-        <AiAgentDrawer
+        {isAiAgentDrawerOpen && <Suspense fallback={null}><AiAgentDrawer
           isOpen={isAiAgentDrawerOpen}
           onClose={() => setIsAiAgentDrawerOpen(false)}
           editorContent={editor ? editor.getText() : ''}
@@ -3696,7 +3696,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               setHasUnsavedChanges(true);
             }
           }}
-        />
+        /></Suspense>}
 
         {/* Right-Click Context Menu Popup */}
         {contextMenu && (

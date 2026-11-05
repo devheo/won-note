@@ -3,7 +3,7 @@
  * Minimalist Workspace & Data Grid Application
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { Suspense, lazy, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   WorkspaceData,
   TableDocument,
@@ -33,29 +33,29 @@ import { ZoomControls } from './components/common/ZoomControls';
 import { STORAGE_KEYS, STORAGE_KEY_PREFIXES, storageKeyFor } from './constants/storageKeys';
 import { ZOOM_LIMITS } from './constants/limits';
 import { LIGHT_THEMES } from './constants/themes';
-import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
-import { TextPasteModal } from './components/modals/TextPasteModal';
-import { UniversalImportModal } from './components/modals/UniversalImportModal';
-import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
+const DataPortabilityModal = lazy(() => import('./components/modals/DataPortabilityModal').then(m => ({ default: m.DataPortabilityModal })));
+const TextPasteModal = lazy(() => import('./components/modals/TextPasteModal').then(m => ({ default: m.TextPasteModal })));
+const UniversalImportModal = lazy(() => import('./components/modals/UniversalImportModal').then(m => ({ default: m.UniversalImportModal })));
+const ServerSettingsModal = lazy(() => import('./components/modals/ServerSettingsModal').then(m => ({ default: m.ServerSettingsModal })));
 import { ServerAuthGate } from './components/auth/ServerAuthGate';
-import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
+const CommandPaletteModal = lazy(() => import('./components/modals/CommandPaletteModal').then(m => ({ default: m.CommandPaletteModal })));
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
 import { ToolsMenuDropdown } from './components/common/ToolsMenuDropdown';
 import { HelpMenuDropdown } from './components/common/HelpMenuDropdown';
-import { ProductGuideModal } from './components/help/ProductGuideModal';
+const ProductGuideModal = lazy(() => import('./components/help/ProductGuideModal').then(m => ({ default: m.ProductGuideModal })));
 import type { GuideTopic } from './components/help/guideTopics';
 import { SettingsMenuDropdown, AppThemeMode } from './components/common/SettingsMenuDropdown';
-import { PrettyJsonModal } from './components/modals/PrettyJsonModal';
-import { EncodingConverterModal } from './components/modals/EncodingConverterModal';
-import { FileDiffModal } from './components/modals/FileDiffModal';
-import { FormatExpressModal } from './components/modals/FormatExpressModal';
-import { CryptoCodecModal } from './components/modals/CryptoCodecModal';
-import { PostmanModal } from './components/modals/PostmanModal';
-import { CalculatorModal } from './components/modals/CalculatorModal';
-import { PerformanceSettingsModal } from './components/modals/PerformanceSettingsModal';
-import { DeleteTreeItemModal } from './components/modals/DeleteTreeItemModal';
-import { SampleConfirmModal } from './components/modals/SampleConfirmModal';
+const PrettyJsonModal = lazy(() => import('./components/modals/PrettyJsonModal').then(m => ({ default: m.PrettyJsonModal })));
+const EncodingConverterModal = lazy(() => import('./components/modals/EncodingConverterModal').then(m => ({ default: m.EncodingConverterModal })));
+const FileDiffModal = lazy(() => import('./components/modals/FileDiffModal').then(m => ({ default: m.FileDiffModal })));
+const FormatExpressModal = lazy(() => import('./components/modals/FormatExpressModal').then(m => ({ default: m.FormatExpressModal })));
+const CryptoCodecModal = lazy(() => import('./components/modals/CryptoCodecModal').then(m => ({ default: m.CryptoCodecModal })));
+const PostmanModal = lazy(() => import('./components/modals/PostmanModal').then(m => ({ default: m.PostmanModal })));
+const CalculatorModal = lazy(() => import('./components/modals/CalculatorModal').then(m => ({ default: m.CalculatorModal })));
+const PerformanceSettingsModal = lazy(() => import('./components/modals/PerformanceSettingsModal').then(m => ({ default: m.PerformanceSettingsModal })));
+const DeleteTreeItemModal = lazy(() => import('./components/modals/DeleteTreeItemModal').then(m => ({ default: m.DeleteTreeItemModal })));
+const SampleConfirmModal = lazy(() => import('./components/modals/SampleConfirmModal').then(m => ({ default: m.SampleConfirmModal })));
 import { useWorkspaceModals } from './hooks/useWorkspaceModals';
 import {
   PerformanceOptions,
@@ -70,7 +70,7 @@ import { createSseConnection } from './services/sseService';
 import { migrateTableToWonNoteFormat } from './utils/migrateTableToWonNoteFormat';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
 import { CalendarNotificationToast } from './components/calendar/CalendarNotificationToast';
-import { AiAgentDrawer } from './components/agent/AiAgentDrawer';
+const AiAgentDrawer = lazy(() => import('./components/agent/AiAgentDrawer').then(m => ({ default: m.AiAgentDrawer })));
 import { WonNoteTabBar } from './components/editor/WonNoteTabBar';
 import {
   Sparkles,
@@ -2338,7 +2338,8 @@ export default function App() {
       {activeDocument && <ZoomControls zoom={zoomLevel} onChangeZoom={handleZoomChange} />}
 
       {/* 6. Data Portability Modal (Portable JSON Merge) */}
-      <DataPortabilityModal
+      <Suspense fallback={null}>
+      {isModalOpen('dataPortability') && <DataPortabilityModal
         isOpen={isModalOpen('dataPortability')}
         onClose={closeModal}
         currentWorkspace={workspace}
@@ -2356,17 +2357,17 @@ export default function App() {
             console.error('Failed to persist connected local file to DB:', e);
           }
         }}
-      />
+      />}
 
       {/* 7. Text / TSV / Raw Data Paste Modal */}
-      <TextPasteModal
+      {isModalOpen('textPaste') && <TextPasteModal
         isOpen={isModalOpen('textPaste')}
         onClose={closeModal}
         onImportNewTable={handleImportCsvToNewTable}
-      />
+      />}
 
       {/* 8. Server Mode Settings Modal */}
-      <ServerSettingsModal
+      {isModalOpen('serverSettings') && <ServerSettingsModal
         isOpen={isModalOpen('serverSettings')}
         onClose={closeModal}
         useServer={useServer}
@@ -2382,13 +2383,13 @@ export default function App() {
           }
         }}
         onRefreshData={loadWorkspaceData}
-      />
+      />}
 
       {/* Product feature guide */}
       {guideTopic && <ProductGuideModal initialTopic={guideTopic} onClose={() => setGuideTopic(null)} />}
 
       {/* 9. Universal Import Modal (TXT / CSV / TSV / JSON / Excel Clipboard) */}
-      <UniversalImportModal
+      {isModalOpen('universalImport') && <UniversalImportModal
         isOpen={isModalOpen('universalImport')}
         onClose={closeModal}
         activeTable={activeTable}
@@ -2407,19 +2408,19 @@ export default function App() {
             activateTable(newEnv.activeTableId);
           }
         }}
-      />
+      />}
 
       {/* 10. Performance & Speed Optimization Settings Modal */}
-      <PerformanceSettingsModal
+      {isModalOpen('perfSettings') && <PerformanceSettingsModal
         isOpen={isModalOpen('perfSettings')}
         onClose={closeModal}
         options={perfOptions}
         onChangeOptions={handleUpdatePerfOptions}
         columns={activeTable?.columns || []}
-      />
+      />}
 
       {/* 11. Command Palette Modal (Ctrl+K / ⌘K) */}
-      <CommandPaletteModal
+      {isModalOpen('commandPalette') && <CommandPaletteModal
         isOpen={isModalOpen('commandPalette')}
         onClose={closeModal}
         workspace={workspace}
@@ -2473,10 +2474,10 @@ export default function App() {
           setEditingRow(row);
           setEditingTargetColId(null);
         }}
-      />
+      />}
 
       {/* 12. WON 노트 AI Multi-Agent Drawer */}
-      <AiAgentDrawer
+      {isModalOpen('aiAgent') && <AiAgentDrawer
         isOpen={isModalOpen('aiAgent')}
         onClose={() => {
           closeModal();
@@ -2489,7 +2490,7 @@ export default function App() {
         onUpdateRow={handleSaveRowFromEditor}
         onRefreshData={loadWorkspaceData}
         initialTab={aiAgentInitialTab}
-      />
+      />}
 
       {/* 13. Calendar Notification Alarm Toast */}
       {activeAlarmEvent && (
@@ -2505,64 +2506,65 @@ export default function App() {
       )}
 
       {/* 14. Pretty JSON Modal */}
-      <PrettyJsonModal
-        isOpen={isModalOpen('prettyJson')}
+      {isModalOpen('prettyJson') && <PrettyJsonModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 15. Encoding Converter Modal */}
-      <EncodingConverterModal
-        isOpen={isModalOpen('encodingConverter')}
+      {isModalOpen('encodingConverter') && <EncodingConverterModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 16. File Diff Comparator Modal */}
-      <FileDiffModal
-        isOpen={isModalOpen('fileDiff')}
+      {isModalOpen('fileDiff') && <FileDiffModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 17. Standalone Format Express Utility Modal (format-express.dev) */}
-      <FormatExpressModal
-        isOpen={isModalOpen('formatExpress')}
+      {isModalOpen('formatExpress') && <FormatExpressModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 18. Crypto & Multi-Codec Utility Modal */}
-      <CryptoCodecModal
-        isOpen={isModalOpen('cryptoCodec')}
+      {isModalOpen('cryptoCodec') && <CryptoCodecModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 19. Lightweight Postman API Client Modal */}
-      <PostmanModal
-        isOpen={isModalOpen('postman')}
+      {isModalOpen('postman') && <PostmanModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 20. Calculator & Unit Converter Modal */}
-      <CalculatorModal
-        isOpen={isModalOpen('calculator')}
+      {isModalOpen('calculator') && <CalculatorModal
+        isOpen
         onClose={closeModal}
-      />
+      />}
 
       {/* 14. Workspace Tree Item Deletion Confirmation Modal */}
-      <DeleteTreeItemModal
+      {Boolean(treeItemToDelete) && <DeleteTreeItemModal
         isOpen={Boolean(treeItemToDelete)}
         item={treeItemToDelete}
         tree={workspace.tree}
         tables={workspace.tables}
         onConfirm={handleConfirmDeleteTreeItem}
         onClose={() => setTreeItemToDelete(null)}
-      />
+      />}
 
       {/* 15. Sample Template Add Confirmation Modal */}
-      <SampleConfirmModal
-        isOpen={isModalOpen('sampleConfirm')}
+      {isModalOpen('sampleConfirm') && <SampleConfirmModal
+        isOpen
         onClose={closeModal}
         onConfirm={handleConfirmAddSampleTemplates}
         isLoading={isLoading}
-      />
+      />}
+      </Suspense>
     </div>
     </GlobalStatusBarProvider>
   );

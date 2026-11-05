@@ -1,4 +1,4 @@
-import React, { useState, useRef, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
+import React, { Suspense, lazy, useState, useRef, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
@@ -25,8 +25,9 @@ import {
   loadPerformanceOptions,
   savePerformanceOptions,
 } from '../../types/performance';
-import { PerformanceSettingsModal } from '../modals/PerformanceSettingsModal';
+const PerformanceSettingsModal = lazy(() => import('../modals/PerformanceSettingsModal').then(m => ({ default: m.PerformanceSettingsModal })));
 import { useStatusBar } from '../common/GlobalStatusBar';
+import { estimateTableJsonMetrics } from '../../utils/tableSizeMetrics';
 import {
   Plus,
   ArrowUpDown,
@@ -125,14 +126,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
 
   useEffect(() => {
     if (table) {
-      const jsonStr = JSON.stringify(table);
-      const totalBytes = new TextEncoder().encode(jsonStr).length;
+      const { bytes: totalBytes, chars: totalChars, lines: totalLines } = estimateTableJsonMetrics(table);
       updateMetrics({
         tableName: table.title || '워크스페이스',
         lastModifiedAt: table.updatedAt || Date.now(),
         totalBytes,
-        totalChars: jsonStr.length,
-        totalLines: jsonStr ? jsonStr.split('\n').length : 1,
+        totalChars,
+        totalLines,
         line: 1,
         col: 1,
         selectedChars: 0,
@@ -2453,13 +2453,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
       />
 
       {/* Performance & Speed Optimization Settings Modal */}
-      <PerformanceSettingsModal
-        isOpen={isPerfModalOpen}
+      {isPerfModalOpen && <Suspense fallback={null}><PerformanceSettingsModal
+        isOpen
         onClose={() => setIsPerfModalOpen(false)}
         options={perfOptions}
         onChangeOptions={handleUpdatePerfOptions}
         columns={table.columns}
-      />
+      /></Suspense>}
     </div>
   );
 };

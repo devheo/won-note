@@ -15,7 +15,7 @@ export function useDocumentHistory(itemKey: string, title: string, content: stri
     if (!content.trim()) return;
     const timer = setTimeout(() => {
       void saveHistorySnapshot({ itemKey, title, content, author: '사용자', serverMode, tableId }).then(() => setRevision(value => value + 1));
-    }, 2500);
+    }, content.length > 250_000 ? 30_000 : 15_000);
     return () => clearTimeout(timer);
   }, [itemKey, title, content, serverMode, tableId]);
 

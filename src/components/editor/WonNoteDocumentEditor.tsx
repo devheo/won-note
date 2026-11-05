@@ -137,7 +137,6 @@ interface WonNoteDocumentEditorProps {
 export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ document, onUpdateDocument, zoomLevel = 100, useServerMode = false }) => {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const pageBadgeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const documentRef = useRef(document);
   const updateRef = useRef(onUpdateDocument);
   const updateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -149,7 +148,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
 
   const [linkInputUrl, setLinkInputUrl] = useState('');
   const [showLinkInput, setShowLinkInput] = useState(false);
-  const [pdfPageIndicator, setPdfPageIndicator] = useState<{ current: string; total: number; visible: boolean } | null>(null);
+  const [pdfPageIndicator, setPdfPageIndicator] = useState<{ current: string; total: number } | null>(null);
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
   const [isCommentPanelOpen, setIsCommentPanelOpen] = useState(false);
   const [commentComposer, setCommentComposer] = useState<{ x: number; y: number } | null>(null);
@@ -318,7 +317,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!editor || !container) return;
-    const refreshIndicator = (duringScroll = false) => {
+    const refreshIndicator = () => {
       const pages = Array.from(editor.view.dom.querySelectorAll<HTMLElement>('[data-pdf-page]'));
       if (!pages.length) { setPdfPageIndicator(null); return; }
       const containerRect = container.getBoundingClientRect();
@@ -333,13 +332,9 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         const nearestCenter = (nearest.getBoundingClientRect().top + nearest.getBoundingClientRect().bottom) / 2;
         return Math.abs(center - anchorY) < Math.abs(nearestCenter - anchorY) ? page : nearest;
       }, pages[0]);
-      setPdfPageIndicator({ current: current.dataset.pdfPage || String(pages.indexOf(current) + 1), total: Number(current.dataset.pdfTotal) || pages.length, visible: duringScroll });
-      if (duringScroll) {
-        if (pageBadgeTimerRef.current) clearTimeout(pageBadgeTimerRef.current);
-        pageBadgeTimerRef.current = setTimeout(() => setPdfPageIndicator(value => value ? { ...value, visible: false } : null), 1800);
-      }
+      setPdfPageIndicator({ current: current.dataset.pdfPage || String(pages.indexOf(current) + 1), total: Number(current.dataset.pdfTotal) || pages.length });
     };
-    const onScroll = () => refreshIndicator(true);
+    const onScroll = () => refreshIndicator();
     const observer = new MutationObserver(() => refreshIndicator());
     observer.observe(editor.view.dom, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-pdf-page'] });
     container.addEventListener('scroll', onScroll, { passive: true });
@@ -349,7 +344,6 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       container.removeEventListener('scroll', onScroll);
       window.removeEventListener('scroll', onScroll, true);
       observer.disconnect();
-      if (pageBadgeTimerRef.current) clearTimeout(pageBadgeTimerRef.current);
     };
   }, [editor, document.id]);
 
@@ -619,7 +613,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         history.setIsOpen(false);
       }} />}
       {pdfPageIndicator && createPortal(
-        <div className={`pointer-events-none fixed right-3 top-1/2 z-[11010] -translate-y-1/2 rounded-full bg-stone-900/90 px-3 py-1.5 text-xs font-semibold tabular-nums text-white shadow-lg ring-1 ring-white/30 backdrop-blur-sm transition-opacity duration-200 ${pdfPageIndicator.visible ? 'opacity-100' : 'opacity-0'}`}>
+        <div className="pointer-events-none fixed right-3 top-1/2 z-[11010] -translate-y-1/2 rounded-full bg-stone-900/85 px-3 py-1.5 text-xs font-semibold tabular-nums text-white shadow-lg ring-1 ring-white/30 backdrop-blur-sm">
           {pdfPageIndicator.current} / {pdfPageIndicator.total}
         </div>,
         globalThis.document.body,

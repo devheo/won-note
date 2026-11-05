@@ -5,10 +5,14 @@ import { fileURLToPath } from 'node:url';
 import {defineConfig} from 'vite';
 import { viteSingleFile } from 'vite-plugin-singlefile';
 
-export default defineConfig(() => {
+export default defineConfig(({ mode }) => {
   const configDir = path.dirname(fileURLToPath(import.meta.url));
+  const plugins = [react(), tailwindcss()];
+  // Keep the self-contained client build for offline desktop use. The intranet
+  // server build ships local chunks so the browser downloads code on demand.
+  if (mode !== 'intranet') plugins.push(viteSingleFile());
   return {
-    plugins: [react(), tailwindcss(), viteSingleFile()],
+    plugins,
     resolve: {
       alias: {
         '@': path.resolve(configDir, '.'),

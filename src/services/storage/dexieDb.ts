@@ -1,4 +1,5 @@
 import Dexie, { type Table } from 'dexie';
+import * as Y from 'yjs';
 import { WorkspaceData, TableDocument, TreeItem, TableRow, ItemType, WonNoteDocument } from '../../types';
 import { INITIAL_WORKSPACE_DATA } from '../../data/initialData';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
@@ -67,6 +68,13 @@ export interface DexieCollaborationDoc {
   updatedAt: number;
 }
 
+export interface DexieCollaborationUpdate {
+  id?: number;
+  storageKey: string;
+  update: Uint8Array;
+  createdAt: number;
+}
+
 export interface DexieDocumentHistory {
   id: string;
   itemKey: string;
@@ -87,6 +95,7 @@ export class WonBeeDexieDatabase extends Dexie {
   notes!: Table<DexieNote, string>;
   assets!: Table<DexieAsset, string>;
   collaboration_docs!: Table<DexieCollaborationDoc, string>;
+  collaboration_updates!: Table<DexieCollaborationUpdate, number>;
   document_history!: Table<DexieDocumentHistory, string>;
 
   constructor() {
@@ -110,6 +119,9 @@ export class WonBeeDexieDatabase extends Dexie {
     this.version(5).stores({
       document_history: 'id, itemKey, createdAt, [itemKey+createdAt]',
     });
+    this.version(6).stores({
+      collaboration_updates: '++id, storageKey, createdAt, [storageKey+createdAt]',
+    });
   }
 
   async loadCollaborationDoc(id: string): Promise<Uint8Array | null> {
@@ -119,6 +131,34 @@ export class WonBeeDexieDatabase extends Dexie {
 
   async saveCollaborationDoc(id: string, update: Uint8Array): Promise<void> {
     await this.collaboration_docs.put({ id, update: new Uint8Array(update), updatedAt: Date.now() });
+  }
+
+  async loadCollaborationUpdates(id: string): Promise<Uint8Array[]> {
+    const rows = await this.collaboration_updates.where('storageKey').equals(id).sortBy('createdAt');
+    return rows.map(row => new Uint8Array(row.update));
+  }
+
+  async appendCollaborationUpdate(id: string, update: Uint8Array): Promise<void> {
+    await this.collaboration_updates.add({ storageKey: id, update: new Uint8Array(update), createdAt: Date.now() });
+  }
+
+  async compactCollaborationUpdates(id: string, snapshot: Uint8Array): Promise<void> {
+    await this.transaction('rw', [this.collaboration_docs, this.collaboration_updates], async () => {
+      const updates = await this.collaboration_updates.where('storageKey').equals(id).toArray();
+      const compactedDoc = new Y.Doc();
+      try {
+        Y.applyUpdate(compactedDoc, snapshot);
+        for (const row of updates) Y.applyUpdate(compactedDoc, row.update);
+        await this.collaboration_docs.put({
+          id,
+          update: Y.encodeStateAsUpdate(compactedDoc),
+          updatedAt: Date.now(),
+        });
+        await this.collaboration_updates.bulkDelete(updates.flatMap(row => row.id === undefined ? [] : [row.id]));
+      } finally {
+        compactedDoc.destroy();
+      }
+    });
   }
 
   async listDocumentHistory(itemKey: string): Promise<DexieDocumentHistory[]> {

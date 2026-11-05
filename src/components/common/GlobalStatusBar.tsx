@@ -1,4 +1,4 @@
-import React, { memo, createContext, useContext, useState, useMemo, useCallback } from 'react';
+import React, { memo, createContext, useContext, useState, useCallback } from 'react';
 
 export interface StatusBarMetrics {
   line?: number;
@@ -93,13 +93,8 @@ export const computeTextMetrics = (text: string) => {
   return { chars, bytes };
 };
 
-interface StatusBarContextType {
-  metrics: StatusBarMetrics;
-  setMetrics: React.Dispatch<React.SetStateAction<StatusBarMetrics>>;
-  updateMetrics: (partial: Partial<StatusBarMetrics>) => void;
-}
-
-const GlobalStatusBarContext = createContext<StatusBarContextType | null>(null);
+type StatusBarUpdate = (partial: Partial<StatusBarMetrics>) => void;
+const StatusBarUpdateContext = createContext<StatusBarUpdate | null>(null);
 
 export const GlobalStatusBarProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [metrics, setMetrics] = useState<StatusBarMetrics>({
@@ -112,23 +107,25 @@ export const GlobalStatusBarProvider: React.FC<{ children: React.ReactNode }> = 
   });
 
   const updateMetrics = useCallback((partial: Partial<StatusBarMetrics>) => {
-    setMetrics((prev) => ({ ...prev, ...partial }));
+    setMetrics((prev) => {
+      const keys = Object.keys(partial) as Array<keyof StatusBarMetrics>;
+      if (keys.every(key => Object.is(prev[key], partial[key]))) return prev;
+      return { ...prev, ...partial };
+    });
   }, []);
 
-  const value = useMemo(() => ({ metrics, setMetrics, updateMetrics }), [metrics, updateMetrics]);
-
   return (
-    <GlobalStatusBarContext.Provider value={value}>
+    <StatusBarUpdateContext.Provider value={updateMetrics}>
       {children}
       <GlobalStatusBar metrics={metrics} />
-    </GlobalStatusBarContext.Provider>
+    </StatusBarUpdateContext.Provider>
   );
 };
 
 export const useStatusBar = () => {
-  const context = useContext(GlobalStatusBarContext);
-  if (!context) {
+  const updateMetrics = useContext(StatusBarUpdateContext);
+  if (!updateMetrics) {
     throw new Error('useStatusBar must be used within a GlobalStatusBarProvider');
   }
-  return context;
+  return { updateMetrics };
 };
