@@ -4,7 +4,6 @@ import { TreeItem, ItemType, WonNoteDocument, TableDocument } from '../../types'
 import { useItemExchange, type ReceivedItem } from '../../hooks/useItemExchange';
 import type { materializeFolder } from '../../utils/itemExchange';
 import { useNoteTransfer } from '../../hooks/useNoteTransfer';
-import { SettingsMenuDropdown, AppThemeMode } from '../common/SettingsMenuDropdown';
 import {
   Folder,
   FolderOpen,
@@ -23,7 +22,14 @@ import {
   Layers,
   Calendar,
   StickyNote,
+  Shield,
+  Users,
+  MessageCircle,
 } from 'lucide-react';
+import { fetchBridge } from '../../services/httpBridge';
+import { GroupAccessModal } from './GroupAccessModal';
+import { useChatNotifications } from '../../hooks/useChatNotifications';
+import { isElectron, isTauri } from '../../utils/platformBridge';
 
 interface InfiniteTreeSidebarProps {
   tree: TreeItem[];
@@ -48,16 +54,9 @@ interface InfiniteTreeSidebarProps {
   onAddFolder: (parentId: string | null, title?: string) => void;
   onDeleteTreeItem: (itemId: string) => void;
   onDuplicateTable: (tableId: string) => void;
+  onUpdateTable?: (table: TableDocument) => void;
   useServer?: boolean;
-  onOpenServerSettings?: () => void;
   onOpenDataPortability?: () => void;
-  theme: AppThemeMode;
-  onSelectTheme: (theme: AppThemeMode) => void;
-  onOpenSpeedSettings: () => void;
-  zoomLevel?: number;
-  onChangeZoom?: (newZoom: number) => void;
-  aiEnabled: boolean;
-  onToggleAi: (enabled: boolean) => void;
 }
 
 export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
@@ -83,16 +82,9 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   onAddFolder,
   onDeleteTreeItem,
   onDuplicateTable,
+  onUpdateTable,
   useServer,
-  onOpenServerSettings,
   onOpenDataPortability,
-  theme,
-  onSelectTheme,
-  onOpenSpeedSettings,
-  zoomLevel,
-  onChangeZoom,
-  aiEnabled,
-  onToggleAi,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
@@ -102,6 +94,17 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   const exchange = useItemExchange(tree, documents, tables, onImportSharedItem, onImportSharedFolder);
   const [moveMenuOpenId, setMoveMenuOpenId] = useState<string | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [groupModalTableId, setGroupModalTableId] = useState<string | null>(null);
+  useChatNotifications(useServer ? sessionUserId : '__local__');
+  useEffect(() => {
+    let active = true;
+    setSessionUserId(null);
+    if (useServer) fetchBridge('/api/auth/me').then(response => response.ok ? response.json() : null)
+      .then(result => { if (active) setSessionUserId(result?.user?.id || null); }).catch(() => {});
+    return () => { active = false; };
+  }, [useServer]);
   useEffect(() => {
     const close = (event: PointerEvent) => { if (!(event.target as Element)?.closest('[data-note-context]')) setMenuOpenId(null); };
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setMenuOpenId(null); };
@@ -478,6 +481,8 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
                   {item.title}
                 </span>
               )}
+              {item.type === 'table' && tables[item.id]?.visibility === 'private' && <span title="나와 관리자만 볼 수 있는 보드"><Shield className="h-3 w-3 shrink-0 text-amber-600" aria-label="개인 보드" /></span>}
+              {item.type === 'table' && tables[item.id]?.visibility === 'group' && <span title="지정된 그룹만 볼 수 있는 보드"><Users className="h-3 w-3 shrink-0 text-indigo-600" aria-label="그룹 전용 보드" /></span>}
             </div>
 
             {/* Quick Hover Action Menu */}
@@ -616,6 +621,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
 
                     {isTable && (
                       <>
+                        {useServer && sessionUserId && tables[item.id] && <button onClick={() => { setGroupModalTableId(item.id); setGroupModalOpen(true); setMenuOpenId(null); }} className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-stone-700 dark:text-stone-300 font-medium"><Shield className="w-3.5 h-3.5 text-indigo-600" />공유 및 그룹 권한</button>}
                         {onCreateNoteFromTable && <button onClick={() => { onCreateNoteFromTable(item.id); setMenuOpenId(null); }} className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-700 dark:text-stone-300 font-medium"><FileText className="w-3.5 h-3.5 text-amber-500" />표 데이터를 노트로 복사</button>}
                         <button
                           onClick={() => {
@@ -692,7 +698,8 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     return false;
   };
 
-  const totalTablesCount = tree.filter((t) => t.type === 'table').length;
+  // The sidebar badge represents all visible workspace entries, including folders and WonNote documents.
+  const totalWorkspaceItemsCount = tree.length;
 
   return (
     <aside
@@ -720,26 +727,17 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
               <h1 className="text-sm font-bold text-stone-900 dark:text-[#f5f5f5] tracking-tight">
                 WON 노트
               </h1>
-              <span className="text-[10px] px-1.5 py-0.2 font-semibold rounded-md bg-amber-200/80 dark:bg-amber-950 text-amber-900 dark:text-amber-300">
-                WonNote
-              </span>
             </div>
           </div>
         </div>
 
-        <SettingsMenuDropdown
-          theme={theme}
-          onSelectTheme={onSelectTheme}
-          onOpenSpeedSettings={onOpenSpeedSettings}
-          onOpenServerSettings={onOpenServerSettings}
-          useServer={useServer}
-          zoomLevel={zoomLevel}
-          onChangeZoom={onChangeZoom}
-          aiEnabled={aiEnabled}
-          onToggleAi={onToggleAi}
-          iconOnly
-        />
+        <div className="flex items-center gap-1">
+          {useServer && sessionUserId && <button type="button" onClick={() => { setGroupModalTableId(null); setGroupModalOpen(true); }} title="그룹 및 팀 권한" aria-label="그룹 및 팀 권한" className="rounded-lg p-2 text-stone-500 hover:bg-stone-100 hover:text-indigo-600 dark:hover:bg-stone-800"><Users size={17}/></button>}
+          {(!useServer || sessionUserId) && <button type="button" onClick={() => { const chatUrl = new URL(window.location.href); chatUrl.search = ''; chatUrl.searchParams.set('chatWindow', '1'); chatUrl.searchParams.set('chatMode', useServer ? 'server' : 'client'); const webTab = !isElectron() && !isTauri() && (window.location.protocol === 'http:' || window.location.protocol === 'https:'); if (webTab) window.open(chatUrl.href, '_blank'); else window.open(chatUrl.href, 'wonbee-chat', 'popup,width=1120,height=780,resizable=yes,scrollbars=yes'); }} title="채팅 탭 열기" aria-label="채팅 탭 열기" className="rounded-lg p-2 text-stone-500 hover:bg-stone-100 hover:text-indigo-600 dark:hover:bg-stone-800"><MessageCircle size={17}/></button>}
+        </div>
       </div>
+
+      {useServer && sessionUserId && <GroupAccessModal isOpen={groupModalOpen} onClose={() => setGroupModalOpen(false)} currentUserId={sessionUserId} table={groupModalTableId ? tables[groupModalTableId] || null : null} onUpdateTable={onUpdateTable} />}
 
       {/* Quick Search Bar */}
       <div className="p-3 pb-2">
@@ -856,7 +854,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
         <div className="flex items-center justify-between px-2 py-1 text-[11px] font-bold tracking-wider text-stone-400 dark:text-[#888888] uppercase">
           <span>WORKSPACES</span>
           <span className="font-mono text-[10px] text-amber-600 dark:text-amber-400 font-bold px-1.5 py-0.2 rounded bg-amber-500/10">
-            {totalTablesCount}
+            {totalWorkspaceItemsCount}
           </span>
         </div>
 

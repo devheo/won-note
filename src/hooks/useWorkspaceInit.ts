@@ -5,6 +5,7 @@ import { ensureWorkspaceTree } from '../utils/workspaceTreeUtils';
 import { ensureUpdateDateColumnInTable } from '../utils/dateColumnUtils';
 import { wonbeeDexieDB } from '../services/storage/dexieDb';
 import { IWorkspaceRepository } from '../types';
+import { STORAGE_KEYS } from '../constants/storageKeys';
 
 interface UseWorkspaceInitOptions {
   repository: IWorkspaceRepository;
@@ -45,7 +46,11 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
       if (!isSilent) {
         try {
           const cached = await wonbeeDexieDB.loadWorkspace();
-          if (cached && Object.keys(cached.tables).length > 0) {
+          if (cached && (
+            Object.keys(cached.tables).length > 0 ||
+            cached.tree.length > 0 ||
+            Object.keys(cached.documents || {}).length > 0
+          )) {
             setWorkspace(cached);
             setIsLoading(false);
           } else {
@@ -60,7 +65,28 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
         const rawData = await repository.loadWorkspace(signal);
         if (signal?.aborted) return;
 
+        const noteTitleMismatchIds = Object.entries(rawData.documents || {})
+          .filter(([id, note]) => {
+            const treeItem = (rawData.tree || []).find(item => item.type === 'document' && (
+              item.id === id || item.id.replace(/_/g, '-') === id.replace(/_/g, '-')
+            ));
+            return Boolean(treeItem && treeItem.title.trim() !== (note.title || '').trim());
+          })
+          .map(([id]) => id);
         const data = ensureWorkspaceTree(rawData);
+
+        // Persist title repairs once so a stale note tree node does not return on
+        // the next reload after the UI has reconciled it in memory.
+        if (noteTitleMismatchIds.length) {
+          try {
+            await Promise.all([
+              repository.saveTree(data.tree),
+              ...noteTitleMismatchIds.map(id => data.documents?.[id] ? repository.saveDocument(data.documents[id]) : Promise.resolve()),
+            ]);
+          } catch (error) {
+            console.warn('[Workspace] Failed to persist repaired note titles:', error);
+          }
+        }
 
         // Sanitize legacy greeting text if present
         let needsSave = false;
@@ -105,7 +131,7 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
         }
 
         // Active table restoration with guaranteed fallback
-        const savedTableId = localStorage.getItem('wonbee_active_table_id');
+        const savedTableId = localStorage.getItem(STORAGE_KEYS.activeTable);
         const tableKeys = Object.keys(finalData.tables);
 
         let targetTableId: string | null = null;
@@ -117,7 +143,7 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
 
         if (targetTableId) {
           setActiveTableId(targetTableId);
-          localStorage.setItem('wonbee_active_table_id', targetTableId);
+          localStorage.setItem(STORAGE_KEYS.activeTable, targetTableId);
         } else {
           setActiveTableId(null);
         }

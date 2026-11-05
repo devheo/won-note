@@ -1,3 +1,5 @@
+import { STORAGE_KEYS } from '../constants/storageKeys';
+
 /**
  * Unified Platform Bridge Detection Helper
  * Supports 3 Execution Targets:
@@ -6,7 +8,11 @@
  * 3. 'tauri_app': Tauri 2.0 Native Desktop App Mode
  */
 
-export type RuntimeMode = 'server' | 'client_web' | 'tauri_app';
+export type RuntimeMode = 'server' | 'client_web' | 'tauri_app' | 'electron_app';
+
+export function isElectron(): boolean {
+  return typeof window !== 'undefined' && Boolean((window as any).wonNoteElectron?.isElectron);
+}
 
 /**
  * Detects if the application is running inside a Tauri 2.0 Desktop Container.
@@ -15,7 +21,6 @@ export function isTauri(): boolean {
   if (typeof window === 'undefined') return false;
   return Boolean((window as any).__TAURI_INTERNALS__ || (window as any).__TAURI__);
 }
-
 /**
  * Returns the active runtime execution target.
  */
@@ -23,8 +28,11 @@ export function getRuntimeMode(): RuntimeMode {
   if (isTauri()) {
     return 'tauri_app';
   }
+  if (isElectron()) {
+    return 'electron_app';
+  }
   if (typeof window !== 'undefined') {
-    const savedUseServer = localStorage.getItem('wonbee_use_server');
+    const savedUseServer = localStorage.getItem(STORAGE_KEYS.useServer);
     if (savedUseServer === 'true') {
       return 'server';
     }
@@ -47,7 +55,7 @@ export function getPlatformInfo(): {
   const isWindows = /Windows/i.test(ua);
 
   return {
-    isDesktop: isTauri(),
+    isDesktop: isTauri() || isElectron(),
     runtimeMode: getRuntimeMode(),
     userAgent: ua,
     isMac,

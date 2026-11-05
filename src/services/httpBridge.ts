@@ -1,4 +1,5 @@
 import { isTauri } from '../utils/platformBridge';
+import { STORAGE_KEYS } from '../constants/storageKeys';
 
 /**
  * Resolves relative API paths (/api/...) into absolute URLs when running under Tauri Desktop Mode.
@@ -13,7 +14,7 @@ export function resolveApiUrl(url: string): string {
   let domain = '';
 
   // 1. Check if user configured server URL in localStorage (e.g. http://10.131.171.98:3000/api)
-  const savedUrl = typeof localStorage !== 'undefined' ? localStorage.getItem('wonbee_server_url') : null;
+  const savedUrl = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.serverUrl) : null;
   if (savedUrl && (savedUrl.startsWith('http://') || savedUrl.startsWith('https://'))) {
     domain = savedUrl.replace(/\/api\/?$/, '').replace(/\/+$/, '');
   }
@@ -51,8 +52,15 @@ export async function fetchBridge(url: string, options?: RequestInit): Promise<R
     }
   }
 
-  // Standard Web Fetch
-  return window.fetch(targetUrl, options);
+  // Include the HttpOnly session only for this app or its configured server API.
+  let credentials = options?.credentials || 'same-origin';
+  try {
+    const targetOrigin = new URL(targetUrl, window.location.href).origin;
+    const configured = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEYS.serverUrl) : null;
+    const configuredOrigin = configured ? new URL(configured, window.location.href).origin : window.location.origin;
+    if (targetOrigin === window.location.origin || targetOrigin === configuredOrigin) credentials = options?.credentials || 'include';
+  } catch { /* retain the same-origin default for malformed or non-web URLs */ }
+  return window.fetch(targetUrl, { ...options, credentials });
 }
 
 /**

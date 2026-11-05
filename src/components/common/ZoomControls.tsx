@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { ZoomIn, ZoomOut, RotateCcw, Maximize } from 'lucide-react';
+import { ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
+import { ZOOM_LIMITS } from '../../constants/limits';
 
 interface ZoomControlsProps {
   zoom: number; // e.g. 100 = 100%
@@ -10,11 +11,11 @@ export const ZoomControls: React.FC<ZoomControlsProps> = ({ zoom, onChangeZoom }
   const [isOpen, setIsOpen] = useState(false);
 
   const handleZoomIn = () => {
-    onChangeZoom(Math.min(175, Math.round(zoom + 10)));
+    onChangeZoom(Math.min(ZOOM_LIMITS.max, Math.round(zoom + ZOOM_LIMITS.step)));
   };
 
   const handleZoomOut = () => {
-    onChangeZoom(Math.max(60, Math.round(zoom - 10)));
+    onChangeZoom(Math.max(ZOOM_LIMITS.min, Math.round(zoom - ZOOM_LIMITS.step)));
   };
 
   const handleReset = () => {
@@ -29,7 +30,7 @@ export const ZoomControls: React.FC<ZoomControlsProps> = ({ zoom, onChangeZoom }
       {/* Zoom Out Button */}
       <button
         onClick={handleZoomOut}
-        disabled={zoom <= 60}
+        disabled={zoom <= ZOOM_LIMITS.min}
         className="w-7 h-7 rounded-full flex items-center justify-center text-stone-600 hover:text-stone-900 dark:text-stone-300 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-white/20 disabled:opacity-30 transition-colors"
         title="화면 축소 (Zoom Out -10%)"
       >
@@ -48,7 +49,7 @@ export const ZoomControls: React.FC<ZoomControlsProps> = ({ zoom, onChangeZoom }
       {/* Zoom In Button */}
       <button
         onClick={handleZoomIn}
-        disabled={zoom >= 175}
+        disabled={zoom >= ZOOM_LIMITS.max}
         className="w-7 h-7 rounded-full flex items-center justify-center text-stone-600 hover:text-stone-900 dark:text-stone-300 dark:hover:text-white hover:bg-stone-100 dark:hover:bg-white/20 disabled:opacity-30 transition-colors"
         title="화면 확대 (Zoom In +10%)"
       >

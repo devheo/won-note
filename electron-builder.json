@@ -1,0 +1,32 @@
+{
+  "appId": "com.wonnote.desktop",
+  "productName": "WON 노트 (WonNote)",
+  "electronVersion": "45.2.3",
+  "asar": true,
+  "directories": {
+    "output": "../release/electron"
+  },
+  "files": [
+    "package.json",
+    "electron/main.cjs",
+    "electron/preload.cjs",
+    "dist/index.html",
+    "assets/app.ico"
+  ],
+  "win": {
+    "icon": "assets/app.ico",
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      }
+    ],
+    "artifactName": "WonNote-${version}-Setup.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true
+  }
+}

@@ -2,6 +2,9 @@ import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { ReactNodeViewRenderer, useEditor, EditorContent } from '@tiptap/react';
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
 import { TextSelection, NodeSelection } from '@tiptap/pm/state';
+import * as Y from 'yjs';
+import Collaboration from '@tiptap/extension-collaboration';
+import { WebsocketProvider } from 'y-websocket';
 import StarterKit from '@tiptap/starter-kit';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
 import { createLowlight, common } from 'lowlight';
@@ -23,6 +26,12 @@ import Gapcursor from '@tiptap/extension-gapcursor';
 import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
 import { StickerExtension } from './StickerExtension';
+import { CommentExtension } from './CommentExtension';
+import { useYjsComments } from './useYjsComments';
+import { usePersistedYDoc } from '../../hooks/usePersistedYDoc';
+import { useDocumentHistory } from '../../hooks/useDocumentHistory';
+import { DocumentHistoryPanel } from './DocumentHistoryPanel';
+import { selectCommentAnchorAt } from '../../utils/commentSelection';
 import { CodeBlockComponent } from './CodeBlockComponent';
 import { ImageComponent } from './ImageComponent';
 import { fetchBridge, resolveApiUrl } from '../../services/httpBridge';
@@ -52,8 +61,11 @@ import {
   MarkdownLanguageTemplate,
 } from '../../utils/markdownHelper';
 import { analyzeContent } from '../../utils/contentParser';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
 import {
   X,
+  MessageSquare,
+  Clock3,
   Bold,
   Italic,
   Strikethrough,
@@ -326,8 +338,8 @@ function sanitizeExcelTableHtml(htmlData: string): string {
 }
 
 /**
- * Saves image asset to Dexie offline or uploads it to the shared /api/assets store in server mode.
- * Prevents raw 100MB+ Base64 strings from polluting note database fields.
+ * Saves the original image bytes to Dexie or uploads them directly to the shared asset store.
+ * This avoids lossy resizing/re-encoding and the extra memory used by Base64 strings.
  */
 async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promise<string> {
   const mimeType = file.type || 'image/png';
@@ -343,16 +355,10 @@ async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promis
 
   if (isServerMode) {
     try {
-      const { dataUrl } = await compressAndResizeImage(file);
-      const res = await fetchBridge('/api/assets', {
+      const res = await fetchBridge(`/api/assets?assetId=${encodeURIComponent(assetId)}&filename=${encodeURIComponent(filename)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          assetId,
-          filename,
-          blobBase64: dataUrl,
-          mimeType,
-        }),
+        headers: { 'Content-Type': mimeType },
+        body: file,
       });
       if (res.ok) {
         const json = await res.json();
@@ -365,13 +371,9 @@ async function saveOrUploadImageAsset(file: File, isServerMode: boolean): Promis
   }
 
   // Offline or Server Fallback -> Save to Dexie assets store as binary Blob
-  const { dataUrl } = await compressAndResizeImage(file);
-  const response = await fetch(dataUrl);
-  const blob = await response.blob();
-
   await wonbeeDexieDB.saveAsset({
     id: assetId,
-    blob,
+    blob: file,
     filename,
     mime_type: mimeType,
     created_at: Date.now(),
@@ -1089,6 +1091,16 @@ const CustomImage = Image.extend({
   inline: true,
   group: 'inline',
   draggable: true,
+  // Asset-backed images are serialized with data-asset-src instead of src so the
+  // browser does not try to load the custom asset:// protocol directly. The base
+  // Image extension only parses img[src], which silently drops these images when
+  // saved HTML is loaded back into the editor.
+  parseHTML() {
+    return [
+      { tag: 'img[data-asset-src]' },
+      ...(this.parent?.() || []),
+    ];
+  },
   addAttributes() {
     return {
       ...this.parent?.(),
@@ -1137,6 +1149,8 @@ interface RichEditorModalProps {
   isOpen: boolean;
   onClose: () => void;
   row: TableRowType | null;
+  tableId?: string;
+  useServerMode?: boolean;
   columns: TableColumn[];
   allRows?: TableRowType[];
   tableName: string;
@@ -1159,6 +1173,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   isOpen,
   onClose,
   row,
+  tableId = 'workspace-table',
+  useServerMode = false,
   columns,
   allRows = [],
   tableName,
@@ -1182,6 +1198,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     columns.forEach((col) => {
       if (sanitized[col.id] !== undefined && sanitized[col.id] !== null) {
         const val = sanitized[col.id];
+        // Rich text is TipTap HTML and must remain byte-for-byte intact when a row is opened.
+        if (col.type === 'richText') return;
         if (typeof val === 'string' && val.includes('<') && val.includes('>')) {
           const sample = val.length > 8000 ? val.slice(0, 8000) : val;
           const isComplex =
@@ -1362,6 +1380,21 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   const [selectedTargetId, setSelectedTargetId] = useState<string>(() => resolveTargetId(initialTargetId));
   const selectedTargetIdRef = useRef<string>(selectedTargetId);
   selectedTargetIdRef.current = selectedTargetId;
+  const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
+  const [isCommentPanelOpen, setIsCommentPanelOpen] = useState(false);
+  const [commentDraft, setCommentDraft] = useState('');
+  const [commentComposerOpen, setCommentComposerOpen] = useState(false);
+  const collaborationUrl = useServerMode ? import.meta.env.VITE_YJS_WS_URL : undefined;
+  const fallbackCommentDoc = useMemo(() => new Y.Doc(), []);
+  const commentCollaboration = useMemo(() => {
+    if (!row?.id || !selectedTargetId) return null;
+    const ydoc = new Y.Doc();
+    const room = `wonnote-table-${tableId}-row-${row.id}-field-${selectedTargetId}`;
+    const provider = collaborationUrl ? new WebsocketProvider(collaborationUrl, room, ydoc) : null;
+    return { ydoc, provider };
+  }, [collaborationUrl, tableId, row?.id, selectedTargetId]);
+  const commentDoc = commentCollaboration?.ydoc ?? fallbackCommentDoc;
+  const ydocReady = usePersistedYDoc(commentDoc, `table:${tableId}:row:${row?.id}:field:${selectedTargetId}`);
 
   // Horizontal scroll state & controls for '서식 편집 대상' tabs
   const targetTabsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -1588,7 +1621,12 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         heading: { levels: [1, 2, 3] },
         codeBlock: false,
         gapcursor: false,
+        undoRedo: false,
       }),
+      ...(commentCollaboration ? [
+        Collaboration.configure({ document: commentCollaboration.ydoc, field: 'prosemirror' }),
+        CommentExtension.configure({ onCommentClick: setActiveCommentId }),
+      ] : []),
       CodeBlockLowlight.extend({
         draggable: true,
         selectable: true,
@@ -1692,6 +1730,20 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       StickerExtension,
     ],
     content: '',
+    onCreate: ({ editor: activeEditor }) => {
+      if (!commentCollaboration) return;
+      const seed = () => {
+        if (!ydocReady || (commentCollaboration.provider && !commentCollaboration.provider.synced)) return;
+        const fragment = commentCollaboration.ydoc.getXmlFragment('prosemirror');
+        if (fragment.length > 0) return;
+        const raw = selectedTargetId === '__richContent__'
+          ? String(row?.richContent || '')
+          : String(row?.data?.[selectedTargetId] ?? '');
+        if (raw.trim()) activeEditor.commands.setContent(formatContentForEditor(raw), { emitUpdate: false });
+      };
+      if (!commentCollaboration.provider || commentCollaboration.provider.synced) seed();
+      else commentCollaboration.provider.once('sync', seed);
+    },
     editorProps: {
       attributes: {
         class:
@@ -1702,6 +1754,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           event.preventDefault();
           event.stopPropagation();
           const target = event.target as HTMLElement;
+          if (commentCollaboration) {
+            const position = view.posAtCoords({ left: event.clientX, top: event.clientY });
+            if (position) selectCommentAnchorAt(view, position.pos);
+            setIsCommentPanelOpen(true);
+          }
 
           // Dual check for table context: DOM element closest + ProseMirror depth check
           let inTableDom = false;
@@ -1921,7 +1978,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             if (file) {
               event.preventDefault();
               const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
-              const isServerMode = !isFileProtocol && localStorage.getItem('wonbee_use_server') !== 'false';
+              const isServerMode = !isFileProtocol && localStorage.getItem(STORAGE_KEYS.useServer) !== 'false';
               saveOrUploadImageAsset(file, isServerMode).then((imgSrc) => {
                 const targetEd = editorRef.current || (view as any).editor;
                 if (targetEd) {
@@ -2007,7 +2064,26 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         }
       }
     },
-  });
+  }, [row?.id, selectedTargetId, commentCollaboration, ydocReady]);
+
+  const commentsReady = Boolean(editor && ydocReady && (!commentCollaboration?.provider || commentCollaboration.provider.synced));
+  const { comments: rowComments, addComment: addRowComment, resolveComment: resolveRowComment, deleteComment: deleteRowComment, focusComment: focusRowComment } = useYjsComments(editor, commentDoc, commentsReady);
+  const historyItemKey = `table:${tableId}:row:${row?.id || 'unknown'}:field:${selectedTargetId}`;
+  const historyTitle = `${tableName} · ${richTargets.find(target => target.id === selectedTargetId)?.name || '내용'}`;
+  const tableHistory = useDocumentHistory(historyItemKey, historyTitle, editor?.getHTML() || '', useServerMode, tableId);
+  useEffect(() => {
+    if (rowComments.length > 0) setIsCommentPanelOpen(true);
+  }, [rowComments.length]);
+  useEffect(() => {
+    if (activeCommentId) focusRowComment(activeCommentId);
+  }, [activeCommentId, focusRowComment]);
+  useEffect(() => {
+    if (!commentCollaboration?.provider) return;
+    return () => {
+      commentCollaboration.provider?.destroy();
+      commentCollaboration.ydoc.destroy();
+    };
+  }, [commentCollaboration]);
 
   useEffect(() => {
     editorRef.current = editor;
@@ -2144,6 +2220,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         const colNum = lastNewlineIdx === -1 ? from + 1 : from - lastNewlineIdx;
 
         const selectedText = empty ? '' : state.doc.textBetween(from, to, '\n');
+        const fullText = state.doc.textBetween(0, state.doc.content.size, '\n');
         const encoder = new TextEncoder();
         const selectedBytes = encoder.encode(selectedText).length;
 
@@ -2163,6 +2240,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           selectedChars: selectedText.length,
           selectedBytes,
           totalBytes,
+          totalChars: fullText.length,
+          totalLines: fullText ? fullText.split('\n').length : 1,
           lastModifiedAt: row?.updatedAt || Date.now(),
         });
       });
@@ -2281,6 +2360,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     }
 
     if (editor && row && isOpen) {
+      if (commentCollaboration) {
+        if (!ydocReady) return;
+        setLoadingState(current => ({ ...current, isLoading: false, progress: 100, stage: 4, stageText: '댓글 동기화 문서 연결됨' }));
+        return;
+      }
       const targetId = resolveTargetId(initialTargetId);
       setSelectedTargetId(targetId);
       selectedTargetIdRef.current = targetId;
@@ -2297,7 +2381,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         loadContentWithProgress(targetId, rawContent);
       }
     }
-  }, [row?.id, isOpen, initialTargetId, editor, resolveTargetId, loadContentWithProgress]);
+  }, [row?.id, isOpen, initialTargetId, editor, resolveTargetId, loadContentWithProgress, commentCollaboration, ydocReady]);
 
   // Switch target field
   const handleSwitchTarget = (targetId: string) => {
@@ -2307,7 +2391,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       hasLoadedRowKeyRef.current = `${row.id}_${targetId}`;
     }
 
-    if (editor) {
+    if (editor && !commentCollaboration) {
       const rawContent =
         targetId === '__richContent__'
           ? (richContentRef.current || '')
@@ -2797,6 +2881,12 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         }`}
         onClick={(e) => e.stopPropagation()}
       >
+        {commentCollaboration && <button type="button" title="댓글 패널" aria-label={`댓글 패널, ${rowComments.length}개`} onClick={() => setIsCommentPanelOpen(value => !value)} className="absolute right-3 top-3 z-40 inline-flex shrink-0 items-center gap-1.5 rounded-full border border-indigo-200 bg-white px-2.5 py-1.5 text-xs font-semibold text-indigo-700 shadow-sm dark:border-indigo-900 dark:bg-stone-800 dark:text-indigo-300"><MessageSquare className="h-3.5 w-3.5" /><span>댓글</span><span className="min-w-5 rounded-full bg-indigo-600 px-1.5 text-center text-[10px] leading-5 text-white">{rowComments.length}</span></button>}
+        {commentCollaboration && <aside className={`absolute inset-y-0 right-0 z-30 flex w-[min(22rem,92vw)] flex-col border-l border-stone-200 bg-white shadow-2xl transition-transform duration-200 dark:border-stone-700 dark:bg-stone-900 ${isCommentPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}>
+          <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-stone-700"><div><h2 className="text-sm font-bold text-stone-800 dark:text-stone-100">테이블 댓글</h2><p className="text-[11px] text-stone-500">{tableName} · {currentTargetName} · {rowComments.length}개 · {commentCollaboration.provider ? '서버 동기화' : '이 기기에 저장됨'}</p></div><button type="button" aria-label="댓글 패널 닫기" onClick={() => setIsCommentPanelOpen(false)} className="rounded-md p-1.5 text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800"><X size={16} /></button></div>
+          <div className="flex-1 space-y-2 overflow-y-auto p-3">{rowComments.map(comment => <article key={comment.id} className={`rounded-xl border p-3 text-xs ${activeCommentId === comment.id ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/30' : 'border-stone-200 dark:border-stone-700'}`}><button type="button" onClick={() => { setActiveCommentId(comment.id); focusRowComment(comment.id); }} className="w-full text-left"><div className="flex justify-between gap-2"><span className="font-semibold">{comment.author}</span><span className="text-[10px] text-stone-400">{new Date(comment.createdAt).toLocaleString()}</span></div><p className="my-2 whitespace-pre-wrap break-words">{comment.text}</p><span className="text-[10px] text-indigo-600">{comment.resolved ? '해결됨' : '위치로 이동'}</span></button><div className="mt-2 flex gap-3 border-t border-stone-200 pt-2 dark:border-stone-700"><button type="button" onClick={() => resolveRowComment(comment.id, !comment.resolved)} className="text-indigo-700 dark:text-indigo-300">{comment.resolved ? '다시 열기' : '해결'}</button><button type="button" onClick={() => deleteRowComment(comment.id)} className="text-rose-600">삭제</button></div></article>)}{rowComments.length === 0 && <p className="rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-500 dark:bg-stone-800">편집 영역에서 마우스 오른쪽 버튼을 눌러 현재 셀 위치에 댓글을 남기세요.</p>}</div>
+        </aside>}
+        {commentCollaboration && commentComposerOpen && <div className="absolute right-[min(22rem,92vw)] top-14 z-40 w-80 rounded-xl border border-indigo-200 bg-white p-3 shadow-2xl dark:border-indigo-900 dark:bg-stone-900"><div className="mb-2 flex items-center justify-between"><span className="text-xs font-bold">현재 위치에 댓글</span><button type="button" aria-label="댓글 작성 닫기" onClick={() => setCommentComposerOpen(false)}><X size={14} /></button></div><textarea autoFocus value={commentDraft} onChange={event => setCommentDraft(event.target.value)} onKeyDown={event => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { const id = addRowComment('사용자', commentDraft); if (id) setActiveCommentId(id); setCommentDraft(''); setCommentComposerOpen(false); } }} placeholder="댓글을 입력하세요" className="min-h-20 w-full rounded-lg border border-stone-200 bg-white p-2 text-xs dark:border-stone-700 dark:bg-stone-950" /><div className="mt-2 flex justify-end"><button type="button" disabled={!commentDraft.trim()} onClick={() => { const id = addRowComment('사용자', commentDraft); if (id) setActiveCommentId(id); setCommentDraft(''); setCommentComposerOpen(false); }} className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">댓글 등록</button></div></div>}
         {/* Toast Notification */}
         {toastMessage && (
           <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50 bg-stone-900/90 dark:bg-stone-100 text-white dark:text-stone-900 px-4 py-2 rounded-xl text-xs font-semibold shadow-xl flex items-center gap-2 backdrop-blur-sm animate-in fade-in zoom-in-95 duration-150 pointer-events-none">
@@ -3632,6 +3722,8 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
                 TipTap
               </span>
             </div>
+            {commentCollaboration && <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => { setContextMenu(null); setCommentComposerOpen(true); setIsCommentPanelOpen(true); }} className="mb-2 flex w-full items-center gap-2 rounded-xl bg-indigo-50 px-3 py-2 text-left font-semibold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300"><MessageSquare className="h-4 w-4" />여기에 댓글 추가</button>}
+            <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => { setContextMenu(null); void tableHistory.recordNow(editor?.getHTML() || ''); tableHistory.setIsOpen(true); }} className="mb-2 flex w-full items-center gap-2 rounded-xl bg-stone-100 px-3 py-2 text-left font-semibold text-stone-700 hover:bg-stone-200 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700"><Clock3 className="h-4 w-4" />문서 이력 보기</button>
 
             <div className="space-y-1">
               {/* Section 1: Clipboard Operations */}
@@ -3926,6 +4018,12 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             </div>
           </div>
         )}
+        {tableHistory.isOpen && <DocumentHistoryPanel {...tableHistory.panelProps} currentContent={editor?.getHTML() || ''} onClose={() => tableHistory.setIsOpen(false)} onRestore={content => {
+          void tableHistory.recordNow(editor?.getHTML() || '');
+          editor?.commands.setContent(content);
+          setHasUnsavedChanges(true);
+          tableHistory.setIsOpen(false);
+        }} />}
       </div>
     </div>
   );

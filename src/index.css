@@ -2168,3 +2168,26 @@ ul[data-type="taskList"] li > div {
 
 
 
+.comment-highlight {
+  background: rgba(250, 204, 21, 0.28);
+  border-bottom: 2px solid rgb(217, 119, 6);
+  border-radius: 2px;
+  box-shadow: inset 0 -0.35em rgba(250, 204, 21, 0.12);
+  cursor: pointer;
+  scroll-margin-block: 40vh;
+}
+
+.comment-highlight::after {
+  content: '💬';
+  display: inline-block;
+  margin-inline-start: 0.15em;
+  font-size: 0.72em;
+  line-height: 1;
+  vertical-align: super;
+  text-decoration: none;
+}
+
+.comment-highlight:hover {
+  background: rgba(250, 204, 21, 0.45);
+}
+

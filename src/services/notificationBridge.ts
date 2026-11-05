@@ -1,4 +1,45 @@
-import { isTauri } from '../utils/platformBridge';
+import { isElectron, isTauri } from '../utils/platformBridge';
+
+export type AppNotificationPermission = 'granted' | 'denied' | 'default';
+
+export function isAppNotificationSupported(): boolean {
+  return isTauri() || isElectron() || (typeof window !== 'undefined' && 'Notification' in window);
+}
+
+export async function getAppNotificationPermission(): Promise<AppNotificationPermission> {
+  if (isElectron()) return 'granted';
+  if (isTauri()) {
+    try {
+      const notif = await import('@tauri-apps/plugin-notification');
+      return (await notif.isPermissionGranted()) ? 'granted' : 'default';
+    } catch (err) {
+      console.warn('[NotificationBridge] Could not read native notification permission:', err);
+      return 'denied';
+    }
+  }
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
+  return Notification.permission;
+}
+
+export async function requestAppNotificationPermission(): Promise<AppNotificationPermission> {
+  if (isElectron()) return 'granted';
+  if (isTauri()) {
+    try {
+      const notif = await import('@tauri-apps/plugin-notification');
+      return await notif.requestPermission();
+    } catch (err) {
+      console.warn('[NotificationBridge] Could not request native notification permission:', err);
+      return 'denied';
+    }
+  }
+  if (typeof window === 'undefined' || !('Notification' in window)) return 'denied';
+  try {
+    return await Notification.requestPermission();
+  } catch (err) {
+    console.error('[NotificationBridge] Could not request web notification permission:', err);
+    return 'denied';
+  }
+}
 
 export interface AppNotificationOptions {
   icon?: string;
@@ -17,17 +58,19 @@ export async function sendAppNotification(
   body: string = '',
   options: AppNotificationOptions = {}
 ): Promise<boolean> {
+  if (isElectron()) {
+    try {
+      await window.wonNoteElectron?.notify(title, body);
+      return true;
+    } catch (err) {
+      console.warn('[NotificationBridge] Electron notification failed:', err);
+      return false;
+    }
+  }
   if (isTauri()) {
     try {
-      const notif = await import(/* @vite-ignore */ '@tauri-apps/plugin-notification');
-      let granted = await notif.isPermissionGranted();
-
-      if (!granted) {
-        const permission = await notif.requestPermission();
-        granted = permission === 'granted';
-      }
-
-      if (granted) {
+      const notif = await import('@tauri-apps/plugin-notification');
+      if (await notif.isPermissionGranted()) {
         notif.sendNotification({
           title,
           body,

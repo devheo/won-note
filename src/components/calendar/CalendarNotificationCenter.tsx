@@ -14,10 +14,14 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { CalendarEvent } from '../../types';
+import { isElectron, isTauri } from '../../utils/platformBridge';
 import {
-  isBrowserNotificationSupported,
-  getBrowserNotificationPermission,
-  requestBrowserNotificationPermission,
+  AppNotificationPermission,
+  getAppNotificationPermission,
+  isAppNotificationSupported,
+  requestAppNotificationPermission,
+} from '../../services/notificationBridge';
+import {
   playNotificationChime,
   getReminderOffsetLabel,
 } from '../../utils/calendarNotification';
@@ -42,14 +46,14 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
   onOpenEvent,
   onSnoozeEvent,
 }) => {
-  const [permission, setPermission] = useState<NotificationPermission>(getBrowserNotificationPermission());
+  const [permission, setPermission] = useState<AppNotificationPermission>('default');
   const [showDeniedGuide, setShowDeniedGuide] = useState<boolean>(false);
   const [guideBrowserTab, setGuideBrowserTab] = useState<'chrome' | 'edge' | 'safari'>('chrome');
   const [guidePathMode, setGuidePathMode] = useState<'addressBar' | 'settingsMenu'>('addressBar');
 
   useEffect(() => {
     if (isOpen) {
-      setPermission(getBrowserNotificationPermission());
+      void getAppNotificationPermission().then(setPermission);
       setShowDeniedGuide(false);
     }
   }, [isOpen]);
@@ -57,7 +61,7 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
   if (!isOpen) return null;
 
   const handleRequestPermission = async () => {
-    const res = await requestBrowserNotificationPermission();
+    const res = await requestAppNotificationPermission();
     setPermission(res);
   };
 
@@ -103,8 +107,13 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
 
         {/* Global Alert Controls */}
         <div className="p-4 border-b border-stone-100 dark:border-[#2b2b2b] bg-stone-50/40 dark:bg-[#222222] space-y-2.5 text-xs">
-          {/* Browser Desktop Notification Status */}
-          {isBrowserNotificationSupported() && (
+          {(isTauri() || isElectron()) && (
+            <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-[10px] leading-relaxed text-amber-800 dark:text-amber-300">
+              창 닫기는 트레이로 숨기는 동작입니다. 트레이 메뉴에서 앱을 종료하면 예약 알림도 중지됩니다.
+            </p>
+          )}
+          {/* Native OS / browser notification permission */}
+          {isAppNotificationSupported() && (
             <div className="flex items-center justify-between p-2.5 rounded-xl bg-white dark:bg-[#2a2a2a] border border-stone-200/80 dark:border-[#383838]">
               <div className="flex items-center gap-2">
                 {permission === 'granted' ? (
@@ -116,11 +125,11 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
                 )}
                 <div>
                   <span className="font-semibold text-stone-800 dark:text-stone-200 block text-[11px]">
-                    브라우저 데스크톱 알림
+                    {isTauri() || isElectron() ? 'OS 데스크톱 알림' : '브라우저 데스크톱 알림'}
                   </span>
                   <span className="text-[10px] text-stone-500 dark:text-stone-400">
                     {permission === 'granted'
-                      ? '활성화됨 (백그라운드에서도 수신)'
+                      ? isTauri() || isElectron() ? '창을 닫아도 트레이에서 일정 알림 계속 수신' : '앱이 열려 있거나 백그라운드일 때 알림 수신'
                       : permission === 'denied'
                       ? '브라우저 보안 설정으로 차단됨'
                       : '권한 승인 필요'}
@@ -128,7 +137,7 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
                 </div>
               </div>
 
-              {permission === 'denied' ? (
+              {permission === 'denied' && !isTauri() && !isElectron() ? (
                 <button
                   type="button"
                   onClick={() => setShowDeniedGuide(true)}
@@ -142,7 +151,7 @@ export const CalendarNotificationCenter: React.FC<CalendarNotificationCenterProp
                   onClick={handleRequestPermission}
                   className="px-2.5 py-1 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-lg transition-colors shadow-xs cursor-pointer shrink-0"
                 >
-                  허용하기
+                  OS 알림 허용
                 </button>
               ) : null}
             </div>

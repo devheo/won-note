@@ -17,7 +17,7 @@ export interface BoardNoteLayout {
   updatedAt: number;
 }
 
-const STORAGE_KEY_PREFIX = 'wonbee_memo_board_layout_';
+const STORAGE_KEY_PREFIX = STORAGE_KEY_PREFIXES.memoLayoutByTable;
 
 export const boardLayoutStore = {
   /**
@@ -129,3 +129,4 @@ export const boardLayoutStore = {
     return defaultLayout;
   },
 };
+import { STORAGE_KEY_PREFIXES } from '../../constants/storageKeys';

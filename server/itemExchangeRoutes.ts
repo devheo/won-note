@@ -1,11 +1,13 @@
 import express from 'express';
-import { getWorkspaceData, getTable, getCalendarEvents, getRowImage, importSharedItem, getSharedLayouts, saveWorkspaceData, saveImageAsset, saveCalendarEvent, saveSharedLayouts } from './db';
-import { packItem, unpackItem, materializeItem, unpackFolder } from '../src/utils/itemExchange';
+import { getWorkspaceData, getWorkspaceDataForUser, getTableForUser, getCalendarEvents, getRowImageForUser, importSharedItem, getSharedLayouts, saveWorkspaceData, saveImageAsset, saveCalendarEvent, saveSharedLayouts } from './db';
+import { packItem, unpackItem, materializeItem, unpackFolder, sanitizeSharedFolderHtml } from '../src/utils/itemExchange';
+import { sanitizeExchangeHtml } from './exchangeHtml';
+import { SERVER_CONFIG } from './constants';
 
 export function itemExchangeRoutes(onImport: (id: string) => void) {
   const router = express.Router();
-  router.get('/', (_req, res) => {
-    const ws = getWorkspaceData();
+  router.get('/', (req, res) => {
+    const ws = getWorkspaceDataForUser(req.authUser?.id, req.authUser?.role);
     res.json(
       ws.tree
         .filter((item) => item.type === 'document' || item.type === 'table')
@@ -14,9 +16,9 @@ export function itemExchangeRoutes(onImport: (id: string) => void) {
   });
   router.get('/:id', async (req, res) => {
     try {
-      const ws = getWorkspaceData(),
+      const ws = getWorkspaceDataForUser(req.authUser?.id, req.authUser?.role),
         tree = ws.tree.find((item) => item.id === req.params.id);
-      const item = ws.documents?.[req.params.id] || getTable(req.params.id);
+      const item = ws.documents?.[req.params.id] || getTableForUser(req.params.id, req.authUser?.id, req.authUser?.role);
       if (!tree || !item || tree.type === 'folder') {
         res.status(404).json({ error: '전달할 노트 또는 테이블이 없습니다.' });
         return;
@@ -34,7 +36,7 @@ export function itemExchangeRoutes(onImport: (id: string) => void) {
             const match = ref.match(/^data:([^;]+);base64,(.+)$/)!;
             return { mime: match[1], bytes: Buffer.from(match[2], 'base64') };
           }
-          const asset = getRowImage(ref.split('/').pop()!);
+          const asset = getRowImageForUser(ref.split('/').pop()!, req.authUser?.id, req.authUser?.role);
           if (!asset) throw new Error('필요한 이미지가 서버 DB에 없습니다.');
           return { mime: asset.mimeType, bytes: asset.data };
         },
@@ -45,12 +47,12 @@ export function itemExchangeRoutes(onImport: (id: string) => void) {
       res.status(400).json({ error: (error as Error).message });
     }
   });
-  router.post('/', express.raw({ type: 'application/octet-stream', limit: '250mb' }), async (req, res) => {
+  router.post('/', express.raw({ type: 'application/octet-stream', limit: SERVER_CONFIG.exchangeBodyLimit }), async (req, res) => {
     try {
       if (!Buffer.isBuffer(req.body)) throw new Error('교환 파일을 바이너리로 보내주세요.');
       const shared = await unpackItem(req.body);
       const parent = typeof req.query.parent === 'string' && req.query.parent ? req.query.parent : null;
-      const received = materializeItem(shared, parent);
+      const received = materializeItem(shared, parent, sanitizeExchangeHtml);
       importSharedItem(received);
       onImport(received.item.id);
       res
@@ -68,21 +70,23 @@ export function itemExchangeRoutes(onImport: (id: string) => void) {
       res.status(400).json({ error: (error as Error).message });
     }
   });
-  router.post('/folders', express.raw({ type: 'application/octet-stream', limit: '250mb' }), async (req, res) => {
+  router.post('/folders', express.raw({ type: 'application/octet-stream', limit: SERVER_CONFIG.exchangeBodyLimit }), async (req, res) => {
     try {
       if (!Buffer.isBuffer(req.body)) throw new Error('폴더 교환 파일을 바이너리로 보내주세요.');
-      const folder = await unpackFolder(new Uint8Array(req.body));
+      const unpackedFolder = await unpackFolder(new Uint8Array(req.body));
+      const folder = sanitizeSharedFolderHtml(unpackedFolder, sanitizeExchangeHtml);
       const current = getWorkspaceData();
       const existingIds = new Set(current.tree.map((item) => item.id));
       if (folder.tree.some((item) => existingIds.has(item.id))) throw new Error('가져올 폴더 항목 ID가 기존 항목과 충돌합니다. 다시 내보낸 파일을 사용해주세요.');
       if (folder.root.parentId && !current.tree.some((item) => item.id === folder.root.parentId && item.type === 'folder'))
         throw new Error('가져올 대상 폴더가 존재하지 않습니다.');
-      for (const asset of folder.assets) saveImageAsset(asset.id, asset.mime, asset.bytes);
+      for (const asset of folder.assets) saveImageAsset(asset.id, asset.mime, asset.bytes, req.authUser?.id);
+      const importedTables = Object.fromEntries(Object.entries(folder.tables).map(([id, table]) => [id, { ...table, visibility: 'shared' as const, ownerId: undefined }]));
       saveWorkspaceData({
         ...current,
         tree: [...current.tree, ...folder.tree],
         documents: { ...(current.documents || {}), ...folder.documents },
-        tables: { ...current.tables, ...folder.tables },
+        tables: { ...current.tables, ...importedTables },
         exportedAt: Date.now(),
       });
       for (const [tableId, events] of Object.entries(folder.events)) for (const event of events) saveCalendarEvent(event, tableId, false);

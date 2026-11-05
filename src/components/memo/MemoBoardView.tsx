@@ -86,6 +86,8 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
 
     const jsonStr = JSON.stringify(table);
     const totalBytes = new TextEncoder().encode(jsonStr).length;
+    const totalChars = jsonStr.length;
+    const totalLines = jsonStr ? jsonStr.split('\n').length : 1;
 
     if (activeMemoId) {
       const activeIdx = table.rows.findIndex((r) => r.id === activeMemoId);
@@ -99,6 +101,8 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
           tableName: table.title || '메모 보드',
           lastModifiedAt: activeRow.updatedAt || table.updatedAt || Date.now(),
           totalBytes,
+          totalChars,
+          totalLines,
         });
         return;
       }
@@ -113,6 +117,8 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
       tableName: table.title || '메모 보드',
       lastModifiedAt: table.updatedAt || Date.now(),
       totalBytes,
+      totalChars,
+      totalLines,
     });
   }, [table, activeMemoId, updateMetrics]);
 

@@ -7,6 +7,8 @@ export interface StatusBarMetrics {
   selectedBytes?: number;
   lastModifiedAt?: number | string | null;
   totalBytes?: number;
+  totalChars?: number;
+  totalLines?: number;
   tableName?: string;
   viewModeName?: string;
 }
@@ -53,6 +55,8 @@ export const GlobalStatusBar: React.FC<GlobalStatusBarProps> = memo(({ metrics }
         <span className="flex items-center gap-1 font-medium">
           <span>Ln {line}, Col {col}</span>
         </span>
+        <span className="text-stone-300 dark:text-stone-700">|</span>
+        <span title="전체 문서 길이">문서: {(metrics.totalChars ?? 0).toLocaleString()}자 · {(metrics.totalLines ?? 0).toLocaleString()}줄</span>
         <span className="text-stone-300 dark:text-stone-700">|</span>
         <span className="flex items-center gap-1">
           <span>Sel: {selectedChars.toLocaleString()} chars, {selectedBytes.toLocaleString()} bytes</span>

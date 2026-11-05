@@ -4,8 +4,9 @@
  */
 
 import { UserEnvData, RowDensity } from '../../types';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
 
-const ENV_STORAGE_KEY = 'wonbee_user_env';
+const ENV_STORAGE_KEY = STORAGE_KEYS.userEnv;
 
 export const DEFAULT_USER_ENV: UserEnvData = {
   version: '1.0.0',
@@ -48,8 +49,8 @@ class EnvService {
 
     // Migration fallback from older localStorage keys if present
     const legacyTheme = localStorage.getItem('wonbee_theme');
-    const legacyZoom = localStorage.getItem('wonbee_zoom_level');
-    const legacyTable = localStorage.getItem('wonbee_active_table_id');
+    const legacyZoom = localStorage.getItem(STORAGE_KEYS.zoomLevel);
+    const legacyTable = localStorage.getItem(STORAGE_KEYS.activeTable);
     const legacyDensity = localStorage.getItem('wonbee_row_density');
 
     let resolvedTheme: 'light' | 'material-light' | 'bootstrap-light' | 'warm-light' | 'dark-soft' | 'dark-warm' | 'dark-hard' | 'material-you' | 'bootstrap-dark' | 'material-design' = 'dark-soft';
@@ -100,8 +101,8 @@ class EnvService {
         localStorage.setItem(ENV_STORAGE_KEY, JSON.stringify(this.currentEnv));
         // Keep legacy keys in sync for compatibility
         if (this.currentEnv.theme) localStorage.setItem('wonbee_theme', this.currentEnv.theme);
-        if (this.currentEnv.zoomLevel) localStorage.setItem('wonbee_zoom_level', String(this.currentEnv.zoomLevel));
-        if (this.currentEnv.activeTableId) localStorage.setItem('wonbee_active_table_id', this.currentEnv.activeTableId);
+        if (this.currentEnv.zoomLevel) localStorage.setItem(STORAGE_KEYS.zoomLevel, String(this.currentEnv.zoomLevel));
+        if (this.currentEnv.activeTableId) localStorage.setItem(STORAGE_KEYS.activeTable, this.currentEnv.activeTableId);
         if (this.currentEnv.rowDensity) localStorage.setItem('wonbee_row_density', this.currentEnv.rowDensity);
       } catch (e) {
         console.error('Failed to save user_env to localStorage', e);

@@ -9,7 +9,9 @@ let workerUrl: string | undefined;
 const escape = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 
-export const MAX_PDF_BYTES = 250 * 1024 * 1024;
+import { FILE_LIMITS } from '../constants/limits';
+
+export const MAX_PDF_BYTES = FILE_LIMITS.pdfBytes;
 export type PdfImportMode = 'text-images' | 'text' | 'images';
 export interface PdfImportProgress {
   completed: number;
@@ -112,7 +114,7 @@ export async function openPdfImport(data: ArrayBuffer, signal?: AbortSignal) {
                 available -= blob.size;
                 const asset = await storeNoteImage(blob, `pdf-page-${number}.jpg`);
                 assetIds.push(asset.id);
-                imageHtml = `<p><em>원본 페이지 (이미지)</em></p><p><img src="${asset.url}" alt="PDF ${number}페이지 원본" loading="lazy"></p>`;
+                imageHtml = `<p><img src="${asset.url}" alt="PDF ${number}페이지 이미지" loading="lazy"></p>`;
               }
               let textHtml = '';
               if (mode !== 'images') {
@@ -142,7 +144,7 @@ export async function openPdfImport(data: ArrayBuffer, signal?: AbortSignal) {
                   .join('');
                 if (!textHtml) textHtml = '<p><em>추출 가능한 텍스트가 없습니다.</em></p>';
               }
-              pages.push(`<h1>PDF ${number}페이지</h1>${textHtml}${imageHtml}`);
+              pages.push(`<div data-pdf-page="${number}" data-pdf-total="${pdf.numPages}">${textHtml}${imageHtml}</div>`);
             } finally {
               page.cleanup();
               canvas.width = 0;

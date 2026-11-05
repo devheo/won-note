@@ -1,3 +1,5 @@
+import { STORAGE_KEYS } from '../constants/storageKeys';
+
 export interface PerformanceOptions {
   // 1. 셀별 이미지 자동 탐지 및 Base64 파싱 최적화
   // 전용 이미지 열이 아닌 일반 텍스트 셀에서는 무거운 이미지 감지 로직 제거
@@ -32,7 +34,7 @@ export const DEFAULT_PERFORMANCE_OPTIONS: PerformanceOptions = {
   primarySearchColId: null,
 };
 
-const STORAGE_KEY = 'wonbee_performance_options_v2';
+const STORAGE_KEY = STORAGE_KEYS.performanceOptions;
 
 export const loadPerformanceOptions = (): PerformanceOptions => {
   try {

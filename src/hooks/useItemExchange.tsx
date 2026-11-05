@@ -5,6 +5,7 @@ import { currentNoteContent } from '../services/noteEditorBridge';
 import { wonbeeDexieDB } from '../services/storage/dexieDb';
 import { noteImageDataUrl } from '../utils/noteImageAssets';
 import { fetchBridge } from '../services/httpBridge';
+import { STORAGE_KEYS, STORAGE_KEY_PREFIXES, storageKeyFor } from '../constants/storageKeys';
 
 export type ReceivedItem = ReturnType<typeof materializeItem>;
 const wonnoteFilename = (name: string) => `${name.trim().replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/[. ]+$/g, '').slice(0, 100) || 'WON 노트'}.wonnote`;
@@ -58,8 +59,8 @@ export function useItemExchange(
         const events: Record<string, any[]> = {}, layouts: Record<string, Record<string, unknown>> = {};
         for (const tableId of Object.keys(tables)) {
           events[tableId] = JSON.parse(localStorage.getItem(`wonbee_calendar_events_${tableId}`) || '[]');
-          layouts[tableId] = JSON.parse(localStorage.getItem(`wonbee_memo_board_layout_${tableId}`) || '{}');
-          if (localStorage.getItem('wonbee_use_server') !== 'false') {
+          layouts[tableId] = JSON.parse(localStorage.getItem(storageKeyFor(STORAGE_KEY_PREFIXES.memoLayoutByTable, tableId)) || '{}');
+          if (localStorage.getItem(STORAGE_KEYS.useServer) !== 'false') {
             const response = await fetchBridge(`/api/events?tableId=${encodeURIComponent(tableId)}`);
             if (!response.ok) throw new Error('폴더 안 테이블의 일정 정보를 읽을 수 없습니다.');
             events[tableId] = await response.json();
@@ -85,8 +86,8 @@ export function useItemExchange(
         layouts = {};
       if (table) {
         events = JSON.parse(localStorage.getItem(`wonbee_calendar_events_${itemId}`) || '[]');
-        layouts = JSON.parse(localStorage.getItem(`wonbee_memo_board_layout_${itemId}`) || '{}');
-        if (localStorage.getItem('wonbee_use_server') !== 'false') {
+        layouts = JSON.parse(localStorage.getItem(storageKeyFor(STORAGE_KEY_PREFIXES.memoLayoutByTable, itemId)) || '{}');
+        if (localStorage.getItem(STORAGE_KEYS.useServer) !== 'false') {
           const response = await fetchBridge(`/api/events?tableId=${encodeURIComponent(itemId)}`);
           if (!response.ok) throw new Error('테이블의 일정 정보를 읽을 수 없습니다.');
           events = await response.json();

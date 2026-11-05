@@ -16,6 +16,7 @@ declare module '@tauri-apps/plugin-fs' {
 
 declare module '@tauri-apps/api/core' {
   export function convertFileSrc(filePath: string, protocol?: string): string;
+  export function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
 }
 
 declare module '@tauri-apps/plugin-http' {
@@ -25,5 +26,5 @@ declare module '@tauri-apps/plugin-http' {
 declare module '@tauri-apps/plugin-notification' {
   export function isPermissionGranted(): Promise<boolean>;
   export function requestPermission(): Promise<'granted' | 'denied' | 'default'>;
-  export function sendNotification(options: { title: string; body?: string; icon?: string }): void;
+  export function sendNotification(options: { title: string; body?: string; icon?: string; sound?: string }): void;
 }

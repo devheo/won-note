@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { WonNoteDocument } from '../types';
 import { currentNoteContent, replaceNoteContent } from '../services/noteEditorBridge';
 import { fetchBridge } from '../services/httpBridge';
@@ -205,7 +206,7 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
           void load(file);
         }}
       />
-      {pdfPending && (
+      {pdfPending && createPortal(
         <div className="fixed inset-0 z-[11001] flex items-center justify-center bg-black/40 p-4">
           <div
             role="dialog"
@@ -282,7 +283,8 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
       {notice && (
         <div

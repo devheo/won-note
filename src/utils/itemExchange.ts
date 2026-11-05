@@ -1,8 +1,10 @@
 import JSZip from 'jszip';
-import sanitizeHtml from 'sanitize-html';
 import type { CalendarEvent, TableDocument, TreeItem, WonNoteDocument } from '../types';
 
-export const EXCHANGE_LIMIT = 250 * 1024 * 1024;
+import { FILE_LIMITS } from '../constants/limits';
+import { HTML_ALLOWED_ATTRIBUTES, HTML_ALLOWED_TAGS, HTML_ALLOWED_STYLE_VALUES } from '../constants/htmlSanitizer';
+
+export const EXCHANGE_LIMIT = FILE_LIMITS.exchangeBytes;
 export interface SharedAsset {
   id: string;
   mime: string;
@@ -74,64 +76,49 @@ function validate(item: any, kind: string) {
     }
   } else throw new Error('노트 또는 테이블만 전달할 수 있습니다.');
 }
-const cleanHtml = (html: string) =>
-  sanitizeHtml(html, {
-    allowedTags: [
-      'p',
-      'br',
-      'h1',
-      'h2',
-      'h3',
-      'h4',
-      'h5',
-      'h6',
-      'strong',
-      'em',
-      'b',
-      'i',
-      'u',
-      's',
-      'span',
-      'mark',
-      'div',
-      'blockquote',
-      'pre',
-      'code',
-      'ul',
-      'ol',
-      'li',
-      'hr',
-      'table',
-      'thead',
-      'tbody',
-      'tr',
-      'td',
-      'th',
-      'img',
-      'a',
-    ],
-    allowedAttributes: {
-      '*': ['class', 'style', 'data-type', 'data-checked'],
-      img: ['src', 'alt', 'width', 'height', 'data-width', 'data-layout'],
-      a: ['href', 'title', 'target', 'rel'],
-      td: ['colspan', 'rowspan', 'colwidth'],
-      th: ['colspan', 'rowspan', 'colwidth'],
-      code: ['class', 'data-language'],
-    },
-    allowedSchemes: ['https', 'http', 'mailto', 'asset', 'data'],
-    allowedSchemesByTag: { img: ['asset', 'data'] },
-    allowProtocolRelative: false,
-    allowedStyles: {
-      '*': {
-        color: [/^(#[\da-f]+|[a-z]+|rgba?\([\d., %]+\))$/i],
-        'background-color': [/^(#[\da-f]+|[a-z]+|rgba?\([\d., %]+\))$/i],
-        'text-align': [/^(left|right|center|justify)$/],
-        width: [/^[\d.]+(px|%|em)?$/],
-        'font-size': [/^[\d.]+(px|pt|em)$/],
-        'font-family': [/^[\w\s가-힣,"'-]+$/],
-      },
-    },
-  });
+const cleanHtml = (html: string): string => {
+  if (typeof DOMParser === 'undefined') return html.replace(/<[^>]*>/g, ' ');
+  const parsed = new DOMParser().parseFromString(html, 'text/html');
+  const allElements = Array.from(parsed.body.querySelectorAll('*')).reverse();
+  for (const element of allElements) {
+    const tag = element.tagName.toLowerCase();
+    if (!HTML_ALLOWED_TAGS.has(tag)) {
+      if (['script', 'style', 'iframe', 'object', 'embed', 'svg', 'math', 'template'].includes(tag)) element.remove();
+      else element.replaceWith(...Array.from(element.childNodes));
+      continue;
+    }
+    const globalAllowed = HTML_ALLOWED_ATTRIBUTES['*'];
+    const tagAllowed = HTML_ALLOWED_ATTRIBUTES[tag] || [];
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      if (name.startsWith('on') || (!globalAllowed.includes(name) && !tagAllowed.includes(name))) {
+        element.removeAttribute(attribute.name);
+        continue;
+      }
+      if (name === 'href' || name === 'src') {
+        const value = attribute.value.trim();
+        const normalizedValue = value.replace(/[\u0000-\u0020]+/g, '');
+        const protocol = normalizedValue.match(/^([a-z][a-z\d+.-]*):/i)?.[1]?.toLowerCase();
+        const allowed = !normalizedValue.startsWith('//') && (!protocol || (tag === 'img'
+          ? protocol === 'asset' || (protocol === 'data' && /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(value))
+          : ['http', 'https', 'mailto'].includes(protocol)));
+        if (!allowed) element.removeAttribute(attribute.name);
+      }
+      if (name === 'style') {
+        const styleElement = element as HTMLElement;
+        const styles: string[] = [];
+        for (const property of Array.from(styleElement.style)) {
+          const value = styleElement.style.getPropertyValue(property).trim();
+          if (HTML_ALLOWED_STYLE_VALUES[property]?.test(value)) styles.push(`${property}: ${value}`);
+        }
+        if (styles.length) element.setAttribute('style', styles.join('; '));
+        else element.removeAttribute('style');
+      }
+    }
+    if (tag === 'a' && element.getAttribute('target') === '_blank') element.setAttribute('rel', 'noopener noreferrer');
+  }
+  return parsed.body.innerHTML;
+};
 
 export async function packItem(
   source: Omit<SharedItem, 'assets'>,
@@ -255,15 +242,41 @@ export function materializeFolder(shared: SharedFolder, targetParentId: string |
   const tree = shared.tree.map((item) => ({ ...item, id: idMap.get(item.id)!, parentId: item.id === shared.root.id ? targetParentId : item.parentId ? idMap.get(item.parentId) || null : null,
     title: item.id === shared.root.id ? `${item.title} (받은 사본)` : item.title, createdAt: Date.now(), updatedAt: Date.now() }));
   const documents = Object.fromEntries(Object.entries(shared.documents).map(([oldId, doc]) => {
-    const item = strings(doc, rewrite) as WonNoteDocument; item.id = idMap.get(oldId)!; return [item.id, item];
+    const item = strings(doc, rewrite) as WonNoteDocument; item.id = idMap.get(oldId)!; item.content = cleanHtml(item.content); return [item.id, item];
   }));
   const tables = Object.fromEntries(Object.entries(shared.tables).map(([oldId, table]) => {
-    const item = strings(table, rewrite) as TableDocument; item.id = idMap.get(oldId)!; return [item.id, item];
+    const item = strings(table, rewrite) as TableDocument;
+    item.id = idMap.get(oldId)!;
+    const richTextColumns = new Set(item.columns.filter(column => column.type === 'richText').map(column => column.id));
+    item.rows = item.rows.map(row => ({
+      ...row,
+      data: Object.fromEntries(Object.entries(row.data).map(([key, value]) => [key, richTextColumns.has(key) && typeof value === 'string' ? cleanHtml(value) : value])),
+      richContent: row.richContent ? cleanHtml(row.richContent) : row.richContent,
+      stickers: row.stickers?.map(sticker => ({ ...sticker, content: typeof sticker.content === 'string' ? cleanHtml(sticker.content) : sticker.content })),
+    }));
+    return [item.id, item];
   }));
   const events: Record<string, CalendarEvent[]> = {}, layouts: Record<string, Record<string, unknown>> = {};
   for (const [oldId, newId] of idMap) if (shared.tables[oldId]) { events[newId] = (shared.events[oldId] || []).map((event) => ({ ...event, id: id('event') })); layouts[newId] = shared.layouts[oldId] || {}; }
   return { kind: 'folder' as const, root: tree.find((item) => item.id === idMap.get(shared.root.id))!, tree, documents, tables, events, layouts,
     assets: shared.assets.map((asset) => ({ ...asset, id: assetMap.get(asset.id)! })) };
+}
+
+export function sanitizeSharedFolderHtml(shared: SharedFolder, sanitize: (html: string) => string): SharedFolder {
+  const documents = Object.fromEntries(Object.entries(shared.documents).map(([id, document]) => [id, { ...document, content: sanitize(document.content) }]));
+  const tables = Object.fromEntries(Object.entries(shared.tables).map(([id, table]) => {
+    const richTextColumns = new Set(table.columns.filter(column => column.type === 'richText').map(column => column.id));
+    return [id, {
+      ...table,
+      rows: table.rows.map(row => ({
+        ...row,
+        data: Object.fromEntries(Object.entries(row.data).map(([key, value]) => [key, richTextColumns.has(key) && typeof value === 'string' ? sanitize(value) : value])),
+        richContent: row.richContent ? sanitize(row.richContent) : row.richContent,
+        stickers: row.stickers?.map(sticker => ({ ...sticker, content: typeof sticker.content === 'string' ? sanitize(sticker.content) : sticker.content })),
+      })),
+    }];
+  }));
+  return { ...shared, documents, tables };
 }
 
 export async function unpackItem(bytes: Uint8Array): Promise<SharedItem> {
@@ -333,7 +346,7 @@ export async function unpackItem(bytes: Uint8Array): Promise<SharedItem> {
   };
 }
 
-export function materializeItem(shared: SharedItem, parentId: string | null = null) {
+export function materializeItem(shared: SharedItem, parentId: string | null = null, sanitize: (html: string) => string = cleanHtml) {
   const now = Date.now(),
     newId = id(shared.kind === 'document' ? 'doc' : 'table');
   const assetMap = new Map(shared.assets.map((asset) => [asset.id, id('asset')]));
@@ -345,7 +358,7 @@ export function materializeItem(shared: SharedItem, parentId: string | null = nu
   item.createdAt = now;
   item.updatedAt = now;
   const rowMap = new Map<string, string>();
-  if (shared.kind === 'document') item.content = cleanHtml(item.content);
+  if (shared.kind === 'document') item.content = sanitize(item.content);
   else {
     const colMap = new Map<string, string>(item.columns.map((col) => [col.id, id('col')]));
     item.columns = item.columns.map((col) => ({ ...col, id: colMap.get(col.id) }));
@@ -358,7 +371,7 @@ export function materializeItem(shared: SharedItem, parentId: string | null = nu
           .map(([key, value]) => [
             colMap.get(key)!,
             typeof value === 'string' && item.columns.find((col) => col.id === colMap.get(key))?.type === 'richText'
-              ? cleanHtml(value)
+              ? sanitize(value)
               : value,
           ]),
       );
@@ -366,11 +379,11 @@ export function materializeItem(shared: SharedItem, parentId: string | null = nu
         ...row,
         id: rowId,
         data,
-        richContent: row.richContent ? cleanHtml(row.richContent) : row.richContent,
+        richContent: row.richContent ? sanitize(row.richContent) : row.richContent,
         stickers: row.stickers?.map((s) => ({
           ...s,
           id: id('sticker'),
-          content: typeof s.content === 'string' ? cleanHtml(s.content) : s.content,
+          content: typeof s.content === 'string' ? sanitize(s.content) : s.content,
         })),
         createdAt: now,
         updatedAt: now,

@@ -292,23 +292,11 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     const assets = await wonbeeDexieDB.getDirtyAssets();
     const upload = async (asset: (typeof assets)[number]) => {
       try {
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => typeof reader.result === 'string'
-            ? resolve(reader.result)
-            : reject(new Error('Could not read local image asset'));
-          reader.onerror = () => reject(reader.error || new Error('Could not read local image asset'));
-          reader.readAsDataURL(asset.blob);
-        });
-        const response = await fetchBridge(`${this.serverUrl}/assets`, {
+        const mimeType = asset.mime_type || asset.blob.type || 'application/octet-stream';
+        const response = await fetchBridge(`${this.serverUrl}/assets?assetId=${encodeURIComponent(asset.id)}&filename=${encodeURIComponent(asset.filename)}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            assetId: asset.id,
-            filename: asset.filename,
-            blobBase64: dataUrl,
-            mimeType: asset.mime_type || asset.blob.type || 'application/octet-stream',
-          }),
+          headers: { 'Content-Type': mimeType },
+          body: asset.blob,
         });
         if (!response.ok) throw new Error(`Asset push HTTP ${response.status}`);
         await wonbeeDexieDB.markAssetsClean([asset.id]);
@@ -420,6 +408,9 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
               title: t.title,
               description: t.description,
               defaultView: t.defaultView || 'grid',
+              visibility: t.visibility,
+              ownerId: t.ownerId,
+              accessLevel: t.accessLevel,
               columns: t.columns || [],
               rows: [],
               createdAt: t.createdAt || Date.now(),
@@ -454,6 +445,9 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
       // 3. /api/workspace/meta 조회 및 서버 트리 머지 (사용자 드래그앤드롭 순서 유지)
       const meta = await this.getWorkspaceMeta(signal);
       if (meta) {
+        for (const [id, tableMeta] of Object.entries(meta.tables || {}) as Array<[string, any]>) {
+          if (localWs.tables[id]) localWs.tables[id] = { ...localWs.tables[id], visibility: tableMeta.visibility, ownerId: tableMeta.ownerId, accessLevel: tableMeta.accessLevel };
+        }
         if (meta.documents) {
           localWs.documents = meta.documents;
           await wonbeeDexieDB.saveFullWorkspace(localWs, 0);
@@ -596,12 +590,30 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
 
   async syncNotes(since: number, signal?: AbortSignal) {
     try {
-      const data = await deduplicatedFetchJson<any>(`${this.serverUrl}/notes/sync?since=${since}`, { signal });
-      if (Array.isArray(data.data) && data.data.length > 0) {
-        // Sync delta notes into Dexie in background
-        wonbeeDB.applyDeltaNotes(data.data).catch(() => {});
-      }
-      return data;
+      let cursor: string | null = null;
+      let totalCount = 0;
+      let latestUpdatedAt = since;
+      let lastResponse: any = { data: [], since, latest_updated_at: since, count: 0 };
+      const seenCursors = new Set<string>();
+      do {
+        const params = new URLSearchParams({ since: String(since), limit: '1000' });
+        if (cursor) params.set('cursor', cursor);
+        const page = await deduplicatedFetchJson<any>(`${this.serverUrl}/notes/sync?${params.toString()}`, { signal });
+        const rows = Array.isArray(page.data) ? page.data : [];
+        if (rows.length > 0) {
+          // Apply each page before requesting the next so the workspace can be reloaded safely.
+          await wonbeeDB.applyDeltaNotes(rows);
+          totalCount += rows.length;
+        }
+        latestUpdatedAt = Math.max(latestUpdatedAt, Number(page.latest_updated_at) || since);
+        lastResponse = page;
+        const nextCursor = typeof page.next_cursor === 'string' ? page.next_cursor : null;
+        if (!page.has_more || !nextCursor) break;
+        if (seenCursors.has(nextCursor)) throw new Error('Notes sync returned a repeated cursor');
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      } while (true);
+      return { ...lastResponse, data: [], since, latest_updated_at: latestUpdatedAt, count: totalCount, has_more: false, next_cursor: null };
     } catch (err: any) {
       if (err?.name === 'AbortError') throw err;
       return this.localFallback.syncNotes(since);

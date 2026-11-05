@@ -218,6 +218,7 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
     const end = el.selectionEnd ?? 0;
     const selectedText = start !== end ? el.value.slice(start, end) : '';
     const { chars, bytes } = computeTextMetrics(selectedText);
+    const fullMetrics = computeTextMetrics(el.value);
 
     const textBefore = el.value.slice(0, start);
     const lineNum = textBefore.split('\n').length;
@@ -229,6 +230,12 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
       col: colNum,
       selectedChars: chars,
       selectedBytes: bytes,
+      totalChars: fullMetrics.chars,
+      totalBytes: fullMetrics.bytes,
+      totalLines: el.value ? el.value.split('\n').length : 1,
+      tableName: String(row.data?.title || row.data?.name || '메모'),
+      lastModifiedAt: row.updatedAt || Date.now(),
+      viewModeName: '메모',
     });
   }, [updateMetrics]);
 

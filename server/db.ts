@@ -1,19 +1,18 @@
 import initSqlJs, { Database, SqlJsStatic } from 'sql.js';
 import fs from 'fs';
-import path from 'path';
 import { WorkspaceData, TableDocument, TableRow, TableColumn, TreeItem, CalendarEvent, WonNoteDocument } from '../src/types';
 import { ensureWorkspaceTree } from '../src/utils/workspaceTreeUtils';
 import type { materializeItem } from '../src/utils/itemExchange';
+import { DATABASE_IMAGE_PATTERNS, DATABASE_PATHS } from './dbConstants';
 
-const DB_FILE_PATH = path.resolve(process.cwd(), 'wonbee.sqlite');
-const USER_DATA_PATH = path.resolve(process.cwd(), 'user_data.json');
-const DEFAULT_DATA_PATH = path.resolve(process.cwd(), 'public/wonbee_data.json');
+const { sqlite: DB_FILE_PATH, userData: USER_DATA_PATH, defaultData: DEFAULT_DATA_PATH } = DATABASE_PATHS;
 
 let SQL: SqlJsStatic | null = null;
 let dbInstance: Database | null = null;
 let persistTimer: NodeJS.Timeout | null = null;
 let syncJsonTimer: NodeJS.Timeout | null = null;
 let lastServerUpdate: number = Date.now();
+let documentHistoryFtsAvailable = false;
 
 export function getLastUpdatedTimestamp(): number {
   return lastServerUpdate;
@@ -21,6 +20,24 @@ export function getLastUpdatedTimestamp(): number {
 
 export function touchServerUpdate(): void {
   lastServerUpdate = Date.now();
+}
+
+/** Authentication storage is kept in the same SQLite database as the workspace. */
+export function authQuery<T = Record<string, unknown>>(sql: string, params: unknown[] = []): T[] {
+  if (!dbInstance) throw new Error('Database is not initialized');
+  const stmt = dbInstance.prepare(sql);
+  try {
+    stmt.bind(params.map(toSqliteParam));
+    const rows: T[] = [];
+    while (stmt.step()) rows.push(stmt.getAsObject() as T);
+    return rows;
+  } finally { stmt.free(); }
+}
+
+export function authRun(sql: string, params: unknown[] = []): void {
+  if (!dbInstance) throw new Error('Database is not initialized');
+  dbInstance.run(sql, params.map(toSqliteParam));
+  persistDatabase();
 }
 
 /**
@@ -87,8 +104,6 @@ export function syncDbToUserDataJson(immediate = false): void {
   }
 }
 
-const DATA_URI_REGEX = /data:image\/([a-zA-Z0-9.+_-]+);base64,([A-Za-z0-9+/=\r\n]+)/i;
-const IMG_TAG_REGEX = /<img[^>]+src=["'](data:image\/([a-zA-Z0-9.+_-]+);base64,([^"']+))["'][^>]*>/i;
 
 export function toSqliteParam(v: any): any {
   if (v === undefined || v === null) return null;
@@ -103,7 +118,7 @@ export function extractAndDecodeImage(val: any): { mime: string; buffer: Uint8Ar
   const str = val.trim();
 
   // 1. <img> tag containing base64
-  const imgMatch = str.match(IMG_TAG_REGEX);
+  const imgMatch = str.match(DATABASE_IMAGE_PATTERNS.imageTag);
   if (imgMatch) {
     const mime = `image/${imgMatch[2]}`;
     const cleanB64 = imgMatch[3].replace(/\s+/g, '');
@@ -116,7 +131,7 @@ export function extractAndDecodeImage(val: any): { mime: string; buffer: Uint8Ar
   }
 
   // 2. data:image/...;base64,...
-  const uriMatch = str.match(DATA_URI_REGEX);
+  const uriMatch = str.match(DATABASE_IMAGE_PATTERNS.dataUri);
   if (uriMatch) {
     const mime = `image/${uriMatch[1]}`;
     const cleanB64 = uriMatch[2].replace(/\s+/g, '');
@@ -227,7 +242,9 @@ export async function initDatabase(): Promise<Database> {
       description TEXT,
       default_view TEXT DEFAULT 'grid',
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      visibility TEXT NOT NULL DEFAULT 'shared',
+      owner_id TEXT
     );
 
     CREATE TABLE IF NOT EXISTS table_columns (
@@ -293,7 +310,14 @@ export async function initDatabase(): Promise<Database> {
       mime_type TEXT,
       image_data BLOB NOT NULL,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      owner_id TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS table_assets (
+      asset_id TEXT NOT NULL,
+      table_id TEXT NOT NULL,
+      PRIMARY KEY (asset_id, table_id)
     );
 
     CREATE TABLE IF NOT EXISTS notes (
@@ -306,6 +330,37 @@ export async function initDatabase(): Promise<Database> {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS document_history (
+      id TEXT PRIMARY KEY, item_key TEXT NOT NULL, table_id TEXT, title TEXT NOT NULL,
+      content TEXT NOT NULL, created_at INTEGER NOT NULL, author TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS auth_users (
+      id TEXT PRIMARY KEY, issuer TEXT NOT NULL, subject TEXT NOT NULL UNIQUE,
+      email TEXT, display_name TEXT, role TEXT NOT NULL DEFAULT 'user',
+      status TEXT NOT NULL DEFAULT 'active', created_at INTEGER NOT NULL,
+      last_login_at INTEGER, password_salt TEXT, password_hash TEXT
+    );
+    CREATE TABLE IF NOT EXISTS auth_sessions (
+      token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL, revoked_at INTEGER,
+      FOREIGN KEY(user_id) REFERENCES auth_users(id)
+    );
+    CREATE TABLE IF NOT EXISTS auth_login_history (
+      id TEXT PRIMARY KEY, user_id TEXT, email TEXT, success INTEGER NOT NULL,
+      reason TEXT, created_at INTEGER NOT NULL, ip TEXT, user_agent TEXT
+    );
+    CREATE TABLE IF NOT EXISTS user_groups (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_id TEXT NOT NULL, created_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS group_memberships (
+      group_id TEXT NOT NULL, user_id TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'member',
+      PRIMARY KEY (group_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS board_group_permissions (
+      table_id TEXT NOT NULL, group_id TEXT NOT NULL, permission TEXT NOT NULL DEFAULT 'read',
+      PRIMARY KEY (table_id, group_id)
+    );
 
     -- 1.1 SQL Compound Indexes for Full Table Scan Prevention & O(1) Cursor Queries
     CREATE INDEX IF NOT EXISTS idx_notes_updated_at_id ON notes(updated_at DESC, id DESC);
@@ -314,7 +369,40 @@ export async function initDatabase(): Promise<Database> {
     CREATE INDEX IF NOT EXISTS idx_table_rows_table_id_updated_at ON table_rows(table_id, updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_tables_updated_at_id ON tables(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_tree_items_parent_id ON tree_items(parent_id);
+    CREATE INDEX IF NOT EXISTS idx_document_history_item_time ON document_history(item_key, created_at DESC);
   `);
+
+  try {
+    dbInstance.run("CREATE VIRTUAL TABLE IF NOT EXISTS document_history_fts USING fts5(history_id UNINDEXED, title, content, tokenize='unicode61');");
+    documentHistoryFtsAvailable = true;
+  } catch (error) {
+    documentHistoryFtsAvailable = false;
+    console.warn('[SQLite] FTS5 unavailable; document history search will use LIKE fallback.', error);
+  }
+
+  // Add password fields to databases created before password login was introduced.
+  const tableColumns = new Set(dbInstance.exec('PRAGMA table_info(tables)')[0]?.values.map(row => String(row[1])) || []);
+  if (!tableColumns.has('visibility')) dbInstance.run("ALTER TABLE tables ADD COLUMN visibility TEXT NOT NULL DEFAULT 'shared'");
+  if (!tableColumns.has('owner_id')) dbInstance.run('ALTER TABLE tables ADD COLUMN owner_id TEXT');
+  const imageColumns = new Set(dbInstance.exec('PRAGMA table_info(row_images)')[0]?.values.map(row => String(row[1])) || []);
+  if (!imageColumns.has('owner_id')) dbInstance.run('ALTER TABLE row_images ADD COLUMN owner_id TEXT');
+  const storedRows = dbInstance.exec('SELECT table_id, data_json, rich_content FROM table_rows');
+  for (const [tableIdValue, dataJsonValue, richContentValue] of (storedRows[0]?.values || [])) {
+    const tableId = String(tableIdValue);
+    const values: unknown[] = [richContentValue];
+    if (typeof dataJsonValue === 'string') {
+      try { values.push(...Object.values(JSON.parse(dataJsonValue))); } catch {}
+    }
+    for (const value of values) {
+      if (typeof value !== 'string') continue;
+      for (const match of value.matchAll(/asset:\/\/([a-zA-Z0-9_-]+)/g)) {
+        dbInstance.run('INSERT OR IGNORE INTO table_assets(asset_id, table_id) VALUES (?, ?)', [match[1], toSqliteParam(tableId)]);
+      }
+    }
+  }
+  const authColumns = new Set(dbInstance.exec('PRAGMA table_info(auth_users)')[0]?.values.map(row => String(row[1])) || []);
+  if (!authColumns.has('password_salt')) dbInstance.run('ALTER TABLE auth_users ADD COLUMN password_salt TEXT');
+  if (!authColumns.has('password_hash')) dbInstance.run('ALTER TABLE auth_users ADD COLUMN password_hash TEXT');
 
   // Auto-migrate schema if existing table_rows table lacked composite primary key
   ensureTableRowsCompositePrimaryKey(dbInstance);
@@ -466,6 +554,7 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
 
     // 3. Tables, Columns, Rows, Notes
     db.run('DELETE FROM tables;');
+    db.run('DELETE FROM table_assets;');
     db.run('DELETE FROM table_columns;');
     db.run('DELETE FROM table_rows;');
     db.run('DELETE FROM notes;');
@@ -478,9 +567,19 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
         const tCreated = tbl.createdAt || Date.now();
         const tUpdated = tbl.updatedAt || Date.now();
 
+        for (const row of (Array.isArray(tbl.rows) ? tbl.rows : [])) {
+          const values = [...Object.values(row?.data || {}), row?.richContent || ''];
+          for (const value of values) {
+            if (typeof value !== 'string') continue;
+            for (const match of value.matchAll(/asset:\/\/([a-zA-Z0-9_-]+)/g)) {
+              db.run('INSERT OR IGNORE INTO table_assets(asset_id, table_id) VALUES (?, ?)', [match[1], toSqliteParam(tId)]);
+            }
+          }
+        }
+
         db.run(
-          `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?);`,
+          `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at, visibility, owner_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             toSqliteParam(tId),
             toSqliteParam(tTitle),
@@ -488,6 +587,8 @@ export function importWorkspaceDataToDb(db: Database, rawData: WorkspaceData): v
             toSqliteParam(tbl.defaultView || 'grid'),
             toSqliteParam(tCreated),
             toSqliteParam(tUpdated),
+            tbl.visibility === 'private' || tbl.visibility === 'group' ? tbl.visibility : 'shared',
+            toSqliteParam(tbl.ownerId),
           ]
         );
 
@@ -676,7 +777,7 @@ export function getWorkspaceData(): WorkspaceData {
 
   // Tables
   const tables: Record<string, TableDocument> = {};
-  const tablesRes = dbInstance.exec("SELECT id, title, description, default_view, created_at, updated_at FROM tables");
+  const tablesRes = dbInstance.exec("SELECT id, title, description, default_view, created_at, updated_at, visibility, owner_id FROM tables");
   if (tablesRes.length > 0) {
     for (const val of tablesRes[0].values) {
       const tableId = String(val[0]);
@@ -687,6 +788,8 @@ export function getWorkspaceData(): WorkspaceData {
         defaultView: (val[3] as any) || 'grid',
         createdAt: Number(val[4]),
         updatedAt: Number(val[5]),
+        visibility: val[6] === 'private' || val[6] === 'group' ? val[6] : 'shared',
+        ownerId: val[7] ? String(val[7]) : undefined,
         columns: [],
         rows: [],
       };
@@ -985,6 +1088,240 @@ export function getTable(tableId: string): TableDocument | null {
   return ws.tables[tableId] || null;
 }
 
+export function canAccessTable(tableId: string, userId?: string, role?: string): boolean {
+  const res = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(tableId)]);
+  if (!res?.[0]?.values?.length) return false;
+  const [visibility, ownerId] = res[0].values[0];
+  if (role === 'master' || visibility === 'shared' || (!!userId && ownerId === userId)) return true;
+  if (!userId || visibility !== 'group') return false;
+  const result = dbInstance?.exec(`SELECT 1 FROM board_group_permissions p
+    JOIN group_memberships m ON m.group_id = p.group_id
+    WHERE p.table_id = ? AND m.user_id = ? LIMIT 1`, [toSqliteParam(tableId), toSqliteParam(userId)]);
+  return Boolean(result?.[0]?.values?.length);
+}
+
+export function canWriteTable(tableId: string, userId?: string, role?: string): boolean {
+  if (role === 'master') return canAccessTable(tableId, userId, role);
+  const res = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(tableId)]);
+  if (!res?.[0]?.values?.length) return false;
+  const [visibility, ownerId] = res[0].values[0];
+  if (visibility === 'shared') return true;
+  if (!userId) return false;
+  if (ownerId === userId) return true;
+  if (visibility !== 'group') return false;
+  const result = dbInstance?.exec(`SELECT 1 FROM board_group_permissions p
+    JOIN group_memberships m ON m.group_id = p.group_id
+    WHERE p.table_id = ? AND m.user_id = ? AND p.permission = 'write' LIMIT 1`, [toSqliteParam(tableId), toSqliteParam(userId)]);
+  return Boolean(result?.[0]?.values?.length);
+}
+
+export function canManageTable(tableId: string, userId?: string, role?: string): boolean {
+  if (role === 'master') return canAccessTable(tableId, userId, role);
+  const res = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(tableId)]);
+  if (!res?.[0]?.values?.length) return false;
+  const [visibility, ownerId] = res[0].values[0];
+  return (!!userId && ownerId === userId) || (visibility === 'shared' && !ownerId && !!userId);
+}
+
+export function listUserGroups(userId: string, role?: string) {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const groups = role === 'master'
+    ? authQuery<any>(`SELECT g.id,g.name,g.owner_id,g.created_at,COALESCE(m.role,'admin') AS member_role
+      FROM user_groups g LEFT JOIN group_memberships m ON m.group_id=g.id AND m.user_id=? ORDER BY g.created_at DESC`, [userId])
+    : authQuery<any>(`SELECT g.id, g.name, g.owner_id, g.created_at, m.role AS member_role
+    FROM user_groups g JOIN group_memberships m ON m.group_id = g.id
+    WHERE m.user_id = ? ORDER BY g.created_at DESC`, [userId]);
+  const users = authQuery<any>(`SELECT id, email, display_name FROM auth_users WHERE status = 'active' ORDER BY display_name, email`);
+  return groups.map(group => ({
+    ...group,
+    members: authQuery<any>(`SELECT u.id, u.email, u.display_name, m.role FROM group_memberships m
+      JOIN auth_users u ON u.id = m.user_id WHERE m.group_id = ? ORDER BY m.role DESC, u.display_name, u.email`, [group.id]),
+    users,
+  }));
+}
+
+export function createUserGroup(userId: string, rawName: string) {
+  const name = rawName.trim();
+  if (!name || name.length > 80) throw new Error('그룹 이름은 1~80자로 입력해 주세요.');
+  const id = `grp_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+  const now = Date.now();
+  authRun('INSERT INTO user_groups(id,name,owner_id,created_at) VALUES(?,?,?,?)', [id, name, userId, now]);
+  authRun('INSERT INTO group_memberships(group_id,user_id,role) VALUES(?,?,?)', [id, userId, 'owner']);
+  return listUserGroups(userId).find(group => group.id === id);
+}
+
+export function replaceUserGroupMembers(groupId: string, userId: string, memberIds: string[], role?: string) {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const group = authQuery<any>('SELECT id,owner_id FROM user_groups WHERE id = ?', [groupId])[0];
+  if (!group) throw new Error('그룹을 찾을 수 없습니다.');
+  if (group.owner_id !== userId && role !== 'master') throw new Error('그룹 소유자 또는 마스터만 구성원을 변경할 수 있습니다.');
+  const uniqueIds = [...new Set([group.owner_id, ...(role === 'master' ? [] : [userId]), ...memberIds])];
+  for (const id of uniqueIds) {
+    if (!authQuery('SELECT id FROM auth_users WHERE id = ? AND status = \'active\'', [id]).length) throw new Error('활성 계정만 그룹에 추가할 수 있습니다.');
+  }
+  dbInstance.run('BEGIN TRANSACTION;');
+  try {
+    dbInstance.run('DELETE FROM group_memberships WHERE group_id = ?', [toSqliteParam(groupId)]);
+    uniqueIds.forEach(id => dbInstance!.run('INSERT INTO group_memberships(group_id,user_id,role) VALUES(?,?,?)', [toSqliteParam(groupId), toSqliteParam(id), id === userId ? 'owner' : 'member']));
+    dbInstance.run('COMMIT;');
+    persistDatabase();
+  } catch (error) { dbInstance.run('ROLLBACK;'); throw error; }
+  return listUserGroups(userId).find(item => item.id === groupId);
+}
+
+export function deleteUserGroup(groupId: string, userId: string, role?: string) {
+  const group = authQuery<any>('SELECT owner_id FROM user_groups WHERE id = ?', [groupId])[0];
+  if (!group) throw new Error('그룹을 찾을 수 없습니다.');
+  if (group.owner_id !== userId && role !== 'master') throw new Error('그룹 소유자 또는 마스터만 삭제할 수 있습니다.');
+  authRun('DELETE FROM board_group_permissions WHERE group_id = ?', [groupId]);
+  authRun('DELETE FROM group_memberships WHERE group_id = ?', [groupId]);
+  authRun('DELETE FROM user_groups WHERE id = ?', [groupId]);
+}
+
+export function getTablePermissions(tableId: string, userId?: string, role?: string) {
+  const table = authQuery<any>('SELECT visibility,owner_id FROM tables WHERE id = ?', [tableId])[0];
+  if (!table) throw new Error('보드를 찾을 수 없습니다.');
+  if (!canManageTable(tableId, userId, role)) throw new Error('보드 소유자만 접근 권한을 관리할 수 있습니다.');
+  return {
+    visibility: table.visibility,
+    groups: authQuery<any>(`SELECT g.id,g.name,p.permission FROM board_group_permissions p
+      JOIN user_groups g ON g.id=p.group_id WHERE p.table_id=? ORDER BY g.name`, [tableId]),
+  };
+}
+
+export function setTablePermissions(tableId: string, userId: string | undefined, role: string | undefined, visibility: string, groups: Array<{ groupId: string; permission: string }>) {
+  if (!dbInstance) throw new Error('Database not initialized');
+  if (!['shared', 'private', 'group'].includes(visibility)) throw new Error('공개 범위가 올바르지 않습니다.');
+  const existing = authQuery<any>('SELECT owner_id FROM tables WHERE id=?', [tableId])[0];
+  if (!existing) throw new Error('보드를 찾을 수 없습니다.');
+  if (!canManageTable(tableId, userId, role)) throw new Error('보드 소유자만 공개 범위를 변경할 수 있습니다.');
+  if (!userId && role !== 'master' && visibility !== 'shared') throw new Error('개인·그룹 보드는 로그인 후 설정할 수 있습니다.');
+  const unique = new Map<string, string>();
+  for (const entry of groups || []) {
+    if (!entry?.groupId || !['read', 'write'].includes(entry.permission)) throw new Error('그룹 권한 설정이 올바르지 않습니다.');
+    const member = authQuery('SELECT 1 FROM group_memberships WHERE group_id=? AND user_id=?', [entry.groupId, userId || '']);
+    if (role !== 'master' && !member.length) throw new Error('참여하지 않은 그룹에는 보드 권한을 줄 수 없습니다.');
+    unique.set(entry.groupId, entry.permission);
+  }
+  if (visibility === 'group' && unique.size === 0) throw new Error('그룹 전용 보드에는 하나 이상의 그룹을 지정해야 합니다.');
+  const now = Date.now();
+  dbInstance.run('BEGIN TRANSACTION;');
+  try {
+    const ownerId = existing.owner_id || userId || null;
+    dbInstance.run('UPDATE tables SET visibility=?, owner_id=?, updated_at=? WHERE id=?', [visibility, ownerId, now, toSqliteParam(tableId)]);
+    dbInstance.run('DELETE FROM board_group_permissions WHERE table_id=?', [toSqliteParam(tableId)]);
+    if (visibility === 'group') unique.forEach((permission, groupId) => dbInstance!.run('INSERT INTO board_group_permissions(table_id,group_id,permission) VALUES(?,?,?)', [toSqliteParam(tableId), toSqliteParam(groupId), permission]));
+    dbInstance.run('COMMIT;');
+    persistDatabase();
+  } catch (error) { dbInstance.run('ROLLBACK;'); throw error; }
+}
+
+export function getNoteTableId(noteId: string): string | null {
+  const result = dbInstance?.exec('SELECT table_id FROM notes WHERE id = ?', [toSqliteParam(noteId)]);
+  const tableId = result?.[0]?.values?.[0]?.[0];
+  return tableId ? String(tableId) : null;
+}
+
+export function getTableForUser(tableId: string, userId?: string, role?: string): TableDocument | null {
+  if (!canAccessTable(tableId, userId, role)) return null;
+  const table = getTable(tableId);
+  return table ? { ...table, accessLevel: tableAccessLevel(table, userId, role) } : null;
+}
+
+function tableAccessLevel(table: TableDocument, userId?: string, role?: string): 'owner' | 'write' | 'read' {
+  return role === 'master' || (!!userId && table.ownerId === userId) ? 'owner' : canWriteTable(table.id, userId, role) ? 'write' : 'read';
+}
+
+export function saveTableForUser(table: TableDocument, userId?: string, role?: string): void {
+  const existingResult = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(table.id)]);
+  const existing = existingResult?.[0]?.values?.[0];
+  const existingVisibility = (existing?.[0] === 'private' || existing?.[0] === 'group' ? existing[0] : 'shared') as 'shared' | 'private' | 'group';
+  const existingOwnerId = existing?.[1] ? String(existing[1]) : undefined;
+  if (existing && !canWriteTable(table.id, userId, role)) {
+    throw new Error('이 보드에는 쓰기 권한이 없습니다.');
+  }
+  if (existing && table.visibility !== existingVisibility && role !== 'master' && existingOwnerId && existingOwnerId !== userId) {
+    throw new Error('보드 소유자만 공개 범위를 변경할 수 있습니다.');
+  }
+  if (existing && (table.visibility === 'group' || existingVisibility === 'group') && table.visibility !== existingVisibility) {
+    throw new Error('그룹 접근 범위는 그룹 권한 설정 화면에서 변경해 주세요.');
+  }
+  if (existing && table.visibility === 'group' && existingVisibility !== 'group') throw new Error('그룹 접근 권한을 먼저 설정해 주세요.');
+  delete table.accessLevel;
+  const nextVisibility = table.visibility || 'shared';
+  if (nextVisibility !== 'shared') {
+    if (!userId && role !== 'master') throw new Error('개인·그룹 보드는 서버 로그인 후 설정할 수 있습니다.');
+    table.ownerId = existingVisibility !== 'shared' ? existingOwnerId : userId;
+  } else {
+    table.ownerId = existing ? existingOwnerId : userId;
+  }
+  saveTable(table);
+}
+
+export function getWorkspaceDataForUser(userId?: string, role?: string): WorkspaceData {
+  const workspace = getWorkspaceData();
+  const visibleIds = new Set(Object.values(workspace.tables)
+    .filter(table => canAccessTable(table.id, userId, role))
+    .map(table => table.id));
+  return {
+    ...workspace,
+    tables: Object.fromEntries(Object.entries(workspace.tables).filter(([id]) => visibleIds.has(id)).map(([id, table]) => [id, { ...table, accessLevel: tableAccessLevel(table, userId, role) }])),
+    tree: workspace.tree.filter(item => item.type !== 'table' || visibleIds.has(item.id)),
+  };
+}
+
+/** Merge a user's visible workspace while preserving other owners' private boards. */
+export function saveWorkspaceDataForUser(data: WorkspaceData, userId?: string, role?: string): void {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const current = getWorkspaceData();
+  const incomingTables = { ...(data.tables || {}) };
+  for (const table of Object.values(incomingTables)) {
+    const existing = current.tables[table.id];
+    delete table.accessLevel;
+    if (existing && !canWriteTable(table.id, userId, role)) {
+      const clean = (value: TableDocument) => ({
+        ...value,
+        is_dirty: undefined,
+        rows: (value.rows || []).map(row => ({ ...row, is_dirty: undefined })),
+      });
+      if (JSON.stringify(clean(table)) !== JSON.stringify(clean(existing))) throw new Error('쓰기 권한이 없는 보드는 수정할 수 없습니다.');
+      incomingTables[table.id] = existing;
+      continue;
+    }
+    if (existing && table.visibility !== existing.visibility && role !== 'master' && existing.ownerId && existing.ownerId !== userId) {
+      throw new Error('보드 소유자만 공개 범위를 변경할 수 있습니다.');
+    }
+    if (existing && table.visibility !== existing.visibility) throw new Error('보드 공개 범위는 그룹 권한 설정 화면에서 변경해 주세요.');
+    if ((table.visibility || 'shared') !== 'shared') {
+      if (!userId && role !== 'master') throw new Error('개인·그룹 보드는 서버 로그인 후 설정할 수 있습니다.');
+      table.ownerId = existing?.visibility !== 'shared' ? existing?.ownerId : userId;
+    } else {
+      table.ownerId = existing ? (existing.ownerId || userId) : userId;
+    }
+  }
+
+  const hiddenPrivate = Object.values(current.tables).filter(table =>
+    !canAccessTable(table.id, userId, role) || ((table.visibility === 'private' || table.visibility === 'group') && table.ownerId !== userId && role !== 'master')
+  );
+  hiddenPrivate.forEach(table => { incomingTables[table.id] = table; });
+  const protectedIds = new Set(Object.values(current.tables).filter(table =>
+    !canWriteTable(table.id, userId, role) || ((table.visibility === 'private' || table.visibility === 'group') && table.ownerId !== userId && role !== 'master')
+  ).map(table => table.id));
+  const incomingTree = (Array.isArray(data.tree) ? data.tree : []).filter(item => !protectedIds.has(item.id));
+  incomingTree.push(...current.tree.filter(item => protectedIds.has(item.id)));
+  saveWorkspaceData({ ...data, tables: incomingTables, tree: incomingTree });
+}
+
+export function saveTreeForUser(tree: TreeItem[], userId?: string, role?: string): void {
+  const current = getWorkspaceData();
+  const protectedIds = new Set(Object.values(current.tables).filter(table =>
+    !canWriteTable(table.id, userId, role) || ((table.visibility === 'private' || table.visibility === 'group') && table.ownerId !== userId && role !== 'master')
+  ).map(table => table.id));
+  const merged = tree.filter(item => !protectedIds.has(item.id));
+  merged.push(...current.tree.filter(item => protectedIds.has(item.id)));
+  saveTree(merged);
+}
+
 /**
  * Save single TableDocument into SQLite and keep tree synchronized
  */
@@ -993,12 +1330,13 @@ export function saveTable(table: TableDocument, insideTransaction = false): void
 
   if (!insideTransaction) dbInstance.run('BEGIN TRANSACTION;');
   try {
+    dbInstance.run('DELETE FROM table_assets WHERE table_id = ?', [toSqliteParam(table.id)]);
     const tCreated = table.createdAt || Date.now();
     const tUpdated = table.updatedAt || Date.now();
 
     dbInstance.run(
-      `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?);`,
+      `INSERT OR REPLACE INTO tables (id, title, description, default_view, created_at, updated_at, visibility, owner_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?);`,
       [
         toSqliteParam(table.id),
         toSqliteParam(table.title || '새 데이터 테이블'),
@@ -1006,6 +1344,8 @@ export function saveTable(table: TableDocument, insideTransaction = false): void
         toSqliteParam(table.defaultView || 'grid'),
         toSqliteParam(tCreated),
         toSqliteParam(tUpdated),
+        table.visibility === 'private' || table.visibility === 'group' ? table.visibility : 'shared',
+        toSqliteParam(table.ownerId),
       ]
     );
 
@@ -1048,6 +1388,12 @@ export function saveTable(table: TableDocument, insideTransaction = false): void
       table.rows.forEach((row) => {
         if (!row || !row.id) return;
         const rData = row.data && typeof row.data === 'object' ? { ...row.data } : {};
+        const assetRefs = new Set<string>();
+        for (const value of [...Object.values(rData), row.richContent || '']) {
+          if (typeof value !== 'string') continue;
+          for (const match of value.matchAll(/asset:\/\/([a-zA-Z0-9_-]+)/g)) assetRefs.add(match[1]);
+        }
+        for (const assetId of assetRefs) dbInstance!.run('INSERT OR IGNORE INTO table_assets(asset_id, table_id) VALUES (?, ?)', [assetId, toSqliteParam(table.id)]);
         const rCreated = row.createdAt || Date.now();
         const rUpdated = row.updatedAt || Date.now();
 
@@ -1170,6 +1516,59 @@ function getStoredDocuments(): Record<string, WonNoteDocument> {
   } catch {
     return {};
   }
+}
+
+export interface DocumentHistoryEntry {
+  id: string;
+  itemKey: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  author?: string;
+}
+
+function stripHtmlForHistorySearch(value: string): string {
+  return value.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>').replace(/&quot;/gi, ' ');
+}
+
+export function saveDocumentHistorySnapshot(input: Omit<DocumentHistoryEntry, 'id' | 'createdAt'> & { tableId?: string }, limit = 50): DocumentHistoryEntry {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const previous = dbInstance.exec('SELECT id, content FROM document_history WHERE item_key = ? ORDER BY created_at DESC LIMIT 1', [input.itemKey]);
+  if (previous[0]?.values[0]?.[1] === input.content) {
+    const existing = dbInstance.exec('SELECT id, item_key, title, content, created_at, author FROM document_history WHERE id = ?', [previous[0].values[0][0]]);
+    const row = existing[0]?.values[0];
+    if (row) return { id: String(row[0]), itemKey: String(row[1]), title: String(row[2]), content: String(row[3]), createdAt: Number(row[4]), author: row[5] ? String(row[5]) : undefined };
+  }
+  const entry: DocumentHistoryEntry = { id: `hist-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`, itemKey: input.itemKey, title: input.title, content: input.content, createdAt: Date.now(), author: input.author };
+  dbInstance.run('INSERT INTO document_history(id, item_key, table_id, title, content, created_at, author) VALUES (?, ?, ?, ?, ?, ?, ?)', [entry.id, entry.itemKey, input.tableId || null, entry.title, entry.content, entry.createdAt, entry.author || null]);
+  if (documentHistoryFtsAvailable) dbInstance.run('INSERT INTO document_history_fts(history_id, title, content) VALUES (?, ?, ?)', [entry.id, entry.title, stripHtmlForHistorySearch(entry.content)]);
+  const overflow = dbInstance.exec('SELECT id FROM document_history WHERE item_key = ? ORDER BY created_at DESC LIMIT -1 OFFSET ?', [entry.itemKey, Math.max(1, limit)]);
+  for (const [id] of overflow[0]?.values || []) {
+    dbInstance.run('DELETE FROM document_history WHERE id = ?', [String(id)]);
+    if (documentHistoryFtsAvailable) dbInstance.run('DELETE FROM document_history_fts WHERE history_id = ?', [String(id)]);
+  }
+  persistDatabase(false);
+  return entry;
+}
+
+export function listDocumentHistory(itemKey: string, query = '', limit = 100): DocumentHistoryEntry[] {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const safeLimit = Math.min(Math.max(limit, 1), 200);
+  let rows: any[] = [];
+  if (query.trim() && documentHistoryFtsAvailable) {
+    const expression = query.trim().split(/\s+/).map(part => `"${part.replace(/"/g, '""')}"`).join(' AND ');
+    try {
+      const result = dbInstance.exec(`SELECT h.id, h.item_key, h.title, h.content, h.created_at, h.author FROM document_history h JOIN document_history_fts f ON f.history_id = h.id WHERE h.item_key = ? AND document_history_fts MATCH ? ORDER BY h.created_at DESC LIMIT ?`, [itemKey, expression, safeLimit]);
+      rows = result[0]?.values || [];
+    } catch { rows = []; }
+  } else {
+    const like = `%${query.trim()}%`;
+    const result = query.trim()
+      ? dbInstance.exec('SELECT id, item_key, title, content, created_at, author FROM document_history WHERE item_key = ? AND (title LIKE ? OR content LIKE ?) ORDER BY created_at DESC LIMIT ?', [itemKey, like, like, safeLimit])
+      : dbInstance.exec('SELECT id, item_key, title, content, created_at, author FROM document_history WHERE item_key = ? ORDER BY created_at DESC LIMIT ?', [itemKey, safeLimit]);
+    rows = result[0]?.values || [];
+  }
+  return rows.map(row => ({ id: String(row[0]), itemKey: String(row[1]), title: String(row[2]), content: String(row[3]), createdAt: Number(row[4]), author: row[5] ? String(row[5]) : undefined }));
 }
 
 export function saveDocument(document: WonNoteDocument): void {
@@ -1458,6 +1857,19 @@ export function getCalendarEvents(tableId?: string): CalendarEvent[] {
   return events;
 }
 
+export function getCalendarEventsForUser(tableId: string | undefined, userId?: string, role?: string): CalendarEvent[] {
+  if (!dbInstance) throw new Error('Database not initialized');
+  if (tableId) return canAccessTable(tableId, userId, role) ? getCalendarEvents(tableId) : [];
+  const tableIds = dbInstance.exec('SELECT DISTINCT table_id FROM calendar_events')[0]?.values.map(row => String(row[0])) || [];
+  return tableIds.filter(id => canAccessTable(id, userId, role)).flatMap(id => getCalendarEvents(id));
+}
+
+export function getCalendarEventTableId(eventId: string): string | null {
+  const result = dbInstance?.exec('SELECT table_id FROM calendar_events WHERE id=?', [toSqliteParam(eventId)]);
+  const tableId = result?.[0]?.values?.[0]?.[0];
+  return tableId ? String(tableId) : null;
+}
+
 export function saveCalendarEvent(event: CalendarEvent, tableId: string, persist = true): void {
   if (!dbInstance) throw new Error('Database not initialized');
   dbInstance.run(
@@ -1561,14 +1973,28 @@ export function getRowImage(imageId: string): { id: string; mimeType: string; da
   };
 }
 
+export function getRowImageForUser(imageId: string, userId?: string, role?: string): { id: string; mimeType: string; data: Uint8Array } | null {
+  const res = dbInstance?.exec('SELECT table_id, owner_id FROM row_images WHERE id = ?', [toSqliteParam(imageId)]);
+  if (!res?.[0]?.values?.length) return null;
+  const [tableId, ownerId] = res[0].values[0];
+  let accessible = false;
+  if (tableId && tableId !== '__assets__') accessible = canAccessTable(String(tableId), userId, role);
+  else if (role === 'master' || (!!userId && ownerId === userId)) accessible = true;
+  if (!accessible && dbInstance) {
+    const links = dbInstance.exec('SELECT table_id FROM table_assets WHERE asset_id = ?', [toSqliteParam(imageId)]);
+    accessible = Boolean(links[0]?.values?.some(([linkedTableId]) => canAccessTable(String(linkedTableId), userId, role)));
+  }
+  return accessible ? getRowImage(imageId) : null;
+}
+
 /** Store an editor image in the same SQLite image store used by table row images. */
-export function saveImageAsset(imageId: string, mimeType: string, data: Uint8Array): void {
+export function saveImageAsset(imageId: string, mimeType: string, data: Uint8Array, ownerId?: string): void {
   if (!dbInstance) throw new Error('Database not initialized');
   const now = Date.now();
   dbInstance.run(
-    `INSERT OR REPLACE INTO row_images (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at)
-     VALUES (?, '__assets__', ?, 'asset', ?, ?, ?, ?);`,
-    [imageId, imageId, mimeType || 'application/octet-stream', Buffer.from(data), now, now]
+    `INSERT OR REPLACE INTO row_images (id, table_id, row_id, column_key, mime_type, image_data, created_at, updated_at, owner_id)
+     VALUES (?, '__assets__', ?, 'asset', ?, ?, ?, ?, ?);`,
+    [imageId, imageId, mimeType || 'application/octet-stream', Buffer.from(data), now, now, ownerId || null]
   );
   persistDatabase(true);
 }
@@ -1587,7 +2013,7 @@ export function importSharedItem(received: ReturnType<typeof materializeItem>): 
   const temporary = `${DB_FILE_PATH}.import-${crypto.randomUUID()}`;
   try {
     dbInstance.run('BEGIN TRANSACTION;');
-    if (received.kind === 'table') saveTable(received.item as TableDocument, true);
+    if (received.kind === 'table') saveTable({ ...(received.item as TableDocument), visibility: 'shared', ownerId: undefined }, true);
     else {
       const docs = getStoredDocuments(); docs[received.item.id] = received.item as WonNoteDocument;
       dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('documents', ?)", [JSON.stringify(docs)]);
@@ -1640,7 +2066,7 @@ export function saveSharedLayouts(tableId: string, value: Record<string, unknown
  * 1.2. Workspace Metadata API (Replaces 100MB+ full workspace dumps)
  * Lightweight structural metadata (<5KB) without heavy row/note bodies.
  */
-export function getWorkspaceMeta(): {
+export function getWorkspaceMeta(userId?: string, role?: string): {
   last_updated_at: number;
   total_count: number;
   tableCount: number;
@@ -1649,17 +2075,23 @@ export function getWorkspaceMeta(): {
   settings: any;
   tree: TreeItem[];
   documents: Record<string, WonNoteDocument>;
-  tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; columns: any[]; createdAt: number; updatedAt: number }>;
+  tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; visibility?: 'shared' | 'private' | 'group'; ownerId?: string; accessLevel?: 'owner' | 'write' | 'read'; columns: any[]; createdAt: number; updatedAt: number }>;
 } {
   if (!dbInstance) throw new Error('Database not initialized');
   let totalCount = 0;
   try {
-    const res = dbInstance.exec("SELECT count(*) FROM notes;");
+    const res = dbInstance.exec("SELECT count(*) FROM table_rows;");
     totalCount = Number(res[0]?.values[0]?.[0] || 0);
   } catch {
     try {
-      const resRows = dbInstance.exec("SELECT count(*) FROM table_rows;");
-      totalCount = Number(resRows[0]?.values[0]?.[0] || 0);
+      const res = dbInstance.exec("SELECT count(*) FROM notes;");
+      totalCount = Number(res[0]?.values[0]?.[0] || 0);
+    } catch {}
+  }
+  if (totalCount === 0) {
+    try {
+      const res = dbInstance.exec("SELECT count(*) FROM notes;");
+      totalCount = Number(res[0]?.values[0]?.[0] || 0);
     } catch {}
   }
 
@@ -1696,8 +2128,8 @@ export function getWorkspaceMeta(): {
   }
 
   // Lightweight Tables with Columns (WITHOUT rows)
-  const tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; columns: any[]; createdAt: number; updatedAt: number }> = {};
-  const tablesRes = dbInstance.exec("SELECT id, title, description, default_view, created_at, updated_at FROM tables;");
+  const tables: Record<string, { id: string; title: string; description?: string; defaultView?: any; visibility?: 'shared' | 'private' | 'group'; ownerId?: string; accessLevel?: 'owner' | 'write' | 'read'; columns: any[]; createdAt: number; updatedAt: number }> = {};
+  const tablesRes = dbInstance.exec("SELECT id, title, description, default_view, created_at, updated_at, visibility, owner_id FROM tables;");
   if (tablesRes.length > 0) {
     for (const val of tablesRes[0].values) {
       const tableId = String(val[0]);
@@ -1706,6 +2138,8 @@ export function getWorkspaceMeta(): {
         title: String(val[1]),
         description: val[2] ? String(val[2]) : undefined,
         defaultView: (val[3] as any) || 'grid',
+        visibility: val[6] === 'private' || val[6] === 'group' ? val[6] : 'shared',
+        ownerId: val[7] ? String(val[7]) : undefined,
         createdAt: Number(val[4]),
         updatedAt: Number(val[5]),
         columns: [],
@@ -1736,16 +2170,28 @@ export function getWorkspaceMeta(): {
     }
   }
 
+  const visibleIds = new Set(Object.values(tables).filter(table =>
+    canAccessTable(table.id, userId, role)
+  ).map(table => table.id));
+  const visibleTree = tree.filter(item => item.type !== 'table' || visibleIds.has(item.id));
+  for (const tableId of visibleIds) tables[tableId].accessLevel = tableAccessLevel(tables[tableId] as TableDocument, userId, role);
+  const visibleCountRes = dbInstance.exec(
+    `SELECT count(*) FROM notes n LEFT JOIN tables t ON t.id = n.table_id
+     WHERE n.table_id IS NULL OR t.id IS NULL OR t.visibility = 'shared' OR t.owner_id = ? OR ? = 'master'
+       OR EXISTS (SELECT 1 FROM board_group_permissions p JOIN group_memberships m ON m.group_id=p.group_id WHERE p.table_id=t.id AND m.user_id=?)`,
+    [userId || '', role || '', userId || '']
+  );
+  totalCount = Number(visibleCountRes[0]?.values[0]?.[0] || 0);
   return {
     last_updated_at: getLastUpdatedTimestamp(),
     total_count: totalCount,
-    tableCount: Object.keys(tables).length,
-    treeCount: tree.length,
+    tableCount: visibleIds.size,
+    treeCount: visibleTree.length,
     version,
     settings,
-    tree,
+    tree: visibleTree,
     documents: getStoredDocuments(),
-    tables,
+    tables: Object.fromEntries(Object.entries(tables).filter(([id]) => visibleIds.has(id))),
   };
 }
 
@@ -1759,7 +2205,9 @@ export function getWorkspaceMeta(): {
 export function getNotesCursor(
   cursor?: string,
   limit: number = 50,
-  tableId?: string
+  tableId?: string,
+  userId?: string,
+  role?: string
 ): {
   data: any[];
   pagination: {
@@ -1789,13 +2237,14 @@ export function getNotesCursor(
       params = [toSqliteParam(tableId), lastUpdatedAt, lastUpdatedAt, toSqliteParam(lastId), safeLimit];
     } else {
       query = `
-        SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+        SELECT notes.id, notes.table_id, notes.title, notes.content, notes.data_json, notes.rich_content, notes.created_at, notes.updated_at
         FROM notes
-        WHERE (updated_at < ?) OR (updated_at = ? AND id < ?)
-        ORDER BY updated_at DESC, id DESC
+        WHERE ((notes.updated_at < ?) OR (notes.updated_at = ? AND notes.id < ?))
+          AND (notes.table_id IS NULL OR NOT EXISTS (SELECT 1 FROM tables t WHERE t.id = notes.table_id AND t.visibility <> 'shared' AND t.owner_id <> ? AND ? <> 'master' AND NOT EXISTS (SELECT 1 FROM board_group_permissions p JOIN group_memberships m ON m.group_id=p.group_id WHERE p.table_id=t.id AND m.user_id=?)))
+        ORDER BY notes.updated_at DESC, notes.id DESC
         LIMIT ?;
       `;
-      params = [lastUpdatedAt, lastUpdatedAt, toSqliteParam(lastId), safeLimit];
+      params = [lastUpdatedAt, lastUpdatedAt, toSqliteParam(lastId), userId || '', role || '', userId || '', safeLimit];
     }
   } else {
     if (tableId) {
@@ -1809,12 +2258,13 @@ export function getNotesCursor(
       params = [toSqliteParam(tableId), safeLimit];
     } else {
       query = `
-        SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
+        SELECT notes.id, notes.table_id, notes.title, notes.content, notes.data_json, notes.rich_content, notes.created_at, notes.updated_at
         FROM notes
+        WHERE (notes.table_id IS NULL OR NOT EXISTS (SELECT 1 FROM tables t WHERE t.id = notes.table_id AND t.visibility <> 'shared' AND t.owner_id <> ? AND ? <> 'master' AND NOT EXISTS (SELECT 1 FROM board_group_permissions p JOIN group_memberships m ON m.group_id=p.group_id WHERE p.table_id=t.id AND m.user_id=?)))
         ORDER BY updated_at DESC, id DESC
         LIMIT ?;
       `;
-      params = [safeLimit];
+      params = [userId || '', role || '', userId || '', safeLimit];
     }
   }
 
@@ -1834,15 +2284,16 @@ export function getNotesCursor(
     });
   }
 
-  const hasMore = rows.length === safeLimit;
+  const visibleRows = rows.filter(row => !row.table_id || canAccessTable(String(row.table_id), userId, role));
+  const hasMore = visibleRows.length === safeLimit;
   let nextCursor: string | null = null;
-  if (hasMore && rows.length > 0) {
-    const last = rows[rows.length - 1];
+  if (hasMore && visibleRows.length > 0) {
+    const last = visibleRows[visibleRows.length - 1];
     nextCursor = `${last.updated_at}_${last.id}`;
   }
 
   return {
-    data: rows,
+    data: visibleRows,
     pagination: {
       next_cursor: nextCursor,
       has_more: hasMore,
@@ -1856,24 +2307,40 @@ export function getNotesCursor(
  */
 export function getNotesSync(
   since: number = 0,
-  limit: number = 1000
+  limit: number = 1000,
+  userId?: string,
+  role?: string,
+  cursor?: string
 ): {
   data: any[];
   since: number;
   latest_updated_at: number;
   count: number;
+  has_more: boolean;
+  next_cursor: string | null;
 } {
   if (!dbInstance) throw new Error('Database not initialized');
   const safeLimit = Math.min(Math.max(limit, 1), 5000);
-
+  let cursorUpdatedAt = since;
+  let cursorId = '';
+  if (cursor) {
+    const separator = cursor.indexOf('_');
+    const parsedTimestamp = Number(separator >= 0 ? cursor.slice(0, separator) : NaN);
+    if (!Number.isFinite(parsedTimestamp) || separator < 0 || !cursor.slice(separator + 1)) {
+      throw new Error('Invalid sync cursor');
+    }
+    cursorUpdatedAt = parsedTimestamp;
+    cursorId = cursor.slice(separator + 1);
+  }
   const query = `
     SELECT id, table_id, title, content, data_json, rich_content, created_at, updated_at
     FROM notes
-    WHERE updated_at > ?
-    ORDER BY updated_at ASC
+    WHERE (updated_at > ? OR (updated_at = ? AND id > ?))
+      AND (table_id IS NULL OR NOT EXISTS (SELECT 1 FROM tables t WHERE t.id = notes.table_id AND t.visibility <> 'shared' AND t.owner_id <> ? AND ? <> 'master' AND NOT EXISTS (SELECT 1 FROM board_group_permissions p JOIN group_memberships m ON m.group_id=p.group_id WHERE p.table_id=t.id AND m.user_id=?)))
+    ORDER BY updated_at ASC, id ASC
     LIMIT ?;
   `;
-  const res = dbInstance.exec(query, [since, safeLimit]);
+  const res = dbInstance.exec(query, [cursorUpdatedAt, cursorUpdatedAt, cursorId, userId || '', role || '', userId || '', safeLimit + 1]);
   const rows: any[] = [];
   let latestUpdatedAt = since;
 
@@ -1894,11 +2361,16 @@ export function getNotesSync(
     });
   }
 
+  const hasMore = rows.length > safeLimit;
+  const page = hasMore ? rows.slice(0, safeLimit) : rows;
+  const lastRow = page[page.length - 1];
   return {
-    data: rows,
+    data: page,
     since,
-    latest_updated_at: latestUpdatedAt,
-    count: rows.length,
+    latest_updated_at: page.reduce((latest, row) => Math.max(latest, Number(row.updated_at) || since), since),
+    count: page.length,
+    has_more: hasMore,
+    next_cursor: hasMore && lastRow ? `${lastRow.updated_at}_${lastRow.id}` : null,
   };
 }
 
@@ -1938,6 +2410,14 @@ export function pushSyncNotes(notes: any[]): {
         dataJson = JSON.stringify(note.data);
       } else if (!dataJson) {
         dataJson = JSON.stringify({ name: title });
+      }
+
+      const assetValues: unknown[] = [richContent, typeof dataJson === 'string' ? dataJson : ''];
+      for (const value of assetValues) {
+        if (typeof value !== 'string') continue;
+        for (const match of value.matchAll(/asset:\/\/([a-zA-Z0-9_-]+)/g)) {
+          dbInstance.run('INSERT OR IGNORE INTO table_assets(asset_id, table_id) VALUES (?, ?)', [match[1], toSqliteParam(tableId)]);
+        }
       }
 
       // 1. Ensure table exists in tables and tree_items

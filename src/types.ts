@@ -117,6 +117,9 @@ export interface TableDocument {
   columns: TableColumn[];
   rows: TableRow[];
   defaultView?: 'grid' | 'cards' | 'calendar' | 'memo';
+  visibility?: 'shared' | 'private' | 'group';
+  ownerId?: string;
+  accessLevel?: 'owner' | 'write' | 'read';
   createdAt: number;
   updatedAt: number;
   is_dirty?: number; // 1 = un-synced dirty state, 0 = synced

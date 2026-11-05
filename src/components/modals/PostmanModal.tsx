@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import { STORAGE_KEYS } from '../../constants/storageKeys';
 import { createPortal } from 'react-dom';
 import {
   X,
@@ -93,39 +94,75 @@ export interface PostmanWorkspace {
   collections: PostmanCollection[];
 }
 
-const DEFAULT_WORKSPACES: PostmanWorkspace[] = [
-  {
-    id: 'ws-default',
-    name: '기본 워크스페이스',
-    collections: [
-      {
-        id: 'col-sample',
-        name: 'Sample API 컬렉션',
-        requests: [
-          {
-            id: 'req-sample-1',
-            name: 'JSONPlaceholder Todo 조회',
-            item: {
-              id: 'item-1',
-              method: 'GET',
-              url: 'https://jsonplaceholder.typicode.com/todos/1',
-              timestamp: Date.now(),
-              paramsList: [],
-              headersList: [{ id: 'h-1', enabled: true, key: 'Accept', value: 'application/json', description: '' }],
-              bodyType: 'none',
-              bodyJson: '',
-              authType: 'none',
-              authToken: '',
-              authUsername: '',
-              authPassword: '',
-              useCorsProxy: false,
-            },
-          },
-        ],
-      },
-    ],
+const defaultRequest = (id: string, name: string, method: HttpMethod, url: string, body = ''): PostmanSavedRequest => ({
+  id,
+  name,
+  item: {
+    id: `item-${id}`, method, url, timestamp: Date.now(), paramsList: [],
+    headersList: [{ id: `accept-${id}`, enabled: true, key: 'Accept', value: 'application/json', description: '' }],
+    bodyType: body ? 'raw_json' : 'none', bodyJson: body,
+    authType: 'none', authToken: '', authUsername: '', authPassword: '', useCorsProxy: false,
   },
-];
+});
+
+const DEFAULT_WORKSPACES: PostmanWorkspace[] = [{
+  id: 'ws-wonnote', name: 'WonNote 워크스페이스', collections: [
+    { id: 'col-auth', name: '인증', requests: [
+      defaultRequest('auth-health','서버 상태 확인','GET','/api/health'),
+      defaultRequest('auth-me','현재 로그인 사용자','GET','/api/auth/me'),
+      defaultRequest('auth-password','이메일 비밀번호 로그인','POST','/api/auth/password-login','{\n  "email": "user@example.com",\n  "password": "<등록한 비밀번호>"\n}'),
+      defaultRequest('auth-oidc','OIDC Bearer 토큰 로그인','POST','/api/auth/login','{\n  "token": "<OIDC access token>"\n}'),
+      defaultRequest('auth-logout','로그아웃','POST','/api/auth/logout','{}'),
+      defaultRequest('admin-users','관리자: 계정 목록','GET','/api/admin/users'),
+      defaultRequest('admin-add-user','관리자: 계정 사전 등록','POST','/api/admin/users','{\n  "email": "user@example.com",\n  "displayName": "사용자 이름",\n  "password": "<8자 이상 비밀번호>"\n}'),
+      defaultRequest('admin-update-user','관리자: 계정 권한·상태 변경 (ID 교체)','PATCH','/api/admin/users/<user-id>','{\n  "role": "user",\n  "status": "active"\n}'),
+      defaultRequest('admin-history','관리자: 로그인 이력','GET','/api/admin/login-history'),
+    ]},
+    { id: 'col-workspace', name: '워크스페이스·트리·노트', requests: [
+      defaultRequest('ws-get','워크스페이스 전체 조회','GET','/api/workspace'),
+      defaultRequest('ws-meta','워크스페이스 메타 조회','GET','/api/workspace/meta'),
+      defaultRequest('ws-version','워크스페이스 버전 확인','GET','/api/workspace/version'),
+      defaultRequest('ws-save','워크스페이스 저장','PUT','/api/workspace','{\n  "tables": {},\n  "tree": [],\n  "documents": {}\n}'),
+      defaultRequest('tree-get','트리 조회','GET','/api/tree'),
+      defaultRequest('tree-save','트리 저장','PUT','/api/tree','[]'),
+      defaultRequest('notes-list','노트 목록 조회','GET','/api/notes?limit=50'),
+      defaultRequest('notes-sync','노트 변경분 조회','GET','/api/notes/sync?since=0'),
+      defaultRequest('notes-push','노트 변경분 반영','POST','/api/notes/push-sync','{\n  "notes": []\n}'),
+      defaultRequest('notes-clean','워크스페이스 정리','POST','/api/workspace/clean','{}'),
+      defaultRequest('doc-save','문서 저장 (ID 교체)','PUT','/api/documents/<document-id>','{\n  "id": "<document-id>",\n  "title": "새 제목",\n  "content": "본문"\n}'),
+      defaultRequest('doc-delete','문서 삭제 (ID 교체)','DELETE','/api/documents/<document-id>'),
+    ]},
+    { id: 'col-tables', name: '테이블·일정·에셋', requests: [
+      defaultRequest('table-get','테이블 조회 (ID 교체)','GET','/api/tables/<table-id>'),
+      defaultRequest('table-save','테이블 저장 (ID 교체)','PUT','/api/tables/<table-id>','{\n  "id": "<table-id>",\n  "title": "테이블 이름",\n  "columns": [],\n  "rows": []\n}'),
+      defaultRequest('table-rename','테이블 이름 변경 (ID 교체)','PUT','/api/tables/<table-id>/rename','{\n  "title": "새 테이블 이름"\n}'),
+      defaultRequest('table-delete','테이블 삭제 (ID 교체)','DELETE','/api/tables/<table-id>'),
+      defaultRequest('events-get','일정 목록 조회','GET','/api/events'),
+      defaultRequest('events-create','일정 생성','POST','/api/events','{\n  "title": "예시 일정",\n  "startDate": "2026-11-05",\n  "endDate": "2026-11-05"\n}'),
+      defaultRequest('events-delete','일정 삭제 (ID 교체)','DELETE','/api/events/<event-id>'),
+      defaultRequest('asset-get','이미지 에셋 조회 (ID 교체)','GET','/api/assets/<asset-id>'),
+      defaultRequest('asset-save','이미지 에셋 저장','POST','/api/assets','{\n  "id": "example-image",\n  "mimeType": "image/png",\n  "data": "<base64>"\n}'),
+      defaultRequest('images-get','행 이미지 조회 (ID 교체)','GET','/api/images/<image-id>'),
+      defaultRequest('network-info','서버 네트워크 정보','GET','/api/network/info'),
+    ]},
+    { id: 'col-ai', name: '검색·AI·가져오기', requests: [
+      defaultRequest('rag-index','문서 검색 인덱스 갱신','POST','/api/rag/index','{}'),
+      defaultRequest('rag-search','문서 검색','POST','/api/rag/search','{\n  "query": "검색어",\n  "limit": 5\n}'),
+      defaultRequest('ollama-status','Ollama 상태 확인','GET','/api/ollama/status'),
+      defaultRequest('ollama-config-get','Ollama 설정 조회','GET','/api/ollama/config'),
+      defaultRequest('ollama-config-set','Ollama 설정 변경','POST','/api/ollama/config','{\n  "host": "http://localhost:11434",\n  "model": "<model-name>"\n}'),
+      defaultRequest('ollama-generate','Ollama 응답 생성','POST','/api/ollama/generate','{\n  "prompt": "안녕하세요",\n  "systemPrompt": "간결하게 답변하세요"\n}'),
+      defaultRequest('action-execute','AI 액션 실행','POST','/api/action/execute','{\n  "action": "<action>",\n  "payload": {}\n}'),
+      defaultRequest('exchange-items','교환 파일 가져오기 (바이너리 요청)','POST','/api/exchange/items'),
+      defaultRequest('exchange-list','가져오기 가능한 항목 목록','GET','/api/exchange/items'),
+      defaultRequest('exchange-export','교환 파일 내보내기 (ID 교체)','GET','/api/exchange/items/<item-id>'),
+      defaultRequest('exchange-import-folder','교환 폴더 가져오기 (바이너리 요청)','POST','/api/exchange/items/folders'),
+      defaultRequest('api-proxy','CORS 프록시 예시','GET','/api/proxy?url=https%3A%2F%2Fexample.com%2Fapi'),
+      defaultRequest('database-reload','디스크 DB 다시 불러오기','POST','/api/database/reload','{}'),
+      defaultRequest('ppt-convert','PPT 변환 (바이너리 요청)','POST','/api/convert/ppt'),
+    ]},
+  ],
+}];
 
 const DEFAULT_MOCK_URL = 'https://xxx.xxxxxx.com';
 
@@ -169,12 +206,29 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
   // Workspaces & Collections State
   const [workspaces, setWorkspaces] = useState<PostmanWorkspace[]>(() => {
     try {
-      const saved = localStorage.getItem('wonbee_postman_workspaces');
-      if (saved) return JSON.parse(saved);
+      const saved = localStorage.getItem(STORAGE_KEYS.postmanWorkspaces);
+      if (saved) {
+        const parsed = JSON.parse(saved) as PostmanWorkspace[];
+        const seeded = DEFAULT_WORKSPACES[0];
+        const existing = parsed.find(ws => ws.id === seeded.id || ws.name === seeded.name);
+        if (!existing) return [seeded, ...parsed];
+        const collections = seeded.collections.map(seedCollection => {
+          const oldCollection = existing.collections.find(collection => collection.id === seedCollection.id || collection.name === seedCollection.name);
+          if (!oldCollection) return seedCollection;
+          const knownIds = new Set(oldCollection.requests.map(request => request.id));
+          return { ...oldCollection, requests: [...oldCollection.requests, ...seedCollection.requests.filter(request => !knownIds.has(request.id))] };
+        });
+        const mergedCollections = existing.collections.map(old => collections.find(seed => seed.id === old.id) || old);
+        for (const seed of collections) if (!mergedCollections.some(old => old.id === seed.id)) mergedCollections.push(seed);
+        return parsed.map(ws => ws === existing ? { ...ws, collections: mergedCollections } : ws);
+      }
     } catch {}
     return DEFAULT_WORKSPACES;
   });
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>('ws-default');
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState<string>('ws-wonnote');
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEYS.postmanWorkspaces, JSON.stringify(workspaces)); } catch { /* storage may be unavailable */ }
+  }, [workspaces]);
 
   // Save Request Modal Dialog State
   const [isSaveModalOpen, setIsSaveModalOpen] = useState<boolean>(false);
@@ -188,16 +242,16 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
   const [rawHeadersText, setRawHeadersText] = useState<string>('');
 
   const [useCorsProxy, setUseCorsProxy] = useState<boolean>(() => {
-    return localStorage.getItem('wonbee_postman_cors_proxy') === 'true';
+    return localStorage.getItem(STORAGE_KEYS.postmanCorsProxy) === 'true';
   });
 
   const [useServerMode, setUseServerMode] = useState<boolean>(() => {
-    return localStorage.getItem('wonbee_use_server') === 'true';
+    return localStorage.getItem(STORAGE_KEYS.useServer) === 'true';
   });
 
   const saveWorkspacesToStorage = (updated: PostmanWorkspace[]) => {
     setWorkspaces(updated);
-    localStorage.setItem('wonbee_postman_workspaces', JSON.stringify(updated));
+    localStorage.setItem(STORAGE_KEYS.postmanWorkspaces, JSON.stringify(updated));
   };
 
   const handleSwitchHeaderMode = (mode: 'keyvalue' | 'raw') => {
@@ -356,13 +410,13 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
 
   const handleToggleCorsProxy = (val: boolean) => {
     setUseCorsProxy(val);
-    localStorage.setItem('wonbee_postman_cors_proxy', String(val));
+    localStorage.setItem(STORAGE_KEYS.postmanCorsProxy, String(val));
     showToast(val ? '✓ CORS Proxy가 활성화되었습니다.' : 'CORS Proxy가 비활성화되었습니다.');
   };
 
   const handleToggleServerMode = (val: boolean) => {
     setUseServerMode(val);
-    localStorage.setItem('wonbee_use_server', String(val));
+    localStorage.setItem(STORAGE_KEYS.useServer, String(val));
     showToast(val ? '✓ Server 모드 (REST API 백엔드)로 설정되었습니다.' : 'Client 모드 (Serverless IndexedDB)로 설정되었습니다.');
   };
 
@@ -392,7 +446,7 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
   // History & Sidebar state
   const [historyList, setHistoryList] = useState<HistoryItem[]>(() => {
     try {
-      const saved = localStorage.getItem('wonbee_postman_history');
+      const saved = localStorage.getItem(STORAGE_KEYS.postmanHistory);
       if (saved) return JSON.parse(saved);
     } catch {}
     return [];
@@ -639,7 +693,7 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
 
       setHistoryList((prev) => {
         const next = [newHistoryItem, ...prev.filter((h) => h.url !== url || h.method !== method)].slice(0, 30);
-        localStorage.setItem('wonbee_postman_history', JSON.stringify(next));
+        localStorage.setItem(STORAGE_KEYS.postmanHistory, JSON.stringify(next));
         return next;
       });
     } catch (err: any) {
@@ -686,14 +740,14 @@ export const PostmanModal: React.FC<PostmanModalProps> = ({ isOpen, onClose }) =
     if (item.authPassword !== undefined) setAuthPassword(item.authPassword);
     if (item.useCorsProxy !== undefined) {
       setUseCorsProxy(item.useCorsProxy);
-      localStorage.setItem('wonbee_postman_cors_proxy', String(item.useCorsProxy));
+      localStorage.setItem(STORAGE_KEYS.postmanCorsProxy, String(item.useCorsProxy));
     }
     showToast(`🔄 히스토리 (${item.method} ${item.url}) 정보가 복원되었습니다.`);
   };
 
   const handleClearHistory = () => {
     setHistoryList([]);
-    localStorage.removeItem('wonbee_postman_history');
+    localStorage.removeItem(STORAGE_KEYS.postmanHistory);
     showToast('✓ 히스토리 기록이 모두 삭제되었습니다.');
   };
 

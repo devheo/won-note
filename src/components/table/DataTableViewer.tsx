@@ -131,9 +131,16 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
         tableName: table.title || '워크스페이스',
         lastModifiedAt: table.updatedAt || Date.now(),
         totalBytes,
+        totalChars: jsonStr.length,
+        totalLines: jsonStr ? jsonStr.split('\n').length : 1,
+        line: 1,
+        col: 1,
+        selectedChars: 0,
+        selectedBytes: 0,
+        viewModeName: activeViewMode,
       });
     }
-  }, [table, updateMetrics]);
+  }, [table, activeViewMode, updateMetrics]);
 
   // Performance Optimization Options State (User-configurable, stored in localStorage)
   const [internalPerfOptions, setInternalPerfOptions] = useState<PerformanceOptions>(() => loadPerformanceOptions());

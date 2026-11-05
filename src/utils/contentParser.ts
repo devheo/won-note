@@ -69,8 +69,13 @@ export function analyzeContent(content: any, colType?: string): ContentAnalysisR
 
   const hasSticker = trimmed.includes('wonbee-sticker') || trimmed.includes('<sticker-node');
   const hasTable = trimmed.includes('<table');
+  // Rich text columns may contain TipTap HTML such as <p><strong>...</strong></p>.
+  // Preserve that markup instead of treating it as Markdown because the field type is richText.
+  const hasRichHtmlMarkup = /<\/?(?:p|div|span|strong|b|em|i|s|u|mark|del|h[1-6]|ul|ol|li|blockquote|pre|code|table|thead|tbody|tfoot|tr|th|td|img|br|hr|a|iframe)\b/i.test(trimmed);
   const imageSrc = extractFirstImageSrc(trimmed);
-  const isImage = colType === 'image' || isImageValue(trimmed) || (!!imageSrc && !trimmed.includes('!['));
+  // An image embedded in rich text does not make the whole field an image value.
+  // Only classify the field as an image when its entire value is an image.
+  const isImage = colType === 'image' || (!hasRichHtmlMarkup && isImageValue(trimmed)) || (!!imageSrc && !trimmed.includes('![') && !hasRichHtmlMarkup);
 
   // 1. Pure Code Check
   const pureCodeInfo = extractCodeBlockFromContent(trimmed);
@@ -84,7 +89,7 @@ export function analyzeContent(content: any, colType?: string): ContentAnalysisR
   const isMd =
     !pureCodeInfo.isPureCode &&
     !hasSticker &&
-    (colType === 'richText' ||
+    ((colType === 'richText' && !hasRichHtmlMarkup) ||
       hasMarkdownFences ||
       isLikelyMarkdown(trimmed) ||
       trimmed.includes('#') ||
@@ -104,7 +109,7 @@ export function analyzeContent(content: any, colType?: string): ContentAnalysisR
   const isRichHtml =
     !pureCodeInfo.isPureCode &&
     !isMd &&
-    (colType === 'richText' ||
+    (colType === 'richText' || hasRichHtmlMarkup ||
       hasTable ||
       hasSticker ||
       trimmed.includes('<pre') ||

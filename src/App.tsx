@@ -30,10 +30,14 @@ import { ModernRowDetailViewer } from './components/table/ModernRowDetailViewer'
 import { RichEditorModal } from './components/editor/RichEditorModal';
 import { WonNoteDocumentEditor } from './components/editor/WonNoteDocumentEditor';
 import { ZoomControls } from './components/common/ZoomControls';
+import { STORAGE_KEYS, STORAGE_KEY_PREFIXES, storageKeyFor } from './constants/storageKeys';
+import { ZOOM_LIMITS } from './constants/limits';
+import { LIGHT_THEMES } from './constants/themes';
 import { DataPortabilityModal } from './components/modals/DataPortabilityModal';
 import { TextPasteModal } from './components/modals/TextPasteModal';
 import { UniversalImportModal } from './components/modals/UniversalImportModal';
 import { ServerSettingsModal } from './components/modals/ServerSettingsModal';
+import { ServerAuthGate } from './components/auth/ServerAuthGate';
 import { CommandPaletteModal } from './components/modals/CommandPaletteModal';
 import { WonBeeMascot } from './components/common/WonBeeMascot';
 import { FileMenuDropdown } from './components/common/FileMenuDropdown';
@@ -82,13 +86,13 @@ export default function App() {
   // Server vs Serverless (USE_SERVER) State - Defaults to local IndexedDB (Persisted in localStorage)
   const [useServer, setUseServer] = useState<boolean>(() => {
     if (typeof window !== 'undefined' && window.location.protocol.startsWith('file:')) return false;
-    const saved = localStorage.getItem('wonbee_use_server');
+    const saved = localStorage.getItem(STORAGE_KEYS.useServer);
     if (saved !== null) return saved === 'true';
-    localStorage.setItem('wonbee_use_server', 'false');
+    localStorage.setItem(STORAGE_KEYS.useServer, 'false');
     return false;
   });
   const [serverUrl, setServerUrl] = useState<string>(() => {
-    return localStorage.getItem('wonbee_server_url') || '/api';
+    return localStorage.getItem(STORAGE_KEYS.serverUrl) || '/api';
   });
 
   // Repository Instance
@@ -116,7 +120,7 @@ export default function App() {
   } = useWorkspaceInit({ repository });
   const latestWorkspaceRef = useRef(workspace);
   latestWorkspaceRef.current = workspace;
-  const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem('wonbee_active_doc_id'));
+  const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem(STORAGE_KEYS.activeDocument));
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
   const [guideTopic, setGuideTopic] = useState<GuideTopic | null>(null);
   useEffect(() => {
@@ -130,7 +134,6 @@ export default function App() {
   const [isLocalFileSaving, setIsLocalFileSaving] = useState(false);
   const isFsSupported = localFileService.isSupported();
 
-  const LIGHT_THEMES = ['light', 'material-light', 'bootstrap-light', 'warm-light'];
 
   // Multi-Theme State
   const [theme, setTheme] = useState<AppThemeMode>(() => {
@@ -140,7 +143,7 @@ export default function App() {
         if (envTheme === 'dark') return 'dark-soft';
         return envTheme as any;
       }
-      const saved = localStorage.getItem('wonbee_theme');
+      const saved = localStorage.getItem(STORAGE_KEYS.theme);
       if (saved) return saved as any;
       return 'dark-soft';
     }
@@ -150,13 +153,14 @@ export default function App() {
 
   // Zoom State (persisted)
   const [zoomLevel, setZoomLevel] = useState<number>(() => {
-    const saved = localStorage.getItem('wonbee_zoom_level');
-    return saved ? parseInt(saved, 10) : 100;
+    const saved = localStorage.getItem(STORAGE_KEYS.zoomLevel);
+    return saved ? parseInt(saved, 10) : ZOOM_LIMITS.default;
   });
 
   const handleZoomChange = (newZoom: number) => {
-    setZoomLevel(newZoom);
-    localStorage.setItem('wonbee_zoom_level', newZoom.toString());
+    const boundedZoom = Math.max(ZOOM_LIMITS.min, Math.min(ZOOM_LIMITS.max, Math.round(newZoom)));
+    setZoomLevel(boundedZoom);
+    localStorage.setItem(STORAGE_KEYS.zoomLevel, boundedZoom.toString());
   };
 
   const syncToLocalFileIfConnected = useCallback(async (data: WorkspaceData) => {
@@ -193,7 +197,7 @@ export default function App() {
       }
 
       // 2. User saved per-table preference for other tables (Kanban, Calendar, Table)
-      const perTableSaved = localStorage.getItem(`wonbee_view_mode_${tableId}`);
+      const perTableSaved = localStorage.getItem(storageKeyFor(STORAGE_KEY_PREFIXES.viewModeByTable, tableId));
       if (
         perTableSaved === 'table' ||
         perTableSaved === 'kanban' ||
@@ -222,7 +226,7 @@ export default function App() {
   // Switch Active Table & Persist (테이블 전환 시 뷰모드 보장)
   const activateTable = (tableId: string) => {
     setActiveDocId(null);
-    localStorage.removeItem('wonbee_active_doc_id');
+    localStorage.removeItem(STORAGE_KEYS.activeDocument);
     setActiveTableId(tableId);
   };
 
@@ -250,12 +254,12 @@ export default function App() {
       setOpenTabIds((previous) => previous.includes(tableId) ? previous : [...previous, tableId]);
       setActiveTableId(null);
       setActiveDocId(tableId);
-      localStorage.setItem('wonbee_active_doc_id', tableId);
-      localStorage.removeItem('wonbee_active_table_id');
+      localStorage.setItem(STORAGE_KEYS.activeDocument, tableId);
+      localStorage.removeItem(STORAGE_KEYS.activeTable);
       return;
     }
     activateTable(tableId);
-    localStorage.setItem('wonbee_active_table_id', tableId);
+    localStorage.setItem(STORAGE_KEYS.activeTable, tableId);
     setViewMode(resolveViewModeForTable(tableId));
   };
 
@@ -269,8 +273,8 @@ export default function App() {
       if (!nextId) {
         setActiveTableId(null);
         setActiveDocId(null);
-        localStorage.removeItem('wonbee_active_table_id');
-        localStorage.removeItem('wonbee_active_doc_id');
+        localStorage.removeItem(STORAGE_KEYS.activeTable);
+        localStorage.removeItem(STORAGE_KEYS.activeDocument);
       } else {
         handleSelectActiveTable(nextId);
       }
@@ -330,7 +334,7 @@ export default function App() {
 
   useEffect(() => {
     if (activeTableId) {
-      localStorage.setItem('wonbee_active_table_id', activeTableId);
+      localStorage.setItem(STORAGE_KEYS.activeTable, activeTableId);
     }
   }, [activeTableId]);
 
@@ -340,7 +344,7 @@ export default function App() {
   useEffect(() => {
     if (activeTableId && activeTableId !== prevActiveTableIdRef.current) {
       prevActiveTableIdRef.current = activeTableId;
-      localStorage.setItem('wonbee_active_table_id', activeTableId);
+      localStorage.setItem(STORAGE_KEYS.activeTable, activeTableId);
       const mode = resolveViewModeForTable(activeTableId);
       setViewMode(mode);
     }
@@ -371,7 +375,7 @@ export default function App() {
   // AI assistant is opt-in by default; retain an existing user choice.
   const [aiEnabled, setAiEnabled] = useState<boolean>(() => {
     const savedEnv = envService.getEnv();
-    if (localStorage.getItem('wonbee_user_env') !== null) {
+    if (localStorage.getItem(STORAGE_KEYS.userEnv) !== null) {
       return savedEnv.aiEnabled;
     }
     return false;
@@ -392,22 +396,22 @@ export default function App() {
 
   // View Mode: 'table' vs 'kanban' vs 'calendar' vs 'memo' (Persisted per table in localStorage)
   const [viewMode, setViewMode] = useState<'table' | 'kanban' | 'calendar' | 'memo'>(() => {
-    const savedTableId = localStorage.getItem('wonbee_active_table_id');
+    const savedTableId = localStorage.getItem(STORAGE_KEYS.activeTable);
     if (savedTableId) {
-      const perTableSaved = localStorage.getItem(`wonbee_view_mode_${savedTableId}`);
+      const perTableSaved = localStorage.getItem(storageKeyFor(STORAGE_KEY_PREFIXES.viewModeByTable, savedTableId));
       if (perTableSaved) return perTableSaved as any;
     }
-    return (localStorage.getItem('wonbee_view_mode') as 'table' | 'kanban' | 'calendar' | 'memo') || 'table';
+    return (localStorage.getItem(STORAGE_KEYS.viewMode) as 'table' | 'kanban' | 'calendar' | 'memo') || 'table';
   });
   const [openTabIds, setOpenTabIds] = useState<string[]>(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem('wonbee_open_tabs') || '[]');
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.openTabs) || '[]');
       return Array.isArray(saved) ? saved.filter((id): id is string => typeof id === 'string') : [];
     } catch { return []; }
   });
 
   useEffect(() => {
-    localStorage.setItem('wonbee_open_tabs', JSON.stringify(openTabIds));
+    localStorage.setItem(STORAGE_KEYS.openTabs, JSON.stringify(openTabIds));
   }, [openTabIds]);
 
   useEffect(() => {
@@ -430,15 +434,15 @@ export default function App() {
       setOpenTabIds((previous) => previous.includes(activeDocId) ? previous : [...previous, activeDocId]);
     } else {
       setActiveDocId(null);
-      localStorage.removeItem('wonbee_active_doc_id');
+      localStorage.removeItem(STORAGE_KEYS.activeDocument);
     }
   }, [isLoading, activeDocId, workspace.documents]);
 
   const handleViewModeChange = (mode: 'table' | 'kanban' | 'calendar' | 'memo') => {
     setViewMode(mode);
-    localStorage.setItem('wonbee_view_mode', mode);
+    localStorage.setItem(STORAGE_KEYS.viewMode, mode);
     if (activeTableId) {
-      localStorage.setItem(`wonbee_view_mode_${activeTableId}`, mode);
+      localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.viewModeByTable, activeTableId), mode);
     }
   };
 
@@ -593,8 +597,8 @@ export default function App() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || '서버 가져오기에 실패했습니다.');
       if (result.kind === 'table') {
-        localStorage.setItem(`wonbee_calendar_events_${result.id}`, JSON.stringify(result.events || []));
-        localStorage.setItem(`wonbee_memo_board_layout_${result.id}`, JSON.stringify(result.layouts || {}));
+        localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.calendarEventsByTable, result.id), JSON.stringify(result.events || []));
+        localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.memoLayoutByTable, result.id), JSON.stringify(result.layouts || {}));
       }
       try {
         const freshResponse = await fetchBridge('/api/workspace');
@@ -613,8 +617,8 @@ export default function App() {
       tables: received.kind === 'table' ? { ...current.tables, [received.item.id]: received.item as TableDocument } : current.tables,
       exportedAt: Date.now() };
     if (received.kind === 'table') {
-      localStorage.setItem(`wonbee_calendar_events_${received.item.id}`, JSON.stringify(received.events));
-      localStorage.setItem(`wonbee_memo_board_layout_${received.item.id}`, JSON.stringify(received.layouts));
+      localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.calendarEventsByTable, received.item.id), JSON.stringify(received.events));
+      localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.memoLayoutByTable, received.item.id), JSON.stringify(received.layouts));
     }
     await wonbeeDexieDB.saveFullWorkspace(merged, 1); setWorkspace(merged);
     if (received.kind === 'document') { setActiveDocId(received.item.id); setActiveTableId(null); setOpenTabIds(previous => [...previous, received.item.id]); }
@@ -651,8 +655,8 @@ export default function App() {
       tables: { ...current.tables, ...received.tables },
       exportedAt: Date.now(),
     };
-    for (const [tableId, events] of Object.entries(received.events)) localStorage.setItem(`wonbee_calendar_events_${tableId}`, JSON.stringify(events));
-    for (const [tableId, layouts] of Object.entries(received.layouts)) localStorage.setItem(`wonbee_memo_board_layout_${tableId}`, JSON.stringify(layouts));
+    for (const [tableId, events] of Object.entries(received.events)) localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.calendarEventsByTable, tableId), JSON.stringify(events));
+    for (const [tableId, layouts] of Object.entries(received.layouts)) localStorage.setItem(storageKeyFor(STORAGE_KEY_PREFIXES.memoLayoutByTable, tableId), JSON.stringify(layouts));
     await wonbeeDexieDB.saveFullWorkspace(merged, 1);
     setWorkspace(merged);
     await syncToLocalFileIfConnected(merged);
@@ -827,7 +831,7 @@ export default function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     document.documentElement.classList.toggle('dark', !LIGHT_THEMES.includes(theme));
-    localStorage.setItem('wonbee_theme', theme);
+    localStorage.setItem(STORAGE_KEYS.theme, theme);
   }, [theme]);
 
   // Active Table
@@ -901,6 +905,7 @@ export default function App() {
 
   // Update specific table and keep tree item in sync (Fast path: only saves target table)
   const handleUpdateTable = async (updatedTable: TableDocument) => {
+    if (updatedTable.accessLevel === 'read') return;
     const now = Date.now();
     const updatedTableWithTime: TableDocument = {
       ...updatedTable,
@@ -1035,8 +1040,8 @@ export default function App() {
 
     setWorkspace(updatedWs);
     activateTable(newTableId);
-    localStorage.setItem('wonbee_active_table_id', newTableId);
-    localStorage.removeItem('wonbee_active_doc_id');
+    localStorage.setItem(STORAGE_KEYS.activeTable, newTableId);
+    localStorage.removeItem(STORAGE_KEYS.activeDocument);
 
     // 🟢 새 테이블은 기존 그리드 뷰로 진입
     handleViewModeChange('table');
@@ -1095,8 +1100,8 @@ export default function App() {
     setActiveTableId(null);
     setActiveDocId(id);
     setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== id), id]);
-    localStorage.setItem('wonbee_active_doc_id', id);
-    localStorage.removeItem('wonbee_active_table_id');
+    localStorage.setItem(STORAGE_KEYS.activeDocument, id);
+    localStorage.removeItem(STORAGE_KEYS.activeTable);
     scheduleDocumentWorkspaceSave(document, updatedWs, true);
     return id;
   };
@@ -1143,8 +1148,8 @@ export default function App() {
     setActiveTableId(null);
     setActiveDocId(documentId);
     setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== documentId), documentId]);
-    localStorage.setItem('wonbee_active_doc_id', documentId);
-    localStorage.removeItem('wonbee_active_table_id');
+    localStorage.setItem(STORAGE_KEYS.activeDocument, documentId);
+    localStorage.removeItem(STORAGE_KEYS.activeTable);
     scheduleDocumentWorkspaceSave(document, updatedWs, true);
     return documentId;
   };
@@ -1308,7 +1313,7 @@ export default function App() {
 
     setWorkspace(updatedWs);
     activateTable(newTableId);
-    localStorage.setItem('wonbee_active_table_id', newTableId);
+    localStorage.setItem(STORAGE_KEYS.activeTable, newTableId);
     handleViewModeChange('kanban'); // 바로 칸반보드 뷰로 보여주기
     try {
       await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
@@ -1451,7 +1456,7 @@ export default function App() {
 
     setWorkspace(updatedWs);
     activateTable(newTableId);
-    localStorage.setItem('wonbee_active_table_id', newTableId);
+    localStorage.setItem(STORAGE_KEYS.activeTable, newTableId);
     handleViewModeChange('calendar'); // 바로 캘린더 뷰로 보여주기
     try {
       await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
@@ -1534,7 +1539,7 @@ export default function App() {
     // 1. React UI State 반영
         setWorkspace(updatedWs);
         activateTable(newTableId);
-        localStorage.setItem('wonbee_active_table_id', newTableId);
+        localStorage.setItem(STORAGE_KEYS.activeTable, newTableId);
         handleViewModeChange('memo');
 
         // 2. ⭐️ 서버 모드 vs 서버리스(로컬 DB) 모드 조건부 저장 로직
@@ -1692,7 +1697,7 @@ export default function App() {
     setOpenTabIds((previous) => previous.filter((id) => !idsToDelete.includes(id)));
     if (activeDocId && idsToDelete.includes(activeDocId)) {
       setActiveDocId(null);
-      localStorage.removeItem('wonbee_active_doc_id');
+      localStorage.removeItem(STORAGE_KEYS.activeDocument);
     }
     if (activeTableId && (idsToDelete.includes(activeTableId) || updatedTree.length === 0)) {
       setActiveTableId(null);
@@ -1703,8 +1708,8 @@ export default function App() {
       else {
         setActiveTableId(null);
         setActiveDocId(null);
-        localStorage.removeItem('wonbee_active_table_id');
-        localStorage.removeItem('wonbee_active_doc_id');
+        localStorage.removeItem(STORAGE_KEYS.activeTable);
+        localStorage.removeItem(STORAGE_KEYS.activeDocument);
       }
     }
 
@@ -1818,7 +1823,7 @@ export default function App() {
       const firstNewTableId = Object.keys(newTables)[0];
       if (firstNewTableId) {
         activateTable(firstNewTableId);
-        localStorage.setItem('wonbee_active_table_id', firstNewTableId);
+        localStorage.setItem(STORAGE_KEYS.activeTable, firstNewTableId);
       }
       closeModal();
     } catch (err) {
@@ -1969,6 +1974,7 @@ export default function App() {
 
   return (
     <GlobalStatusBarProvider>
+      <ServerAuthGate useServer={useServer} />
       <div className="h-screen w-screen flex overflow-hidden bg-stone-50/40 dark:bg-stone-950 text-stone-900 dark:text-stone-100 font-sans pb-7">
       {/* 1. Left Sidebar: Infinite Depth Tree */}
       <InfiniteTreeSidebar
@@ -1994,19 +2000,9 @@ export default function App() {
         onAddFolder={handleAddFolder}
         onDeleteTreeItem={handleDeleteTreeItem}
         onDuplicateTable={handleDuplicateTable}
+        onUpdateTable={handleUpdateTable}
         useServer={useServer}
-        onOpenServerSettings={() => openModal('serverSettings')}
         onOpenDataPortability={() => openModal('dataPortability')}
-        theme={theme}
-        onSelectTheme={(t) => {
-          setTheme(t);
-          envService.updateEnv({ theme: t });
-        }}
-        onOpenSpeedSettings={() => openModal('perfSettings')}
-        zoomLevel={zoomLevel}
-        onChangeZoom={handleZoomChange}
-        aiEnabled={aiEnabled}
-        onToggleAi={handleToggleAi}
       />
 
       {/* 2. Main Center Area with Zoom Scale Transform */}
@@ -2101,6 +2097,20 @@ export default function App() {
             />
             <ToolsMenuDropdown onOpen={(tool) => openModal(tool)} />
             <HelpMenuDropdown onOpenGuide={setGuideTopic} />
+            <SettingsMenuDropdown
+              theme={theme}
+              onSelectTheme={(nextTheme) => {
+                setTheme(nextTheme);
+                envService.updateEnv({ theme: nextTheme });
+              }}
+              onOpenSpeedSettings={() => openModal('perfSettings')}
+              onOpenServerSettings={() => openModal('serverSettings')}
+              useServer={useServer}
+              zoomLevel={zoomLevel}
+              onChangeZoom={handleZoomChange}
+              aiEnabled={aiEnabled}
+              onToggleAi={handleToggleAi}
+            />
           </div>
 
           {/* Top Right Action Items */}
@@ -2150,17 +2160,8 @@ export default function App() {
 
         {/* Parent-Child Hierarchy Breadcrumb Sub-bar */}
 
-        {/* Scalable Workspace Canvas (Zoom In / Out Container) */}
+        {/* Workspace content; note zoom is applied inside the editor body only. */}
         <div className="flex-1 w-full min-h-0 overflow-auto relative">
-          <div
-            style={{
-              transform: `scale(${zoomLevel / 100})`,
-              transformOrigin: 'top left',
-              width: `${(100 / zoomLevel) * 100}%`,
-              height: `${(100 / zoomLevel) * 100}%`,
-            }}
-            className="transition-transform duration-150 ease-out"
-          >
             {syncError ? (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
                 <div className="p-3.5 rounded-2xl bg-rose-500/10 text-rose-600 dark:text-rose-400 mb-3 border border-rose-500/20">
@@ -2181,7 +2182,11 @@ export default function App() {
                   <span>동기화 다시 시도 (Retry)</span>
                 </button>
               </div>
-            ) : isLoading && (!workspace || Object.keys(workspace.tables || {}).length === 0) ? (
+            ) : isLoading && (!workspace || (
+              Object.keys(workspace.tables || {}).length === 0 &&
+              workspace.tree.length === 0 &&
+              Object.keys(workspace.documents || {}).length === 0
+            )) ? (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
                 <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center mb-3 animate-pulse border border-amber-500/30">
                   <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
@@ -2194,12 +2199,13 @@ export default function App() {
                 </p>
               </div>
             ) : activeDocument ? (
-              <WonNoteDocumentEditor key={activeDocument.id} document={activeDocument} onUpdateDocument={handleUpdateDocumentDebounced} />
+              <WonNoteDocumentEditor key={activeDocument.id} document={activeDocument} onUpdateDocument={handleUpdateDocumentDebounced} zoomLevel={zoomLevel} useServerMode={useServer} />
             ) : activeTable ? (
               <DataTableViewer
                 table={activeTable}
                 onUpdateTable={handleUpdateTableDebounced}
                 onOpenRowEditor={(row, colId) => {
+                  if (activeTable.accessLevel === 'read') return;
                   setSelectedDetailRow(null);
                   setEditingRow(row);
                   setEditingTargetColId(colId || null);
@@ -2252,7 +2258,7 @@ export default function App() {
                 </div>
               </div>
             )}
-          </div>
+            {activeTable?.accessLevel === 'read' && <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-full border border-indigo-200 bg-white/95 px-4 py-2 text-xs font-semibold text-indigo-800 shadow-lg backdrop-blur dark:border-indigo-800 dark:bg-stone-900/95 dark:text-indigo-200">그룹 읽기 전용 보드 · 편집 권한이 없습니다</div>}
         </div>
       </main>
 
@@ -2267,11 +2273,12 @@ export default function App() {
         allRows={activeTable?.rows || []}
         tableName={activeTable?.title || '테이블'}
         onOpenRichEditor={(row, colId) => {
+          if (activeTable?.accessLevel === 'read') return;
           setEditingRow(row);
           setEditingTargetColId(colId || null);
         }}
         onUpdateRow={(updated) => {
-          if (!activeTable) return;
+          if (!activeTable || activeTable.accessLevel === 'read') return;
           const { updatedTable, updatedRow } = applyAutoUpdateDateToRow(
             activeTable,
             updated.id,
@@ -2290,7 +2297,7 @@ export default function App() {
           }
         }}
         onDeleteRow={(rowId) => {
-          if (!activeTable) return;
+          if (!activeTable || activeTable.accessLevel === 'read') return;
           const confirmMsg =
             viewMode === 'memo' ? '정말 이 스티커 메모를 삭제하시겠습니까?' :
             viewMode === 'kanban' ? '정말 이 카드를 삭제하시겠습니까?' :
@@ -2317,6 +2324,8 @@ export default function App() {
             setEditingTargetColId(null);
           }}
           row={editingRow}
+          tableId={activeTable?.id || 'workspace-table'}
+          useServerMode={useServer}
           columns={activeTable?.columns || []}
           allRows={activeTable?.rows || []}
           tableName={activeTable?.title || '테이블'}
@@ -2326,7 +2335,7 @@ export default function App() {
       )}
 
       {/* 5. Bottom Right Floating Action Button (FAB) for Zoom */}
-      <ZoomControls zoom={zoomLevel} onChangeZoom={handleZoomChange} />
+      {activeDocument && <ZoomControls zoom={zoomLevel} onChangeZoom={handleZoomChange} />}
 
       {/* 6. Data Portability Modal (Portable JSON Merge) */}
       <DataPortabilityModal
@@ -2366,10 +2375,10 @@ export default function App() {
           const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
           const nextUseServer = isFileProtocol ? false : newUseServer;
           setUseServer(nextUseServer);
-          localStorage.setItem('wonbee_use_server', String(nextUseServer));
+          localStorage.setItem(STORAGE_KEYS.useServer, String(nextUseServer));
           if (newUrl) {
             setServerUrl(newUrl);
-            localStorage.setItem('wonbee_server_url', newUrl);
+            localStorage.setItem(STORAGE_KEYS.serverUrl, newUrl);
           }
         }}
         onRefreshData={loadWorkspaceData}

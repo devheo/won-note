@@ -29,19 +29,23 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
   const layout = (node.attrs.layout as 'inline' | 'center' | 'left' | 'right') || 'inline';
 
   const [resolvedSrc, setResolvedSrc] = useState<string>(() => src.startsWith('asset://') ? '' : src);
+  const [assetResolutionFinished, setAssetResolutionFinished] = useState(false);
 
   useEffect(() => {
     let isMounted = true;
 
     async function loadAsset() {
+      setAssetResolutionFinished(false);
       if (!src) {
         setResolvedSrc('');
+        setAssetResolutionFinished(true);
         return;
       }
       if (src.startsWith('asset://')) setResolvedSrc('');
       const resolved = await resolveAssetUrl(src);
       if (!isMounted) return;
       setResolvedSrc(resolved);
+      setAssetResolutionFinished(true);
     }
 
     let observer: IntersectionObserver | undefined;
@@ -295,6 +299,11 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
           display: 'block',
         }}
       />
+      {assetResolutionFinished && !resolvedSrc && src.startsWith('asset://') && (
+        <span className="pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl border border-dashed border-rose-300 bg-stone-100/90 px-3 text-center text-xs text-stone-600 dark:border-rose-800 dark:bg-stone-800/90 dark:text-stone-300">
+          이미지 파일을 찾지 못했습니다. 다른 기기에서 보려면 원본 이미지가 서버에 저장되어 있어야 합니다.
+        </span>
+      )}
 
       {/* Resize Handle (Bottom-Right Corner) */}
       {(isHovered || selected || isResizing) && (

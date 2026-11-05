@@ -1,5 +1,6 @@
 import { wonbeeDexieDB } from '../services/storage/dexieDb';
 import { fetchBridge } from '../services/httpBridge';
+import { STORAGE_KEYS } from '../constants/storageKeys';
 
 export async function storeNoteImage(blob: Blob, filename: string) {
   const id = `asset-${crypto.randomUUID()}`;
@@ -14,7 +15,7 @@ export async function noteImageDataUrl(src: string): Promise<string | null> {
   if (!/^asset:\/\/[a-zA-Z0-9_-]+$/.test(src)) return null;
   const id = src.slice('asset://'.length);
   let blob = (await wonbeeDexieDB.getAsset(id))?.blob;
-  if (!blob && localStorage.getItem('wonbee_use_server') !== 'false') {
+  if (!blob && localStorage.getItem(STORAGE_KEYS.useServer) !== 'false') {
     const response = await fetchBridge(`/api/assets/${encodeURIComponent(id)}`);
     if (!response.ok) throw new Error('노트의 원본 이미지가 저장소에 없습니다.');
     blob = await response.blob();

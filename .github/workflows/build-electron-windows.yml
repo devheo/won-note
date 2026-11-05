@@ -1,0 +1,53 @@
+name: Build Electron for Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - 'electron-v*'
+  pull_request:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: electron-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Electron Windows installer
+        run: npm run build:electron:win
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v7
+        with:
+          name: WonNote-Windows-${{ github.ref_name }}
+          path: release/electron/WonNote-*-Setup.exe
+          if-no-files-found: error
+          retention-days: 14

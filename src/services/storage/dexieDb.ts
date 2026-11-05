@@ -30,6 +30,9 @@ export interface DexieTableDoc {
   title: string;
   description?: string;
   defaultView?: 'grid' | 'cards' | 'calendar' | 'memo';
+  visibility?: 'shared' | 'private' | 'group';
+  ownerId?: string;
+  accessLevel?: 'owner' | 'write' | 'read';
   columns: any[];
   rows: TableRow[];
   createdAt: number;
@@ -58,6 +61,21 @@ export interface DexieAsset {
   is_dirty?: number; // 1 = dirty (un-synced to server), 0 = clean
 }
 
+export interface DexieCollaborationDoc {
+  id: string;
+  update: Uint8Array;
+  updatedAt: number;
+}
+
+export interface DexieDocumentHistory {
+  id: string;
+  itemKey: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  author?: string;
+}
+
 /**
  * High-performance Dexie.js Client Database
  * Replaces 5MB localStorage and un-indexed IDB with indexed storage for 1000MB+ environments.
@@ -68,6 +86,8 @@ export class WonBeeDexieDatabase extends Dexie {
   table_docs!: Table<DexieTableDoc, string>;
   notes!: Table<DexieNote, string>;
   assets!: Table<DexieAsset, string>;
+  collaboration_docs!: Table<DexieCollaborationDoc, string>;
+  document_history!: Table<DexieDocumentHistory, string>;
 
   constructor() {
     super('wonbee_dexie_db');
@@ -84,6 +104,43 @@ export class WonBeeDexieDatabase extends Dexie {
     this.version(3).stores({
       assets: 'id, created_at, is_dirty',
     });
+    this.version(4).stores({
+      collaboration_docs: 'id, updatedAt',
+    });
+    this.version(5).stores({
+      document_history: 'id, itemKey, createdAt, [itemKey+createdAt]',
+    });
+  }
+
+  async loadCollaborationDoc(id: string): Promise<Uint8Array | null> {
+    const stored = await this.collaboration_docs.get(id);
+    return stored?.update ? new Uint8Array(stored.update) : null;
+  }
+
+  async saveCollaborationDoc(id: string, update: Uint8Array): Promise<void> {
+    await this.collaboration_docs.put({ id, update: new Uint8Array(update), updatedAt: Date.now() });
+  }
+
+  async listDocumentHistory(itemKey: string): Promise<DexieDocumentHistory[]> {
+    return (await this.document_history.where('itemKey').equals(itemKey).toArray()).sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  async saveDocumentHistory(entry: DexieDocumentHistory, limit = 100): Promise<void> {
+    await this.transaction('rw', this.document_history, async () => {
+      const existing = (await this.document_history.where('itemKey').equals(entry.itemKey).toArray()).sort((a, b) => b.createdAt - a.createdAt);
+      const last = existing[0];
+      if (last?.content === entry.content) return;
+      await this.document_history.put(entry);
+      const overflow = existing.slice(Math.max(0, limit - 1));
+      if (overflow.length) await this.document_history.bulkDelete(overflow.map(item => item.id));
+    });
+  }
+
+  async searchDocumentHistory(query: string, itemKey?: string, limit = 100): Promise<DexieDocumentHistory[]> {
+    const normalized = query.trim().toLocaleLowerCase();
+    const entries = itemKey ? await this.listDocumentHistory(itemKey) : await this.document_history.orderBy('createdAt').reverse().limit(limit * 5).toArray();
+    if (!normalized) return entries.slice(0, limit);
+    return entries.filter(entry => `${entry.title}\n${entry.content}`.toLocaleLowerCase().includes(normalized)).slice(0, limit);
   }
 
   /**
@@ -93,7 +150,11 @@ export class WonBeeDexieDatabase extends Dexie {
     try {
       const meta = await this.workspace_meta.get('root_workspace');
       const tableCount = await this.table_docs.count();
-      return Boolean(meta) && (tableCount > 0 || Object.keys(meta.documents || {}).length > 0);
+      const [treeCount, documentCount] = await Promise.all([
+        this.tree_items.count(),
+        Promise.resolve(Object.keys(meta?.documents || {}).length),
+      ]);
+      return Boolean(meta) && (tableCount > 0 || treeCount > 0 || documentCount > 0);
     } catch {
       return false;
     }
@@ -111,14 +172,26 @@ export class WonBeeDexieDatabase extends Dexie {
       ]);
 
       if (!tablesList || tablesList.length === 0) {
-        return {
+        const tree: TreeItem[] = treeList.map((t) => ({
+          id: t.id,
+          parentId: t.parentId,
+          title: t.title,
+          type: t.type,
+          icon: t.icon,
+          color: t.color,
+          isExpanded: t.isExpanded,
+          createdAt: t.createdAt || Date.now(),
+          updatedAt: t.updatedAt || Date.now(),
+        }));
+
+        return ensureWorkspaceTree({
           version: meta?.version || '1.0.0',
           exportedAt: meta?.exportedAt || 0,
           settings: meta?.settings || { theme: 'light', zoom: 100, useServer: true },
-          tree: [],
+          tree,
           tables: {},
           documents: meta?.documents || {},
-        };
+        });
       }
 
       const tablesMap: Record<string, TableDocument> = {};
@@ -128,6 +201,9 @@ export class WonBeeDexieDatabase extends Dexie {
           title: tbl.title,
           description: tbl.description,
           defaultView: tbl.defaultView,
+          visibility: tbl.visibility,
+          ownerId: tbl.ownerId,
+          accessLevel: tbl.accessLevel,
           columns: tbl.columns || [],
           rows: tbl.rows || [],
           createdAt: tbl.createdAt,
@@ -215,6 +291,9 @@ export class WonBeeDexieDatabase extends Dexie {
           title: tbl.title,
           description: tbl.description,
           defaultView: tbl.defaultView,
+          visibility: tbl.visibility,
+          ownerId: tbl.ownerId,
+          accessLevel: tbl.accessLevel,
           columns: tbl.columns || [],
           rows: rowsWithDirty,
           createdAt: tbl.createdAt || now,
@@ -292,6 +371,9 @@ export class WonBeeDexieDatabase extends Dexie {
         title: table.title,
         description: table.description,
         defaultView: table.defaultView,
+        visibility: table.visibility,
+        ownerId: table.ownerId,
+        accessLevel: table.accessLevel,
         columns: table.columns || [],
         rows: rowsWithDirty,
         createdAt: table.createdAt || now,

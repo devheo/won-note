@@ -1,4 +1,4 @@
-import { WorkspaceData, TreeItem, TableDocument } from '../types';
+import { WorkspaceData, TreeItem, TableDocument, WonNoteDocument } from '../types';
 /**
  * Ensures a WorkspaceData object has a complete, valid tree structure.
  * If tree is missing, empty, or lacks entries for any tables,
@@ -101,6 +101,28 @@ const validFolderIds = new Set<string>(
           ? 'cards'
           : 'grid';
     tables[tableId] = { ...table, defaultView: view };
+  });
+
+  // Notes have titles in both the document payload (tab/header) and tree node
+  // (workspace sidebar). Reconcile them by update time so every entry point
+  // displays one title after imports, cached loads, and server synchronization.
+  Object.entries(documents).forEach(([documentId, rawDocument]) => {
+    const document = rawDocument as WonNoteDocument;
+    const treeIndex = tree.findIndex(item => item.type === 'document' && (
+      item.id === documentId || item.id.replace(/_/g, '-') === documentId.replace(/_/g, '-')
+    ));
+    if (treeIndex < 0) return;
+    const item = tree[treeIndex];
+    const documentTitle = (document.title || '').trim();
+    const treeTitle = (item.title || '').trim();
+    if (documentTitle === treeTitle) return;
+
+    const documentUpdatedAt = document.updatedAt || 0;
+    const treeUpdatedAt = item.updatedAt || 0;
+    const title = treeUpdatedAt > documentUpdatedAt ? treeTitle : documentTitle;
+    const updatedAt = Math.max(documentUpdatedAt, treeUpdatedAt);
+    documents[documentId] = { ...document, title, updatedAt };
+    tree[treeIndex] = { ...item, title, updatedAt };
   });
 
   // 1. Auto-generate tree node for any valid table that is not in the tree

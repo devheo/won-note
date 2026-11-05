@@ -1,5 +1,6 @@
 import { wonbeeDexieDB } from '../services/storage/dexieDb';
 import { resolveApiUrl } from '../services/httpBridge';
+import { STORAGE_KEYS } from '../constants/storageKeys';
 
 const assetUrlCache = new Map<string, string>();
 const assetUrlInFlight = new Map<string, Promise<string>>();
@@ -7,7 +8,7 @@ const assetUrlInFlight = new Map<string, Promise<string>>();
 export async function resolveAssetUrl(assetUrl: string): Promise<string> {
   if (!assetUrl.startsWith('asset://')) return assetUrl;
   const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
-  const useServer = typeof localStorage !== 'undefined' && !isFileProtocol && localStorage.getItem('wonbee_use_server') !== 'false';
+  const useServer = typeof localStorage !== 'undefined' && !isFileProtocol && localStorage.getItem(STORAGE_KEYS.useServer) !== 'false';
   const cacheKey = `${assetUrl}|${useServer ? 'server' : 'local'}`;
   const cached = assetUrlCache.get(cacheKey);
   if (cached) return cached;

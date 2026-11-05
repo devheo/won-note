@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import type { AppThemeMode } from '../../constants/themes';
 import { createPortal } from 'react-dom';
 import {
   Settings,
@@ -13,19 +14,13 @@ import {
   Sliders,
   Check,
   Sparkles,
+  Shield,
 } from 'lucide-react';
+import { API_PATHS } from '../../constants/api';
+import { APP_EVENTS } from '../../constants/events';
+import { fetchBridge } from '../../services/httpBridge';
 
-export type AppThemeMode =
-  | 'light'
-  | 'material-light'
-  | 'bootstrap-light'
-  | 'warm-light'
-  | 'dark-soft'
-  | 'dark-warm'
-  | 'dark-hard'
-  | 'material-you'
-  | 'bootstrap-dark'
-  | 'material-design';
+export type { AppThemeMode } from '../../constants/themes';
 
 interface SettingsMenuDropdownProps {
   theme: AppThemeMode;
@@ -54,8 +49,24 @@ export const SettingsMenuDropdown: React.FC<SettingsMenuDropdownProps> = ({
 }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+  const [isMaster, setIsMaster] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const portalRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isOpen || !useServer) {
+      if (!useServer) setIsMaster(false);
+      return;
+    }
+    let cancelled = false;
+    fetchBridge(API_PATHS.auth.me)
+      .then(response => response.json())
+      .then((result: { enabled?: boolean; user?: { role?: string } | null }) => {
+        if (!cancelled) setIsMaster(Boolean(result.enabled && result.user?.role === 'master'));
+      })
+      .catch(() => { if (!cancelled) setIsMaster(false); });
+    return () => { cancelled = true; };
+  }, [isOpen, useServer]);
 
   // Close when clicking outside
   useEffect(() => {
@@ -323,6 +334,23 @@ export const SettingsMenuDropdown: React.FC<SettingsMenuDropdownProps> = ({
                     {useServer ? '외부 서버 및 REST API 연동 중' : '브라우저 로컬 저장소 우선 사용'}
                   </div>
                 </div>
+              </button>
+            </div>
+          )}
+
+          {useServer && isMaster && (
+            <div className="mb-2 border-t border-stone-100 pt-2 dark:border-[#2d2d2d]">
+              <div className="px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-stone-400 dark:text-[#888888]">관리</div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsOpen(false);
+                  window.dispatchEvent(new Event(APP_EVENTS.openAdminConsole));
+                }}
+                className="group flex w-full items-center gap-2.5 rounded-lg border border-transparent px-2.5 py-2 text-left text-stone-800 transition-colors hover:border-amber-200 hover:bg-amber-50/70 dark:text-[#eeeeee] dark:hover:border-amber-900/40 dark:hover:bg-amber-950/20"
+              >
+                <div className="rounded-lg bg-stone-900 p-1.5 text-white transition-colors group-hover:bg-amber-500 group-hover:text-stone-950 dark:bg-stone-700"><Shield className="h-4 w-4"/></div>
+                <div><div className="text-xs font-semibold">관리자 화면</div><div className="mt-0.5 text-[11px] text-stone-500 dark:text-[#888888]">계정·그룹·보드·접속 기록 관리</div></div>
               </button>
             </div>
           )}

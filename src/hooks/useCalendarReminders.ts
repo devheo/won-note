@@ -3,8 +3,11 @@ import { CalendarEvent, WorkspaceData } from '../types';
 import {
   calculateReminderTimestamp,
   playNotificationChime,
-  showDesktopNotification,
 } from '../utils/calendarNotification';
+import { sendAppNotification } from '../services/notificationBridge';
+import { isTauri } from '../utils/platformBridge';
+import { invoke } from '@tauri-apps/api/core';
+import { APP_EVENTS } from '../constants/events';
 import { formatLocalDate } from '../utils/dateColumnUtils';
 
 interface UseCalendarRemindersProps {
@@ -61,6 +64,24 @@ export function useCalendarReminders({ workspace, activeTableId }: UseCalendarRe
       const now = Date.now();
       const eventsWithReminders = getAllReminderEvents();
 
+      if (isTauri()) {
+        const reminders = eventsWithReminders.flatMap(({ event }) => {
+          if (event.completed) return [];
+          const fireAt = calculateReminderTimestamp(event);
+          if (!fireAt || fireAt < now - 15 * 60 * 1000) return [];
+          const eventTime = event.isAllDay ? '오늘 종일 일정' : `${event.startDate} ${event.startTime || ''}`;
+          return [{
+            id: `${event.id}:${fireAt}`,
+            title: `[WonNote 일정 알림] ${event.title}`,
+            body: `${eventTime}${event.location ? ` | 장소: ${event.location}` : ''}`,
+            fireAt,
+          }];
+        });
+        void invoke('sync_calendar_reminders', { reminders }).catch((error) => {
+          console.warn('[CalendarReminders] Could not sync reminders with the native background worker:', error);
+        });
+      }
+
       for (const { event, tableId } of eventsWithReminders) {
         if (event.completed) continue;
 
@@ -82,10 +103,12 @@ export function useCalendarReminders({ workspace, activeTableId }: UseCalendarRe
 
             // 2. Desktop Notification
             const timeDesc = event.isAllDay ? '오늘 종일 일정' : `${event.startDate} ${event.startTime || ''}`;
-            showDesktopNotification(`[WonBee 일정 알림] ${event.title}`, {
-              body: `${timeDesc}${event.location ? ` | 장소: ${event.location}` : ''}`,
-              tag: `wonbee_evt_${event.id}`,
-            });
+            if (!isTauri()) {
+              void sendAppNotification(`[WonBee 일정 알림] ${event.title}`, `${timeDesc}${event.location ? ` | 장소: ${event.location}` : ''}`, {
+                tag: `wonbee_evt_${event.id}`,
+                silent: !soundEnabled || event.reminder?.sound === false,
+              });
+            }
 
             // 3. In-App Toast
             setActiveAlarmEvent(event);
@@ -97,10 +120,14 @@ export function useCalendarReminders({ workspace, activeTableId }: UseCalendarRe
 
     // Check immediately
     checkReminders();
+    window.addEventListener(APP_EVENTS.calendarRemindersUpdated, checkReminders);
 
     // Loop every 12 seconds
     const interval = setInterval(checkReminders, 12000);
-    return () => clearInterval(interval);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener(APP_EVENTS.calendarRemindersUpdated, checkReminders);
+    };
   }, [getAllReminderEvents, soundEnabled]);
 
   // Dismiss current alarm toast
@@ -139,6 +166,7 @@ export function useCalendarReminders({ workspace, activeTableId }: UseCalendarRe
           }
         });
       }
+      window.dispatchEvent(new Event(APP_EVENTS.calendarRemindersUpdated));
     },
     [workspace]
   );
