@@ -6,6 +6,75 @@
 
 import { WorkspaceData } from '../../types';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
+import { wonbeeDexieDB } from './dexieDb';
+
+type WorkspaceBackup = WorkspaceData & {
+  __wonbeeBackup?: {
+    version: 1;
+    assets: Array<{ id: string; mime: string; filename: string; base64: string }>;
+  };
+};
+
+function encodeBase64(bytes: Uint8Array): string {
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function collectAssetIds(data: WorkspaceData): string[] {
+  const ids = new Set<string>();
+  const refs = /(?:asset:\/\/|\/api\/(?:assets|images)\/)([a-zA-Z0-9_-]+)/g;
+  const visit = (value: unknown) => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(refs)) ids.add(match[1]);
+      refs.lastIndex = 0;
+    } else if (Array.isArray(value)) {
+      value.forEach(visit);
+    } else if (value && typeof value === 'object') {
+      Object.values(value).forEach(visit);
+    }
+  };
+  visit(data);
+  return [...ids];
+}
+
+async function createBackup(data: WorkspaceData): Promise<WorkspaceBackup> {
+  const assets = [];
+  for (const id of collectAssetIds(data)) {
+    const asset = await wonbeeDexieDB.getAsset(id);
+    if (!asset) continue;
+    assets.push({
+      id: asset.id,
+      mime: asset.mime_type,
+      filename: asset.filename,
+      base64: encodeBase64(new Uint8Array(await asset.blob.arrayBuffer())),
+    });
+  }
+  return { ...ensureWorkspaceTree(data), __wonbeeBackup: { version: 1, assets } };
+}
+
+async function restoreBackupAssets(backup: WorkspaceBackup): Promise<WorkspaceData> {
+  const assets = backup.__wonbeeBackup?.assets || [];
+  if (assets.length) {
+    await wonbeeDexieDB.assets.bulkPut(assets.map((asset) => {
+      const binary = atob(asset.base64);
+      const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+      return {
+        id: asset.id,
+        blob: new Blob([bytes], { type: asset.mime }),
+        filename: asset.filename,
+        mime_type: asset.mime,
+        created_at: Date.now(),
+        is_dirty: 1,
+      };
+    }));
+  }
+  const { __wonbeeBackup: _backup, ...workspace } = backup;
+  return ensureWorkspaceTree(workspace);
+}
 
 class FileSystemSyncService {
   private fileHandle: any = null;
@@ -26,6 +95,10 @@ class FileSystemSyncService {
 
   public hasConnectedFile(): boolean {
     return !!this.fileHandle;
+  }
+
+  public async restoreFromText(content: string): Promise<WorkspaceData> {
+    return restoreBackupAssets(JSON.parse(content) as WorkspaceBackup);
   }
 
   /**
@@ -62,7 +135,7 @@ class FileSystemSyncService {
 
       const file = await handle.getFile();
       const content = await file.text();
-      const data: WorkspaceData = ensureWorkspaceTree(JSON.parse(content));
+      const data: WorkspaceData = await this.restoreFromText(content);
 
       this.fileHandle = handle;
       this.fileName = handle.name;
@@ -91,7 +164,7 @@ class FileSystemSyncService {
     try {
       // @ts-ignore
       const handle = await window.showSaveFilePicker({
-        suggestedName: 'user_data.json',
+        suggestedName: 'wonbee-client-data.json',
         types: [
           {
             description: 'WonBee 데이터 파일 (JSON)',
@@ -141,7 +214,7 @@ class FileSystemSyncService {
 
       // @ts-ignore
       const writable = await this.fileHandle.createWritable();
-      const completeData = ensureWorkspaceTree(data);
+      const completeData = await createBackup(data);
       const serialized = JSON.stringify(completeData, null, 2);
       await writable.write(serialized);
       await writable.close();
@@ -162,8 +235,8 @@ class FileSystemSyncService {
   /**
    * Standard File Download Fallback (for non-supporting browsers or manual backup)
    */
-  public downloadAsFile(data: WorkspaceData, customFileName = 'user_data.json'): void {
-    const completeData = ensureWorkspaceTree(data);
+  public async downloadAsFile(data: WorkspaceData, customFileName = 'wonbee-client-data.json'): Promise<void> {
+    const completeData = await createBackup(data);
     const jsonStr = JSON.stringify(completeData, null, 2);
     const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);

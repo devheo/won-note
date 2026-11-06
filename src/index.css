@@ -597,6 +597,17 @@
   white-space: pre-wrap !important;
 }
 
+.won-note-inline-tag {
+  border-radius: 0.2rem;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+  padding: 0 0.1rem;
+}
+
+.dark .won-note-inline-tag {
+  background-color: var(--won-note-tag-dark-bg) !important;
+}
+
 .ProseMirror-selectednode {
   outline: 2px solid #f59e0b !important;
   outline-offset: 2px;
@@ -2190,4 +2201,47 @@ ul[data-type="taskList"] li > div {
 .comment-highlight:hover {
   background: rgba(250, 204, 21, 0.45);
 }
+
+/* Persisted OneNote-style list markers shared by rich notes and document notes. */
+.tiptap ul[data-list-marker] { list-style: none; padding-left: 1.5em; }
+.tiptap ul[data-list-marker] > li::marker { font-weight: 700; }
+.tiptap ul[data-list-marker="disc"] > li::marker { content: "•  "; }
+.tiptap ul[data-list-marker="circle"] > li::marker { content: "○  "; }
+.tiptap ul[data-list-marker="square"] > li::marker { content: "■  "; }
+.tiptap ul[data-list-marker="check"] > li::marker { content: "✓  "; color: #16a34a; }
+.tiptap ul[data-list-marker="star"] > li::marker { content: "★  "; color: #d97706; }
+.tiptap ul[data-list-marker="dash"] > li::marker { content: "–  "; }
+.tiptap ol[data-list-marker="outline"] { list-style-type: decimal; }
+.tiptap ol[data-list-marker="outline"] ol { list-style-type: lower-alpha; }
+.tiptap ol[data-list-marker="outline"] ol ol { list-style-type: lower-roman; }
+.tiptap ol[data-list-marker="outline"] ol ol ol { list-style-type: decimal; }
+
+.tiptap .wonbee-shape {
+  box-sizing: border-box;
+  display: flex;
+  width: 280px;
+  height: 120px;
+  max-width: 100%;
+  margin: 0.75rem 0;
+  padding: 1rem;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #d97706;
+  background: #fffbeb;
+  color: #292524;
+  text-align: center;
+  cursor: move;
+}
+.tiptap .wonbee-shape[data-shape-type="rounded"] { border-radius: 1rem; }
+.tiptap .wonbee-shape[data-shape-type="ellipse"] { border-radius: 50%; }
+.tiptap .wonbee-shape[data-shape-type="callout"] { border-radius: 0.75rem; box-shadow: 5px 5px 0 #fde68a; }
+.tiptap .wonbee-shape[data-shape-type="textbox"] {
+  justify-content: flex-start;
+  border-style: dashed;
+  border-color: #94a3b8;
+  background: transparent;
+  text-align: left;
+}
+.dark .tiptap .wonbee-shape { background: #292524; color: #f5f5f4; }
+.dark .tiptap .wonbee-shape[data-shape-type="textbox"] { background: transparent; }
 

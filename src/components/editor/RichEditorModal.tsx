@@ -27,6 +27,10 @@ import { Color } from '@tiptap/extension-color';
 import { Highlight } from '@tiptap/extension-highlight';
 import { StickerExtension } from './StickerExtension';
 import { CommentExtension } from './CommentExtension';
+import { DrawingExtension } from './DrawingExtension';
+import { ListMarkerAttributes, WonBeeShape } from './DocumentEditorExtensions';
+import { DrawingOverlay } from './DrawingOverlay';
+import { OneNoteTagMark, ParagraphLineHeight, SubscriptMark, SuperscriptMark } from './OneNoteStyleExtensions';
 import { useYjsComments } from './useYjsComments';
 import { usePersistedYDoc } from '../../hooks/usePersistedYDoc';
 import { useDocumentHistory } from '../../hooks/useDocumentHistory';
@@ -136,6 +140,9 @@ import {
   AlertTriangle,
   ArrowUp,
   ArrowDown,
+  Pencil,
+  Eraser,
+  Highlighter as HighlighterIcon,
 } from 'lucide-react';
 
 // Initialize Lowlight with common languages (Java, SQL, JS, TS, Python, JSON, HTML, Bash, etc.)
@@ -854,6 +861,8 @@ class CustomTableView extends TableView {
     const borderColor = node.attrs?.borderColor || '';
     const tableWidth = node.attrs?.tableWidth || 'auto';
     const tableAlign = node.attrs?.tableAlign || 'left';
+    const fontFamily = node.attrs?.fontFamily || '';
+    const fontSize = node.attrs?.fontSize || '';
 
     // Set width & max-width (preventing forced 100% max-size)
     this.table.setAttribute('data-table-width', tableWidth);
@@ -865,6 +874,8 @@ class CustomTableView extends TableView {
       this.table.style.width = tableWidth;
     }
     this.table.style.maxWidth = '100%';
+    this.table.style.fontFamily = fontFamily;
+    this.table.style.fontSize = fontSize;
 
     // Set table alignment
     if (tableAlign === 'center') {
@@ -1082,6 +1093,20 @@ const CustomTable = Table.extend({
           };
         },
       },
+      fontFamily: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-table-font-family') || element.style.fontFamily || null,
+        renderHTML: (attributes) => attributes.fontFamily
+          ? { 'data-table-font-family': attributes.fontFamily, style: `font-family: ${attributes.fontFamily};` }
+          : {},
+      },
+      fontSize: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-table-font-size') || element.style.fontSize || null,
+        renderHTML: (attributes) => attributes.fontSize
+          ? { 'data-table-font-size': attributes.fontSize, style: `font-size: ${attributes.fontSize};` }
+          : {},
+      },
     };
   },
 });
@@ -1238,7 +1263,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       return next;
     });
   };
-  const [activeRibbonTab, setActiveRibbonTab] = useState<'home' | 'insert' | 'format'>('home');
+  const [activeRibbonTab, setActiveRibbonTab] = useState<'home' | 'insert' | 'draw'>('home');
   const [isAiAgentDrawerOpen, setIsAiAgentDrawerOpen] = useState(false);
   
   // Top-level modal popup state (rendered at the very top of rich editor container, never clipped or constrained by toolbar overflow)
@@ -1280,19 +1305,23 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
       }
       setContextMenu(null);
     };
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setContextMenu(null);
+    };
 
-    // Attach capture phase listeners to close menu on outside clicks/scrolls
-    const timer = setTimeout(() => {
-      document.addEventListener('pointerdown', handleOutsideClick, true);
-      document.addEventListener('scroll', handleOutsideClick, true);
-      window.addEventListener('contextmenu', handleOutsideClick, true);
-    }, 10);
+    // Install immediately so a fast click right after opening cannot slip through.
+    document.addEventListener('pointerdown', handleOutsideClick, true);
+    document.addEventListener('mousedown', handleOutsideClick, true);
+    document.addEventListener('scroll', handleOutsideClick, true);
+    window.addEventListener('contextmenu', handleOutsideClick, true);
+    window.addEventListener('keydown', handleEscape, true);
 
     return () => {
-      clearTimeout(timer);
       document.removeEventListener('pointerdown', handleOutsideClick, true);
+      document.removeEventListener('mousedown', handleOutsideClick, true);
       document.removeEventListener('scroll', handleOutsideClick, true);
       window.removeEventListener('contextmenu', handleOutsideClick, true);
+      window.removeEventListener('keydown', handleEscape, true);
     };
   }, [contextMenu]);
 
@@ -1325,6 +1354,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   const [isPropsBarOpen, setIsPropsBarOpen] = useState(false);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const notifyToolbar = useCallback((message: string) => {
+    setToastMessage(message);
+    window.setTimeout(() => setToastMessage(null), 2500);
+  }, []);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mdFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -1378,6 +1411,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   }, [columns, row?.richContent, richTargets]);
 
   const [selectedTargetId, setSelectedTargetId] = useState<string>(() => resolveTargetId(initialTargetId));
+  const scrollAreaRef = useRef<HTMLDivElement | null>(null);
+  const [drawingTool, setDrawingTool] = useState<'select' | 'pen' | 'highlighter' | 'eraser'>('select');
+  const [drawingColor, setDrawingColor] = useState('#1f2937');
+  const [drawingWidth, setDrawingWidth] = useState(1);
+  const editorScrollKey = `wonbee_editor_scroll_${tableId}_${row?.id || 'unknown'}_${selectedTargetId}`;
   const selectedTargetIdRef = useRef<string>(selectedTargetId);
   selectedTargetIdRef.current = selectedTargetId;
   const [activeCommentId, setActiveCommentId] = useState<string | null>(null);
@@ -1621,8 +1659,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         heading: { levels: [1, 2, 3] },
         codeBlock: false,
         gapcursor: false,
-        undoRedo: false,
+        undoRedo: commentCollaboration ? false : undefined,
       }),
+      DrawingExtension,
+      ListMarkerAttributes,
+      WonBeeShape,
       ...(commentCollaboration ? [
         Collaboration.configure({ document: commentCollaboration.ydoc, field: 'prosemirror' }),
         CommentExtension.configure({ onCommentClick: setActiveCommentId }),
@@ -1675,6 +1716,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
         defaultLanguage: 'auto',
       }),
       Underline,
+      SubscriptMark,
+      SuperscriptMark,
+      OneNoteTagMark,
+      ParagraphLineHeight,
       Gapcursor,
       TaskList,
       TaskItem.configure({
@@ -2102,6 +2147,16 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
   });
 
   const loadingTimersRef = useRef<(NodeJS.Timeout | number)[]>([]);
+
+  useEffect(() => {
+    if (!isOpen || loadingState.isLoading) return;
+    const frame = requestAnimationFrame(() => {
+      const area = scrollAreaRef.current;
+      if (!area) return;
+      try { area.scrollTop = Number(localStorage.getItem(editorScrollKey)) || 0; } catch { area.scrollTop = 0; }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [isOpen, loadingState.isLoading, editorScrollKey]);
 
   const clearLoadingTimers = useCallback(() => {
     loadingTimersRef.current.forEach((t) => {
@@ -2770,39 +2825,118 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
     setIsDraggingFile(false);
   };
 
-  const handleDrop = (e: React.DragEvent) => {
+  const handleInsertFiles = async (files: File[]) => {
+    if (!files.length || !editor) return;
+
+    const codeLanguages: Record<string, string> = {
+      js: 'javascript', jsx: 'jsx', mjs: 'javascript', cjs: 'javascript',
+      ts: 'typescript', tsx: 'tsx', py: 'python', sql: 'sql',
+      html: 'html', htm: 'html', xml: 'markup', css: 'css', scss: 'css',
+      yml: 'yaml', yaml: 'yaml', sh: 'bash', bash: 'bash', java: 'java',
+      c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', log: 'plaintext',
+    };
+    let importedCount = 0;
+    const warnings: string[] = [];
+
+    for (const file of files) {
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      try {
+        if (extension !== 'pdf' && file.size > 50 * 1024 * 1024) {
+          warnings.push(`${file.name}: 50MB 이하의 파일을 선택해주세요.`);
+          continue;
+        }
+        let html = '';
+        if (file.type.startsWith('image/')) {
+          const { dataUrl } = await compressAndResizeImage(file);
+          html = `<p><img src="${dataUrl}" alt="${escapeHtml(file.name)}"></p><p></p>`;
+        } else if (extension === 'pdf' || file.type === 'application/pdf') {
+          setToastMessage(`PDF 페이지를 읽는 중입니다: ${file.name}`);
+          const { openPdfImport } = await import('../../utils/pdfConversion');
+          const session = await openPdfImport(await file.arrayBuffer());
+          try {
+            const result = await session.importPages({
+              mode: 'text-images',
+              onProgress: ({ completed, total }) => setToastMessage(`PDF 가져오는 중 ${completed}/${total}: ${file.name}`),
+            });
+            const pageDocument = new DOMParser().parseFromString(result.html, 'text/html');
+            html = Array.from(pageDocument.querySelectorAll('[data-pdf-page]'))
+              .map(page => page.innerHTML)
+              .filter(Boolean)
+              .join('<hr>');
+            if (result.warnings.length) warnings.push(...result.warnings);
+          } finally {
+            await session.close();
+          }
+        } else if (extension === 'pptx') {
+          setToastMessage(`PowerPoint 내용을 읽는 중입니다: ${file.name}`);
+          const { importPptx } = await import('../../utils/pptxConversion');
+          const result = await importPptx(await file.arrayBuffer());
+          html = result.html;
+          if (result.warnings.length) warnings.push(...result.warnings);
+        } else if (extension === 'xlsx') {
+          setToastMessage(`Excel 시트를 표로 변환 중입니다: ${file.name}`);
+          const { xlsxToEditorHtml } = await import('../../utils/xlsxConversion');
+          const result = await xlsxToEditorHtml(await file.arrayBuffer(), progress => setToastMessage(`Excel 가져오는 중 · 시트 ${progress.sheetIndex}/${progress.sheetCount} · ${progress.rowsProcessed}/${progress.totalRows}행: ${file.name}`));
+          html = result.html;
+          if (result.truncated) warnings.push(`${file.name}: 크기 제한으로 일부 시트/행/열을 생략했습니다.`);
+        } else if (extension === 'docx') {
+          setToastMessage(`Word 문서를 읽는 중입니다: ${file.name}`);
+          const { docxToEditorHtml } = await import('../../utils/docxConversion');
+          const result = await docxToEditorHtml(await file.arrayBuffer());
+          html = result.html;
+          if (result.hasEmbeddedMedia) warnings.push(`${file.name}: 본문과 표를 가져왔으며, 포함된 이미지는 제외했습니다.`);
+        } else if (['csv', 'tsv'].includes(extension)) {
+          const text = (await file.text()).replace(/^\uFEFF/, '');
+          const result = convertTextDataToEditorContent(text, {
+            format: 'csv',
+            delimiter: extension === 'tsv' ? 'tab' : 'auto',
+            outputType: 'table',
+            tableWidth: '100%',
+          });
+          html = result.html;
+        } else if (['md', 'markdown'].includes(extension) || file.type === 'text/markdown') {
+          html = markdownToHtml((await file.text()).replace(/^\uFEFF/, ''));
+        } else if (extension === 'json') {
+          const value = JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
+          html = `<pre><code class="language-json">${escapeHtml(JSON.stringify(value, null, 2))}</code></pre><p></p>`;
+        } else if (extension === 'txt' || extension === 'text') {
+          const result = convertTextDataToEditorContent((await file.text()).replace(/^\uFEFF/, ''), {
+            format: 'auto', outputType: 'table', tableWidth: '100%',
+          });
+          html = result.detectedFormat === 'md'
+            ? markdownToHtml(result.markdownEquivalent || '')
+            : result.html;
+        } else if (codeLanguages[extension]) {
+          html = `<pre><code class="language-${codeLanguages[extension]}">${escapeHtml((await file.text()).replace(/^\uFEFF/, ''))}</code></pre><p></p>`;
+        } else {
+          const legacyOffice = ['xls', 'ppt', 'doc'].includes(extension);
+          warnings.push(`${file.name}: ${legacyOffice ? '구형 Office 형식입니다. XLSX, PPTX, DOCX 또는 CSV로 변환해주세요.' : '지원하지 않는 파일 형식입니다.'}`);
+          continue;
+        }
+
+        if (html.trim() && editor && !editor.isDestroyed) {
+          editor.chain().focus().insertContent(html).run();
+          importedCount++;
+        }
+      } catch (error) {
+        warnings.push(`${file.name}: ${error instanceof Error ? error.message : '파일을 읽지 못했습니다.'}`);
+      }
+    }
+
+    if (importedCount) setHasUnsavedChanges(true);
+    const summary = [
+      importedCount ? `${importedCount}개 파일의 내용을 에디터에 가져왔습니다.` : '',
+      ...warnings,
+    ].filter(Boolean).join(' ');
+    setToastMessage(summary || '가져올 파일이 없습니다.');
+    setTimeout(() => setToastMessage(null), warnings.length ? 6000 : 3000);
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsDraggingFile(false);
-    const files = e.dataTransfer.files;
-    if (!files || files.length === 0 || !editor) return;
-
-    const file = files[0];
-    if (file.name.endsWith('.md') || file.name.endsWith('.markdown') || file.name.endsWith('.txt') || file.type === 'text/markdown') {
-      const reader = new FileReader();
-      reader.onload = (ev) => {
-        const text = (ev.target?.result as string) || '';
-        const html = markdownToHtml(text);
-        editor.chain().focus().insertContent(html).run();
-        setToastMessage(`✓ 마크다운 파일 (${file.name}) 서식이 적용되었습니다.`);
-        setTimeout(() => setToastMessage(null), 3000);
-      };
-      reader.readAsText(file);
-      return;
-    }
-
-    if (file.type.startsWith('image/')) {
-      compressAndResizeImage(file).then(({ dataUrl }) => {
-        editor.chain().focus().setImage({
-          src: dataUrl,
-          alt: file.name,
-          ...({ width: '48%', layout: 'inline' } as any),
-        }).run();
-        setToastMessage('✓ 이미지가 삽입되었습니다 (크기 조절 및 나란히 배치 지원).');
-        setTimeout(() => setToastMessage(null), 2500);
-      });
-      return;
-    }
+    await handleInsertFiles(Array.from(e.dataTransfer.files || []));
   };
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -3242,6 +3376,7 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           handlePasteMarkdownFromClipboard={handlePasteMarkdownFromClipboard}
           handleImageUpload={handleImageUpload}
           handleMdFileUpload={handleMdFileUpload}
+          handleInsertFiles={handleInsertFiles}
           openTableDialog={openTableDialog}
           openImageDialog={openImageDialog}
           openVideoDialog={openVideoDialog}
@@ -3249,8 +3384,22 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
           setCodeDialogTab={setCodeDialogTab}
           setIsAiAgentDrawerOpen={setIsAiAgentDrawerOpen}
           handleFormatExpress={handleFormatExpress}
+          onNotify={notifyToolbar}
           columnMap={columnMap}
           columns={columns}
+          onInsertDrawing={() => {
+            if (!editor) return;
+            let hasLayer = false;
+            editor.state.doc.descendants(node => { if (node.type.name === 'drawingLayer') hasLayer = true; });
+            if (!hasLayer) editor.chain().focus().insertContent({ type: 'drawingLayer', attrs: { strokes: [] } }).run();
+            setDrawingTool('pen');
+          }}
+          drawingTool={drawingTool}
+          setDrawingTool={setDrawingTool}
+          drawingColor={drawingColor}
+          setDrawingColor={setDrawingColor}
+          drawingWidth={drawingWidth}
+          setDrawingWidth={setDrawingWidth}
         />
 
         {/* Table Quick Action Sub-bar when cursor is inside a table */}
@@ -3437,7 +3586,11 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
 
         {/* Scrollable Body Area */}
         <div
+          ref={scrollAreaRef}
           className="flex-1 p-6 overflow-y-auto min-h-[350px] relative cursor-text"
+          onScroll={event => {
+            try { localStorage.setItem(editorScrollKey, String(event.currentTarget.scrollTop)); } catch { /* Local restoration is best effort. */ }
+          }}
           onClick={(e) => {
             if (e.target === e.currentTarget && editor) {
               const { state, dispatch } = editor.view;
@@ -3535,7 +3688,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
               </div>
             </div>
           ) : (
-            <EditorContent editor={editor} />
+            <div className="relative">
+              <EditorContent editor={editor} />
+              <DrawingOverlay editor={editor} tool={drawingTool} color={drawingColor} width={drawingWidth} onFinish={() => setDrawingTool('select')} />
+            </div>
           )}
         </div>
 
@@ -3706,6 +3862,10 @@ export const RichEditorModal: React.FC<RichEditorModalProps> = ({
             style={{
               top: Math.max(10, Math.min(contextMenu.y, window.innerHeight - 520)),
               left: Math.max(10, Math.min(contextMenu.x, window.innerWidth - 300)),
+            }}
+            onClickCapture={(event) => {
+              const target = event.target as HTMLElement;
+              if (!target.closest('button, input, select, [role="menuitem"]')) setContextMenu(null);
             }}
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => e.stopPropagation()}

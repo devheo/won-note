@@ -26,8 +26,13 @@ import Color from '@tiptap/extension-color';
 import Link from '@tiptap/extension-link';
 import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { CommentExtension } from './CommentExtension';
+import { DrawingExtension } from './DrawingExtension';
+import { ListMarkerAttributes, NoteTableBorderStyle, WonBeeShape } from './DocumentEditorExtensions';
+import { FontSizePixelControl, InsertShapeControls, ListToolbarControls, ShapeSizeControls, TableBorderToolbarControl } from './DocumentToolbarControls';
+import { DrawingOverlay } from './DrawingOverlay';
+import { DrawingStylePicker } from './DrawingStylePicker';
 import { useYjsComments } from './useYjsComments';
-import { NOTE_FONT_FAMILIES, NOTE_FONT_SIZES } from '../../constants/editor';
+import { NOTE_FONT_FAMILIES } from '../../constants/editor';
 import {
   Bold,
   Code,
@@ -56,6 +61,14 @@ import {
   Check,
   Clock3,
   LoaderCircle,
+  Pencil,
+  Eraser,
+  Undo2,
+  Redo2,
+  Presentation,
+  FileSpreadsheet,
+  FileText,
+  FileDown,
 } from 'lucide-react';
 import { WonNoteDocument } from '../../types';
 import { ImageComponent } from './ImageComponent';
@@ -65,6 +78,9 @@ import { useDocumentHistory } from '../../hooks/useDocumentHistory';
 import { DocumentHistoryPanel } from './DocumentHistoryPanel';
 import { selectCommentAnchorAt } from '../../utils/commentSelection';
 import { useStatusBar } from '../common/GlobalStatusBar';
+import { markdownToHtml } from '../../utils/markdownHelper';
+import { convertTextDataToEditorContent } from '../../utils/csvParser';
+import { escapeHtml } from '../../utils/codeHighlighter';
 
 const WonNoteImage = Image.extend({
   inline: true,
@@ -132,10 +148,16 @@ interface WonNoteDocumentEditorProps {
   onUpdateDocument: (updatedDocument: WonNoteDocument) => void;
   zoomLevel?: number;
   useServerMode?: boolean;
+  activeRibbonTab?: 'home' | 'insert' | 'draw';
 }
 
-export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ document, onUpdateDocument, zoomLevel = 100, useServerMode = false }) => {
+export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ document, onUpdateDocument, zoomLevel = 100, useServerMode = false, activeRibbonTab = 'home' }) => {
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const pptxInputRef = useRef<HTMLInputElement>(null);
+  const markdownInputRef = useRef<HTMLInputElement>(null);
+  const docxInputRef = useRef<HTMLInputElement>(null);
+  const excelInputRef = useRef<HTMLInputElement>(null);
+  const pdfInputRef = useRef<HTMLInputElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const documentRef = useRef(document);
   const updateRef = useRef(onUpdateDocument);
@@ -157,7 +179,39 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
   const [providerSyncRevision, setProviderSyncRevision] = useState(0);
   const [isEditorContentReady, setIsEditorContentReady] = useState(false);
   const [showDocumentLoader, setShowDocumentLoader] = useState(false);
+  const [insertMessage, setInsertMessage] = useState<string | null>(null);
   const [collaborationState, setCollaborationState] = useState(useServerMode ? (import.meta.env.VITE_YJS_WS_URL ? '연결 중' : '로컬 저장 · Yjs 서버 미설정') : '이 기기에 저장됨');
+  const [drawingTool, setDrawingTool] = useState<'select' | 'pen' | 'highlighter' | 'eraser'>('select');
+  const [drawingColor, setDrawingColor] = useState('#1f2937');
+  const [drawingWidth, setDrawingWidth] = useState(1);
+
+  useEffect(() => {
+    if (!editorContextMenu) return;
+
+    const closeOnOutsideClick = (event: Event) => {
+      const menu = window.document.getElementById('won-note-document-context-menu');
+      if (menu?.contains(event.target as unknown as globalThis.Node)) return;
+      setEditorContextMenu(null);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setEditorContextMenu(null);
+    };
+
+    window.document.addEventListener('pointerdown', closeOnOutsideClick, true);
+    window.document.addEventListener('mousedown', closeOnOutsideClick, true);
+    window.document.addEventListener('scroll', closeOnOutsideClick, true);
+    window.addEventListener('contextmenu', closeOnOutsideClick, true);
+    window.addEventListener('keydown', closeOnEscape, true);
+
+    return () => {
+      window.document.removeEventListener('pointerdown', closeOnOutsideClick, true);
+      window.document.removeEventListener('mousedown', closeOnOutsideClick, true);
+      window.document.removeEventListener('scroll', closeOnOutsideClick, true);
+      window.removeEventListener('contextmenu', closeOnOutsideClick, true);
+      window.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [editorContextMenu]);
+
   const collaborationUrl = useServerMode ? import.meta.env.VITE_YJS_WS_URL : undefined;
   const collaboration = useMemo(() => {
     const ydoc = new Y.Doc();
@@ -209,6 +263,10 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       Link.configure({ openOnClick: false }),
       HorizontalRule,
       PdfPage,
+      DrawingExtension,
+      ListMarkerAttributes,
+      NoteTableBorderStyle,
+      WonBeeShape,
     ],
     content: undefined,
     editorProps: {
@@ -403,6 +461,78 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
     reader.readAsDataURL(file);
   };
 
+  const insertFiles = async (files: File[]) => {
+    if (!editor || !files.length) return;
+    let importedCount = 0;
+    const warnings: string[] = [];
+    const codeLanguages: Record<string, string> = {
+      js: 'javascript', jsx: 'jsx', ts: 'typescript', tsx: 'tsx', py: 'python', sql: 'sql',
+      html: 'html', css: 'css', yml: 'yaml', yaml: 'yaml', sh: 'bash', java: 'java',
+    };
+    for (const file of files) {
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      try {
+        if (extension !== 'pdf' && file.size > 50 * 1024 * 1024) {
+          warnings.push(`${file.name}: 50MB 이하의 파일을 선택해주세요.`);
+          continue;
+        }
+        let html = '';
+        if (extension === 'pptx') {
+          setInsertMessage(`PowerPoint 내용을 읽는 중입니다: ${file.name}`);
+          const result = await (await import('../../utils/pptxConversion')).importPptx(await file.arrayBuffer());
+          html = result.html;
+          warnings.push(...result.warnings);
+        } else if (extension === 'xlsx') {
+          setInsertMessage(`Excel 시트를 표로 변환 중입니다: ${file.name}`);
+          const result = await (await import('../../utils/xlsxConversion')).xlsxToEditorHtml(await file.arrayBuffer(), progress => setInsertMessage(`Excel 가져오는 중 · 시트 ${progress.sheetIndex}/${progress.sheetCount} · ${progress.rowsProcessed}/${progress.totalRows}행: ${file.name}`));
+          html = result.html;
+          if (result.truncated) warnings.push(`${file.name}: 크기 제한으로 일부 시트/행/열을 생략했습니다.`);
+        } else if (extension === 'docx') {
+          setInsertMessage(`Word 문서 내용을 읽는 중입니다: ${file.name}`);
+          const result = await (await import('../../utils/docxConversion')).docxToEditorHtml(await file.arrayBuffer());
+          html = result.html;
+          if (result.hasEmbeddedMedia) warnings.push(`${file.name}: 본문과 표를 가져왔으며, 문서에 포함된 이미지는 제외했습니다.`);
+        } else if (extension === 'pdf' || file.type === 'application/pdf') {
+          setInsertMessage(`PDF 페이지를 읽는 중입니다: ${file.name}`);
+          const session = await (await import('../../utils/pdfConversion')).openPdfImport(await file.arrayBuffer());
+          try {
+            const result = await session.importPages({ mode: 'text-images', onProgress: ({ completed, total }) => setInsertMessage(`PDF 가져오는 중 ${completed}/${total}: ${file.name}`) });
+            const pages = new DOMParser().parseFromString(result.html, 'text/html');
+            html = Array.from(pages.querySelectorAll('[data-pdf-page]')).map(page => page.outerHTML).filter(Boolean).join('<hr>');
+            warnings.push(...result.warnings);
+          } finally {
+            await session.close();
+          }
+        } else if (['md', 'markdown'].includes(extension) || file.type === 'text/markdown') {
+          html = markdownToHtml((await file.text()).replace(/^\uFEFF/, ''));
+        } else if (['csv', 'tsv'].includes(extension)) {
+          const result = convertTextDataToEditorContent((await file.text()).replace(/^\uFEFF/, ''), { format: 'csv', delimiter: extension === 'tsv' ? 'tab' : 'auto', outputType: 'table', tableWidth: '100%' });
+          html = result.html;
+        } else if (extension === 'json') {
+          const value = JSON.parse((await file.text()).replace(/^\uFEFF/, ''));
+          html = `<pre><code class="language-json">${escapeHtml(JSON.stringify(value, null, 2))}</code></pre><p></p>`;
+        } else if (extension === 'txt' || extension === 'text') {
+          html = escapeHtml((await file.text()).replace(/^\uFEFF/, '')).split(/\r?\n/).map(line => `<p>${line || '<br>'}</p>`).join('');
+        } else if (codeLanguages[extension]) {
+          html = `<pre><code class="language-${codeLanguages[extension]}">${escapeHtml((await file.text()).replace(/^\uFEFF/, ''))}</code></pre><p></p>`;
+        } else {
+          const legacyOffice = ['ppt', 'xls'].includes(extension);
+          warnings.push(`${file.name}: ${legacyOffice ? '구형 Office 형식입니다. PPTX, XLSX 또는 CSV로 변환해주세요.' : '지원하지 않는 파일 형식입니다.'}`);
+          continue;
+        }
+        if (html.trim() && !editor.isDestroyed) {
+          editor.chain().focus().insertContent(html).run();
+          importedCount++;
+        }
+      } catch (error) {
+        warnings.push(`${file.name}: ${error instanceof Error ? error.message : '파일을 읽지 못했습니다.'}`);
+      }
+    }
+    const summary = [importedCount ? `${importedCount}개 파일의 내용을 노트에 삽입했습니다.` : '', ...warnings].filter(Boolean).join(' ');
+    setInsertMessage(summary || '가져올 파일이 없습니다.');
+    window.setTimeout(() => setInsertMessage(null), warnings.length ? 6000 : 3000);
+  };
+
   const handleSetLink = () => {
     if (!editor) return;
     if (!linkInputUrl.trim()) {
@@ -412,6 +542,13 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
     }
     setShowLinkInput(false);
     setLinkInputUrl('');
+  };
+
+  const ensureDrawingLayer = () => {
+    if (!editor) return;
+    let hasLayer = false;
+    editor.state.doc.descendants(node => { if (node.type.name === 'drawingLayer') hasLayer = true; });
+    if (!hasLayer) editor.chain().focus().insertContent({ type: 'drawingLayer', attrs: { strokes: [] } }).run();
   };
 
   const tool = (label: string, icon: React.ReactNode, action: () => void, active = false) => (
@@ -429,6 +566,17 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       {icon}
     </button>
   );
+
+  const indentList = () => {
+    if (editor.isActive('listItem')) (editor.chain().focus() as any).sinkListItem('listItem').run();
+    else if (editor.isActive('taskItem')) (editor.chain().focus() as any).sinkListItem('taskItem').run();
+    else editor.chain().focus().insertContent('    ').run();
+  };
+  const outdentList = () => {
+    if (editor.isActive('listItem')) (editor.chain().focus() as any).liftListItem('listItem').run();
+    else if (editor.isActive('taskItem')) (editor.chain().focus() as any).liftListItem('taskItem').run();
+    else editor.chain().focus().lift('blockquote').run();
+  };
 
   if (!isDocumentReady || !editor) {
     if (!showDocumentLoader) return null;
@@ -448,7 +596,8 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#fffdf8] dark:bg-[#171717]">
       {/* Enhanced Rich Toolbar matching RichEditorModal */}
       <div id="won-note-editor-toolbar" className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-stone-200 bg-white px-4 py-2 text-xs shrink-0 dark:border-stone-800 dark:bg-stone-900 [&>*]:shrink-0" style={{ scrollbarWidth: 'none' }}>
-        {/* Text Styling */}
+        {activeRibbonTab === 'home' && <>
+        {/* Home: text style, paragraph and list tools */}
         <select
           aria-label="글꼴"
           title="글꼴"
@@ -463,25 +612,13 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         >
           {NOTE_FONT_FAMILIES.map(font => <option key={font.value} value={font.value}>{font.label}</option>)}
         </select>
-        <select
-          aria-label="글자 크기"
-          title="글자 크기"
-          value={editor.getAttributes('textStyle').fontSize || 'default'}
-          onMouseDown={event => event.stopPropagation()}
-          onChange={event => editor.chain().focus().setMark('textStyle', { fontSize: event.target.value === 'default' ? null : event.target.value }).run()}
-          className="h-8 w-20 rounded-lg border border-stone-200 bg-white px-2 text-xs text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
-        >
-          <option value="default">크기</option>
-          {NOTE_FONT_SIZES.map(size => <option key={size} value={`${size}px`}>{size}px</option>)}
-        </select>
+        <FontSizePixelControl editor={editor} onApply={size => editor.chain().focus().setMark('textStyle', { fontSize: size }).run()} />
         <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
         {tool('굵게', <Bold size={15} />, () => editor.chain().focus().toggleBold().run(), editor.isActive('bold'))}
         {tool('기울임', <Italic size={15} />, () => editor.chain().focus().toggleItalic().run(), editor.isActive('italic'))}
         {tool('밑줄', <UnderlineIcon size={15} />, () => editor.chain().focus().toggleUnderline().run(), editor.isActive('underline'))}
         {tool('취소선', <Strikethrough size={15} />, () => editor.chain().focus().toggleStrike().run(), editor.isActive('strike'))}
         {tool('인라인 코드', <Code size={15} />, () => editor.chain().focus().toggleCode().run(), editor.isActive('code'))}
-
-        <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
 
         {/* Headings */}
         {tool('제목 1', <Heading1 size={15} />, () => editor.chain().focus().toggleHeading({ level: 1 }).run(), editor.isActive('heading', { level: 1 }))}
@@ -494,6 +631,8 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         {tool('글머리 기호', <List size={15} />, () => editor.chain().focus().toggleBulletList().run(), editor.isActive('bulletList'))}
         {tool('번호 목록', <ListOrdered size={15} />, () => editor.chain().focus().toggleOrderedList().run(), editor.isActive('orderedList'))}
         {tool('체크리스트', <ListChecks size={15} />, () => editor.chain().focus().toggleTaskList().run(), editor.isActive('taskList'))}
+        <ListToolbarControls editor={editor} onIndent={indentList} onOutdent={outdentList} />
+        <TableBorderToolbarControl editor={editor} />
         {tool('인용', <Quote size={15} />, () => editor.chain().focus().toggleBlockquote().run(), editor.isActive('blockquote'))}
 
         <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
@@ -517,8 +656,12 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
           </label>
           {tool('형광펜', <Highlighter size={15} />, () => editor.chain().focus().toggleHighlight().run(), editor.isActive('highlight'))}
         </div>
+        </>}
 
+        {activeRibbonTab === 'insert' && <>
         <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700" />
+        <InsertShapeControls editor={editor} />
+        <ShapeSizeControls editor={editor} />
 
         {/* Special Inserts: Link, Image, Table, Code Block, HR */}
         {tool('링크 삽입', <LinkIcon size={15} />, () => {
@@ -527,14 +670,38 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
           setShowLinkInput(!showLinkInput);
         }, editor.isActive('link'))}
         {tool('이미지 삽입', <ImagePlus size={15} />, () => imageInputRef.current?.click())}
+        <input ref={pptxInputRef} type="file" accept=".pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+        <input ref={markdownInputRef} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+        <input ref={docxInputRef} type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+        <input ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv,.tsv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+        <input ref={pdfInputRef} type="file" accept=".pdf,application/pdf" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+        {([
+          { label: 'PPT', title: 'PPTX 슬라이드 내용을 노트에 삽입', icon: <Presentation size={15} />, ref: pptxInputRef },
+          { label: 'MD', title: '마크다운 파일 내용을 서식으로 삽입', icon: <FileText size={15} />, ref: markdownInputRef },
+          { label: 'DOCX', title: 'Word 문서의 본문과 표를 삽입', icon: <FileText size={15} />, ref: docxInputRef },
+          { label: 'Excel', title: 'Excel 시트를 편집 가능한 표로 삽입', icon: <FileSpreadsheet size={15} />, ref: excelInputRef },
+          { label: 'PDF', title: 'PDF 페이지와 텍스트를 노트에 삽입', icon: <FileDown size={15} />, ref: pdfInputRef },
+        ] as const).map(item => <button key={item.label} type="button" title={item.title} aria-label={item.title} onClick={() => item.ref.current?.click()} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-stone-200 px-2.5 text-xs font-medium text-stone-700 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800">{item.icon}<span>{item.label}</span></button>)}
         {tool('표 삽입', <Table2 size={15} />, () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}
         {tool('코드 블록', <Code size={15} />, () => editor.chain().focus().toggleCodeBlock().run(), editor.isActive('codeBlock'))}
         {tool('구분선', <Minus size={15} />, () => editor.chain().focus().setHorizontalRule().run())}
+        </>}
+
+        {activeRibbonTab === 'draw' && <div className="flex items-center gap-1.5 text-xs">
+          <span className="mr-1 font-semibold text-stone-500">도구</span>
+          {([['pen', <Pencil size={15}/>, '펜'], ['highlighter', <Highlighter size={15}/>, '형광펜'], ['eraser', <Trash2 size={15}/>, '지우개'], ['select', <Check size={15}/>, '선택·이동']] as const).map(([mode, icon, label]) => <button key={mode} type="button" title={label} onMouseDown={event => event.preventDefault()} onClick={() => { if (mode !== 'select') ensureDrawingLayer(); setDrawingTool(mode); }} className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 ${drawingTool === mode ? 'border-indigo-300 bg-indigo-100 font-semibold text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/70 dark:text-indigo-200' : 'border-stone-200 text-stone-700 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800'}`}>{icon}<span>{label}</span></button>)}
+          <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700"/>
+          <DrawingStylePicker color={drawingColor} width={drawingWidth} onColorChange={setDrawingColor} onWidthChange={setDrawingWidth}/>
+          <span className="mx-1 h-5 w-px bg-stone-200 dark:bg-stone-700"/>
+          <button type="button" title="실행 취소" onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} className="rounded-lg border border-stone-200 p-2 hover:bg-stone-100 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800"><Undo2 size={15}/></button>
+          <button type="button" title="다시 실행" onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} className="rounded-lg border border-stone-200 p-2 hover:bg-stone-100 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800"><Redo2 size={15}/></button>
+        </div>}
         {collaboration && <button type="button" title="댓글 패널" aria-label={`댓글 패널, ${comments.length}개`} onClick={() => setIsCommentPanelOpen(value => !value)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 transition-colors ${isCommentPanelOpen ? 'border-indigo-300 bg-indigo-100 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300' : 'border-stone-200 text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800'}`}><MessageSquare size={14} /><span>댓글</span><span className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-bold leading-5 ${comments.length ? 'bg-indigo-600 text-white' : 'bg-stone-200 text-stone-600 dark:bg-stone-700 dark:text-stone-300'}`}>{comments.length}</span></button>}
         {collaboration && <span className="ml-auto text-[11px] text-stone-500">{collaborationState || '연결 중'}</span>}
 
         <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(event) => { void addImage(event.target.files?.[0]); event.currentTarget.value = ''; }} />
       </div>
+      {insertMessage && <div role="status" className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-900 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-200">{insertMessage}</div>}
 
       {/* Link Input Popover Bar */}
       {showLinkInput && (
@@ -575,13 +742,17 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         event.stopPropagation();
         openCommentAt(event);
       }}>
-        <div className="mx-auto min-h-full w-full max-w-[1440px] px-5 pb-12 pt-5">
+        <div className="relative mx-auto min-h-full w-full max-w-[1440px] px-5 pb-12 pt-5">
           <div style={{ zoom: `${zoomLevel}%` }} className="transition-[zoom] duration-150">
             <EditorContent editor={editor} />
+            <DrawingOverlay editor={editor} tool={drawingTool} color={drawingColor} width={drawingWidth} onFinish={() => setDrawingTool('select')} />
           </div>
         </div>
       </div>
-      {editorContextMenu && <div className="fixed z-[12000] min-w-52 rounded-xl border border-stone-200 bg-white p-1.5 text-xs shadow-2xl dark:border-stone-700 dark:bg-stone-900" style={{ left: Math.max(8, Math.min(editorContextMenu.x, window.innerWidth - 230)), top: Math.max(8, Math.min(editorContextMenu.y, window.innerHeight - 110)) }} onMouseDown={event => event.preventDefault()}>
+      {editorContextMenu && <div id="won-note-document-context-menu" className="fixed z-[12000] min-w-52 rounded-xl border border-stone-200 bg-white p-1.5 text-xs shadow-2xl dark:border-stone-700 dark:bg-stone-900" style={{ left: Math.max(8, Math.min(editorContextMenu.x, window.innerWidth - 230)), top: Math.max(8, Math.min(editorContextMenu.y, window.innerHeight - 110)) }} onMouseDown={event => event.preventDefault()} onClickCapture={event => {
+        const target = event.target as HTMLElement;
+        if (!target.closest('button, input, select, [role="menuitem"]')) setEditorContextMenu(null);
+      }}>
         <button type="button" onClick={() => { setCommentDraft(''); setCommentComposer(editorContextMenu); setIsCommentPanelOpen(true); setEditorContextMenu(null); }} className="flex w-full items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-left font-semibold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"><MessageSquare size={14} />여기에 댓글 추가</button>
         <button type="button" onClick={() => { flushEditorUpdate(); void history.recordNow(editor?.getHTML() || document.content); setEditorContextMenu(null); history.setIsOpen(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800"><Clock3 size={14} className="text-stone-500" />문서 이력 보기</button>
       </div>}

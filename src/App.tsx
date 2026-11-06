@@ -122,6 +122,7 @@ export default function App() {
   latestWorkspaceRef.current = workspace;
   const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem(STORAGE_KEYS.activeDocument));
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
+  const [editorRibbonTab, setEditorRibbonTab] = useState<'home' | 'insert' | 'draw'>('home');
   const [guideTopic, setGuideTopic] = useState<GuideTopic | null>(null);
   useEffect(() => {
     if (selectedFolderId && !workspace.tree.some((item) => item.id === selectedFolderId && item.type === 'folder')) setSelectedFolderId(null);
@@ -167,7 +168,8 @@ export default function App() {
     if (localFileService.hasConnectedFile()) {
       try {
         setIsLocalFileSaving(true);
-        await localFileService.saveToConnectedFile(data);
+        const saved = await localFileService.saveToConnectedFile(data);
+        if (!saved) console.warn('클라이언트 데이터 파일 저장에 실패했습니다. 파일 권한을 확인하세요.');
       } catch (err) {
         console.error('Error auto-syncing to connected local file:', err);
       } finally {
@@ -454,6 +456,13 @@ export default function App() {
   const pendingSaveDocumentRef = useRef<WonNoteDocument | null>(null);
   const pendingDocumentWorkspaceRef = useRef<WorkspaceData | null>(null);
   const documentSaveInFlightRef = useRef<Promise<void> | null>(null);
+  const deferredRemoteRefreshRef = useRef(false);
+  const refreshAfterLocalWrites = useCallback(() => {
+    if (!deferredRemoteRefreshRef.current) return;
+    if (pendingSaveDocumentRef.current || pendingSaveTableRef.current || documentSaveInFlightRef.current) return;
+    deferredRemoteRefreshRef.current = false;
+    void loadWorkspaceData(true);
+  }, [loadWorkspaceData]);
 
   const cancelPendingDocumentSaveAndWait = async () => {
     if (documentSaveDebounceTimerRef.current) {
@@ -475,6 +484,9 @@ export default function App() {
       if (!targetDocument || !targetWorkspace) return;
       const saveTask = (async () => {
         try {
+          // Keep document writes ordered. A slow earlier request must never
+          // finish after a newer edit and replace it on the server.
+          await documentSaveInFlightRef.current?.catch(() => {});
           await repository.saveDocument(targetDocument);
           if (syncTree) await repository.saveTree(targetWorkspace.tree);
           await syncToLocalFileIfConnected(targetWorkspace);
@@ -489,8 +501,9 @@ export default function App() {
       documentSaveInFlightRef.current = saveTask;
       await saveTask;
       if (documentSaveInFlightRef.current === saveTask) documentSaveInFlightRef.current = null;
+      refreshAfterLocalWrites();
     }, useServer ? 3000 : 300);
-  }, [repository, syncToLocalFileIfConnected, useServer]);
+  }, [repository, syncToLocalFileIfConnected, useServer, refreshAfterLocalWrites]);
 
   /**
      * 2. 서버 모드 3초 디바운스 통합 저장 함수
@@ -553,12 +566,13 @@ export default function App() {
               pendingSaveTableRef.current = null;
               pendingSaveWorkspaceRef.current = null;
             }
+            refreshAfterLocalWrites();
           } catch (err) {
             console.warn('[Memo Save Error] 메모 동기화 실패:', err);
           }
         }, debounceDelay);
       },
-      [workspace, useServer, repository, syncToLocalFileIfConnected]
+      [workspace, useServer, repository, syncToLocalFileIfConnected, refreshAfterLocalWrites]
     );
 
   const handleUpdateDocumentDebounced = useCallback((document: WonNoteDocument) => {
@@ -680,9 +694,16 @@ export default function App() {
         }
         if (documentSaveDebounceTimerRef.current && pendingSaveDocumentRef.current) {
           clearTimeout(documentSaveDebounceTimerRef.current);
+          const targetDocument = pendingSaveDocumentRef.current;
           const targetWorkspace = pendingDocumentWorkspaceRef.current;
           if (targetWorkspace) wonbeeDexieDB.saveFullWorkspace(targetWorkspace, 1).catch(() => {});
-          if (targetWorkspace) repository.saveWorkspace(targetWorkspace).catch(() => {});
+          if (useServer) {
+            // A full-workspace PUT during unload can erase changes made by
+            // another user. Flush only this note in server mode.
+            repository.saveDocument(targetDocument).catch(() => {});
+          } else if (targetWorkspace) {
+            repository.saveWorkspace(targetWorkspace).catch(() => {});
+          }
         }
       };
 
@@ -715,8 +736,6 @@ export default function App() {
   }, [isModalOpen, openModal, closeModal]);
 
   const lastEtagRef = useRef<string | null>(null);
-  const workspaceExportedAtRef = useRef(workspace.exportedAt || 0);
-  workspaceExportedAtRef.current = workspace.exportedAt || 0;
 
   // Event-Driven Multi-User Sync (SSE) + Specific Event Triggers (ZERO setInterval polling!)
   useEffect(() => {
@@ -735,9 +754,10 @@ export default function App() {
 
       isChecking = true;
       try {
+        const previousEtag = lastEtagRef.current;
         const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (lastEtagRef.current) {
-          headers['If-None-Match'] = lastEtagRef.current;
+        if (previousEtag) {
+          headers['If-None-Match'] = previousEtag;
         }
 
         const res = await fetchBridge(`${serverUrl}/workspace/version`, {
@@ -753,18 +773,23 @@ export default function App() {
         if (!res.ok) return;
 
         const etag = res.headers.get('ETag');
+        const info = await res.json();
+        const hasRemoteVersionChanged = previousEtag
+          ? Boolean(etag && etag !== previousEtag)
+          : Boolean(info.lastUpdated && info.lastUpdated > lastLoadedTimestampRef.current + 600);
         if (etag) lastEtagRef.current = etag;
 
-        const info = await res.json();
-        const localTime = Math.max(lastLoadedTimestampRef.current, workspaceExportedAtRef.current);
-
-        // If server was updated after our local state
-        if (info.lastUpdated && info.lastUpdated > localTime + 600) {
+        // Prefer the server ETag over local exportedAt timestamps. Client clocks
+        // can be ahead of the server and otherwise suppress valid remote updates.
+        if (hasRemoteVersionChanged && info.lastUpdated) {
+          if (pendingSaveDocumentRef.current || pendingSaveTableRef.current || documentSaveInFlightRef.current) {
+            deferredRemoteRefreshRef.current = true;
+            return;
+          }
           console.log('[Event Sync] Remote updates detected on server, delta syncing in background...');
           lastLoadedTimestampRef.current = info.lastUpdated;
-          if (repository.syncNotes) {
-            await repository.syncNotes(localTime);
-          }
+          // The repository load pushes dirty local notes, merges metadata, and
+          // pulls deltas in order as one refresh.
           await loadWorkspaceData(true); // SILENT SYNC!
         }
       } catch {
@@ -797,18 +822,18 @@ export default function App() {
         const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
         if (!useServer || isFileProtocol) return;
 
-        const localTime = Math.max(lastLoadedTimestampRef.current, workspaceExportedAtRef.current);
-
-        if (payload.lastUpdated && payload.lastUpdated > localTime) {
+        // createSseConnection calls this only after the server version advances;
+        // do not compare it with client timestamps, which may be clock-skewed.
+        if (payload.lastUpdated) {
+          if (pendingSaveDocumentRef.current || pendingSaveTableRef.current || documentSaveInFlightRef.current) {
+            deferredRemoteRefreshRef.current = true;
+            return;
+          }
           console.log('[SSE Multi-User Sync] 서버 변경 감지! 자동 리렌더링 실행:', payload.type);
           lastLoadedTimestampRef.current = payload.lastUpdated;
 
-          // 1. 차분(Delta) 데이터 수신 및 로컬 DB 안착
-          if (repository.syncNotes) {
-            await repository.syncNotes(localTime);
-          }
-
-          // 2. 최신 워크스페이스 로드 및 React State 반영 (새로고침 없이 화면 자동 리렌더링)
+          // The repository load pushes dirty local notes, merges metadata, and
+          // pulls deltas in order as one refresh.
           await loadWorkspaceData(true);
         }
   });
@@ -1506,7 +1531,7 @@ export default function App() {
           id: `row_${Date.now()}_1`,
           data: {
             'col-memo-title': '환영합니다! 🐝 스티커 메모 보드',
-            'col-memo-content': '보드 빈 곳을 더블 클릭하거나 드래그하여 메모를 자유롭게 배치하세요!',
+            'col-memo-content': '',
             'col-memo-category': '업무',
             'col-updated-at': formatDateTime(Date.now()),
           },
@@ -1952,7 +1977,8 @@ export default function App() {
     if (localFileService.hasConnectedFile()) {
       setIsLocalFileSaving(true);
       try {
-        await localFileService.saveToConnectedFile(workspace);
+        const saved = await localFileService.saveToConnectedFile(workspace);
+        if (!saved) throw new Error('파일 쓰기 권한이 없습니다. 파일을 다시 연결해 주세요.');
       } finally {
         setIsLocalFileSaving(false);
       }
@@ -2095,6 +2121,9 @@ export default function App() {
                 if (currentEnv.zoomLevel) setZoomLevel(currentEnv.zoomLevel);
               }}
             />
+            {activeDocument && <div className="ml-1 flex items-center gap-0.5 rounded-lg border border-stone-200 bg-stone-100/70 p-0.5 dark:border-stone-700 dark:bg-stone-800/70" role="tablist" aria-label="노트 편집 도구">
+              {([['home', '홈'], ['insert', '삽입'], ['draw', '그리기']] as const).map(([tab, label]) => <button key={tab} type="button" role="tab" aria-selected={editorRibbonTab === tab} onClick={() => setEditorRibbonTab(tab)} className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${editorRibbonTab === tab ? 'bg-white text-indigo-700 shadow-sm dark:bg-stone-700 dark:text-indigo-200' : 'text-stone-600 hover:bg-white/70 dark:text-stone-300 dark:hover:bg-stone-700/70'}`}>{label}</button>)}
+            </div>}
             <ToolsMenuDropdown onOpen={(tool) => openModal(tool)} />
             <HelpMenuDropdown onOpenGuide={setGuideTopic} />
             <SettingsMenuDropdown
@@ -2199,7 +2228,7 @@ export default function App() {
                 </p>
               </div>
             ) : activeDocument ? (
-              <WonNoteDocumentEditor key={activeDocument.id} document={activeDocument} onUpdateDocument={handleUpdateDocumentDebounced} zoomLevel={zoomLevel} useServerMode={useServer} />
+              <WonNoteDocumentEditor key={activeDocument.id} document={activeDocument} onUpdateDocument={handleUpdateDocumentDebounced} zoomLevel={zoomLevel} useServerMode={useServer} activeRibbonTab={editorRibbonTab} />
             ) : activeTable ? (
               <DataTableViewer
                 table={activeTable}

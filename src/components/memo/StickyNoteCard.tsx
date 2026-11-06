@@ -11,6 +11,7 @@ import {
   Check,
 } from 'lucide-react';
 import { cleanTextValue } from '../../utils/textSanitizer';
+import { MEMO_BOARD_EMPTY_CONTENT_PLACEHOLDER } from '../../constants/memoBoard';
 import { useStatusBar, computeTextMetrics } from '../common/GlobalStatusBar';
 
 interface StickyNoteCardProps {
@@ -86,11 +87,14 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
   const contentCol = columns.find((c) => c.type === 'richText' || c.name.includes('내용') || c.name.includes('설명')) || columns[1] || primaryCol;
 
   const titleVal = cleanTextValue(row.data[primaryCol?.id || 'title'] ?? `메모 #${row.id.slice(-4)}`);
-  const contentVal = cleanTextValue(row.data[contentCol?.id || 'content'] ?? row.richContent ?? '');
+  const rawContentVal = cleanTextValue(row.data[contentCol?.id || 'content'] ?? row.richContent ?? '');
+  // Older welcome cards saved the instruction as actual note text. Show it as a placeholder instead.
+  const contentVal = rawContentVal === MEMO_BOARD_EMPTY_CONTENT_PLACEHOLDER ? '' : rawContentVal;
 
   const [localTitle, setLocalTitle] = useState(titleVal);
   const [localContent, setLocalContent] = useState(contentVal);
   const [showPalette, setShowPalette] = useState(false);
+  const migratedLegacyPlaceholderRef = useRef(false);
 
   useEffect(() => {
     setLocalTitle(titleVal);
@@ -99,6 +103,22 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
   useEffect(() => {
     setLocalContent(contentVal);
   }, [contentVal]);
+
+  useEffect(() => {
+    if (
+      rawContentVal !== MEMO_BOARD_EMPTY_CONTENT_PLACEHOLDER ||
+      !contentCol ||
+      migratedLegacyPlaceholderRef.current
+    ) return;
+
+    migratedLegacyPlaceholderRef.current = true;
+    onUpdateRowData({
+      ...row,
+      data: { ...row.data, [contentCol.id]: '' },
+      richContent: row.richContent === MEMO_BOARD_EMPTY_CONTENT_PLACEHOLDER ? '' : row.richContent,
+      updatedAt: Date.now(),
+    });
+  }, [rawContentVal, contentCol, row, onUpdateRowData]);
 
   // Dragging and Resizing state
   const [isDragging, setIsDragging] = useState(false);
@@ -375,7 +395,7 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
           onKeyUp={handleSelectionChange}
           onMouseUp={handleSelectionChange}
           onPointerDown={(e) => e.stopPropagation()}
-          placeholder="메모 내용을 입력하세요..."
+          placeholder={MEMO_BOARD_EMPTY_CONTENT_PLACEHOLDER}
           className="w-full flex-1 bg-transparent resize-none border-none outline-hidden text-xs leading-relaxed custom-scrollbar font-sans"
         />
       </div>

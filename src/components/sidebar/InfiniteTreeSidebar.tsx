@@ -45,7 +45,7 @@ interface InfiniteTreeSidebarProps {
   onSelectTable: (tableId: string) => void;
   onUpdateTree: (updatedTree: TreeItem[]) => void;
   onAddTable: (parentId: string | null, title?: string) => void;
-  onAddNote?: (parentId: string | null, title?: string) => void;
+  onAddNote?: (parentId: string | null, title?: string) => string | void | Promise<string | void>;
   onAddParentNote?: () => void;
   onCreateNoteFromTable?: (tableId: string) => void;
   onAddTodoBoard?: (parentId: string | null, title?: string) => void;
@@ -115,14 +115,21 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     const handleFileTransfer = (event: Event) => {
       const action = (event as CustomEvent<string>).detail;
       if (action === 'exchange-import') exchange.chooseImport();
-      else if (activeDocId && action.startsWith('import:')) chooseImport(activeDocId, action.slice(7) as 'ppt' | 'pptx' | 'pdf');
+      else if (action.startsWith('import:')) {
+        const format = action.slice(7) as 'ppt' | 'pptx' | 'pdf' | 'md' | 'excel' | 'docx';
+        void (async () => {
+          if (!onAddNote) return;
+          const noteId = await onAddNote(selectedFolderId, '가져온 문서');
+          if (noteId) chooseImport(noteId, format, true);
+        })();
+      }
       else if (activeDocId && action === 'export:wonnote') void exchange.exportItem(activeDocId);
       else if (selectedFolderId && action === 'export:folder') void exchange.exportItem(selectedFolderId);
-      else if (activeDocId && (action === 'export:pdf' || action === 'export:pptx')) void exportNote(activeDocId, action.slice(7) as 'pdf' | 'pptx');
+      else if (activeDocId && (action === 'export:pdf' || action === 'export:pptx' || action === 'export:docx')) void exportNote(activeDocId, action.slice(7) as 'pdf' | 'pptx' | 'docx');
     };
     window.addEventListener('wonbee:file-transfer', handleFileTransfer);
     return () => window.removeEventListener('wonbee:file-transfer', handleFileTransfer);
-  }, [activeDocId, selectedFolderId, chooseImport, exportNote, exchange]);
+  }, [activeDocId, selectedFolderId, chooseImport, exportNote, exchange, onAddNote]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => {
     // Default expand folders that contain active table
     const expanded = new Set<string>();

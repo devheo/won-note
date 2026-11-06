@@ -1,4 +1,5 @@
 import React, { useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { TableDocument, TreeItem, WonNoteDocument } from '../types';
 import { packItem, unpackItem, materializeItem, packFolder, unpackFolder, materializeFolder, EXCHANGE_LIMIT, type SharedFolder } from '../utils/itemExchange';
 import { currentNoteContent } from '../services/noteEditorBridge';
@@ -198,45 +199,48 @@ export function useItemExchange(
         </div>
       )}
       {pending && (
-        <div className="fixed inset-0 z-[11002] flex items-center justify-center bg-black/40 p-4">
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="exchange-title"
-            className="w-full max-w-md rounded-2xl bg-white dark:bg-stone-900 p-6 shadow-xl text-sm"
-          >
-            <h2 id="exchange-title" className="text-lg font-bold">
-              교환 파일 가져오기
-            </h2>
-            <p className="mt-3 break-all">{pending.kind === 'folder' ? pending.root.title : pending.item.title}</p>
-            <p className="mt-2">
-              {pending.kind === 'folder'
-                ? `하위 항목 ${pending.tree.length - 1}개 · 노트 ${Object.keys(pending.documents).length}개 · 테이블 ${Object.keys(pending.tables).length}개`
-                : `${pending.kind === 'document' ? '노트' : `테이블 · ${(pending.item as TableDocument).rows.length}행`} · 이미지 ${pending.assets.length}개`}
-            </p>
-            <p className="mt-3 text-stone-500">
-              기존 항목은 유지하고 새 ID의 사본으로 추가합니다. 폴더는 하위 구조를 유지합니다.
-            </p>
-            <div className="mt-5 flex justify-end gap-2">
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => setPending(null)}
-                className="rounded border px-4 py-2"
-              >
-                취소
-              </button>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => void apply()}
-                className="rounded bg-amber-500 px-4 py-2 font-bold text-stone-950"
-              >
-                새 사본으로 가져오기
-              </button>
+        typeof document !== 'undefined' && createPortal(
+          <div className="fixed inset-0 z-[11002] flex items-center justify-center bg-black/40 p-4">
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="exchange-title"
+              className="w-full max-w-md rounded-2xl bg-white dark:bg-stone-900 p-6 shadow-xl text-sm"
+            >
+              <h2 id="exchange-title" className="text-lg font-bold">
+                교환 파일 가져오기
+              </h2>
+              <p className="mt-3 break-all">{pending.kind === 'folder' ? pending.root.title : pending.item.title}</p>
+              <p className="mt-2">
+                {pending.kind === 'folder'
+                  ? `하위 항목 ${pending.tree.length - 1}개 · 노트 ${Object.keys(pending.documents).length}개 · 테이블 ${Object.keys(pending.tables).length}개`
+                  : `${pending.kind === 'document' ? '노트' : `테이블 · ${(pending.item as TableDocument).rows.length}행`} · 이미지 ${pending.assets.length}개`}
+              </p>
+              <p className="mt-3 text-stone-500">
+                기존 항목은 유지하고 새 ID의 사본으로 추가합니다. 폴더는 하위 구조를 유지합니다.
+              </p>
+              <div className="mt-5 flex justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => setPending(null)}
+                  className="rounded border px-4 py-2"
+                >
+                  취소
+                </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void apply()}
+                  className="rounded bg-amber-500 px-4 py-2 font-bold text-stone-950"
+                >
+                  새 사본으로 가져오기
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
+          </div>,
+          document.body,
+        )
       )}
     </>
   );

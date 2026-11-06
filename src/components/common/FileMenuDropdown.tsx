@@ -4,6 +4,7 @@ import { TableDocument, WorkspaceData, TableColumn, TableRow } from '../../types
 import { parseDelimitedText } from '../../utils/csvParser';
 import { envService } from '../../services/storage/envService';
 import { ensureWorkspaceTree } from '../../utils/workspaceTreeUtils';
+import { localFileService } from '../../services/storage/localFileService';
 import {
   FileText,
   FileSpreadsheet,
@@ -127,17 +128,13 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
   };
 
   // 2. Export user_data.json (Entire Workspace Data with Tree)
-  const handleExportUserDataJson = () => {
-    const completeWs = ensureWorkspaceTree(workspace);
-    const jsonStr = JSON.stringify(completeWs, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = 'user_data.json';
-    link.click();
-    URL.revokeObjectURL(url);
-    showToast('user_data.json(워크스페이스 트리 및 테이블)이 다운로드되었습니다.');
+  const handleExportUserDataJson = async () => {
+    try {
+      await localFileService.downloadAsFile(ensureWorkspaceTree(workspace));
+      showToast('이미지를 포함한 클라이언트 복원 파일을 다운로드했습니다.');
+    } catch (error) {
+      showToast(`데이터 파일 내보내기 실패: ${(error as Error).message}`);
+    }
     setIsOpen(false);
   };
 
@@ -169,15 +166,16 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
-        const parsed = JSON.parse(evt.target?.result as string);
-        if (parsed.tables || (parsed.tree && Array.isArray(parsed.tree))) {
+        const raw = JSON.parse(evt.target?.result as string);
+        if (raw.tables || (raw.tree && Array.isArray(raw.tree))) {
+          const parsed = await localFileService.restoreFromText(evt.target?.result as string);
           const completeWs = ensureWorkspaceTree(parsed);
           onImportJsonWorkspace(completeWs);
           showToast('user_data.json 워크스페이스(트리 복원 완료)가 성공적으로 적용되었습니다.');
-        } else if (parsed.id && parsed.columns && parsed.rows) {
-          onImportCsvToNewTable(parsed.title || '가져온 JSON 테이블', parsed.columns, parsed.rows);
+        } else if (raw.id && raw.columns && raw.rows) {
+          onImportCsvToNewTable(raw.title || '가져온 JSON 테이블', raw.columns, raw.rows);
           showToast('단일 테이블 JSON이 성공적으로 임포트되었습니다.');
         } else {
           showToast('유효한 user_data.json 형식이 아닙니다.');
@@ -250,7 +248,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
             <div className="flex items-center justify-between mb-1.5">
               <span className="text-[10px] font-bold text-stone-500 dark:text-stone-400 uppercase tracking-wider flex items-center gap-1">
                 <HardDrive className="w-3 h-3 text-amber-500" />
-                로컬 파일 연동 (user_data.json)
+                클라이언트 파일 백업 연동
               </span>
               {connectedFileName ? (
                 <span className="text-[10px] px-1.5 py-0.2 rounded bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-semibold flex items-center gap-1">
@@ -264,6 +262,12 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
               )}
             </div>
 
+            {!connectedFileName && (
+              <p className="mb-2 text-[10px] leading-relaxed text-amber-700 dark:text-amber-300">
+                파일 미연결 상태에서는 브라우저 데이터 삭제 시 클라이언트 데이터가 지워집니다. 데이터 파일을 연결하면 변경 내용과 이미지가 함께 자동 저장됩니다.
+              </p>
+            )}
+
             {connectedFileName ? (
               <div className="space-y-1.5">
                 <div className="text-[11px] font-mono text-stone-800 dark:text-stone-200 truncate bg-white dark:bg-[#252525] px-2 py-1 rounded border border-stone-200 dark:border-[#383838]">
@@ -272,8 +276,12 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
                 <div className="flex items-center gap-1">
                   <button
                     onClick={async () => {
-                      await onManualSaveLocalFile();
-                      showToast('로컬 파일에 저장되었습니다.');
+                      try {
+                        await onManualSaveLocalFile();
+                        showToast('클라이언트 데이터 파일에 저장되었습니다.');
+                      } catch (error) {
+                        showToast((error as Error).message || '파일 저장에 실패했습니다.');
+                      }
                     }}
                     disabled={isLocalFileSaving}
                     className="flex-1 px-2 py-1 rounded bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold flex items-center justify-center gap-1 text-[11px] transition-colors"
@@ -288,7 +296,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
                   <button
                     onClick={() => {
                       onDisconnectLocalFile();
-                      showToast('로컬 파일 연동이 해제되었습니다.');
+                      showToast('클라이언트 파일 연결이 해제되었습니다.');
                     }}
                     className="px-2 py-1 rounded bg-stone-200 dark:bg-stone-800 hover:bg-rose-100 dark:hover:bg-rose-950/40 text-stone-600 dark:text-stone-400 hover:text-rose-600 dark:hover:text-rose-400 text-[11px] transition-colors"
                     title="연동 해제"
@@ -307,7 +315,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
                   className="w-full px-2 py-1.5 rounded-md bg-stone-100 dark:bg-[#262626] hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 hover:text-amber-600 dark:hover:text-amber-400 font-semibold flex items-center justify-center gap-1.5 transition-colors text-[11px]"
                 >
                   <Link className="w-3 h-3 text-amber-500" />
-                  <span>내 컴퓨터 user_data.json 파일 열기/연결</span>
+                  <span>내 컴퓨터 데이터 파일 열기/복원</span>
                 </button>
                 <button
                   onClick={async () => {
@@ -316,7 +324,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
                   }}
                   className="w-full px-2 py-1 rounded text-stone-500 dark:text-stone-400 hover:text-stone-800 dark:hover:text-stone-200 text-[10px] text-center transition-colors"
                 >
-                  새 파일로 생성 및 연동하기
+                  새 클라이언트 데이터 파일 생성 및 연결
                 </button>
               </div>
             )}
@@ -353,11 +361,11 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
 
           <div className="relative" onMouseLeave={() => setTransferSubmenu(null)}>
             <button type="button" onMouseEnter={() => setTransferSubmenu('import')} onClick={() => setTransferSubmenu(transferSubmenu === 'import' ? null : 'import')} className="w-full px-2.5 py-2 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between font-semibold"><span className="flex items-center gap-2"><Upload className="w-3.5 h-3.5 text-amber-500" />가져오기</span><ChevronDown className="w-3 h-3 -rotate-90" /></button>
-            {transferSubmenu === 'import' && <div role="menu" className="absolute left-full top-0 ml-1 w-52 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-1 shadow-xl">{[['PDF 문서', 'import:pdf'], ['PPT 문서', 'import:ppt'], ['PPTX 문서', 'import:pptx'], ['WONNOTE 교환 파일', 'exchange-import']].map(([label, action]) => <button key={action} type="button" role="menuitem" onClick={() => { window.dispatchEvent(new CustomEvent('wonbee:file-transfer', { detail: action })); setIsOpen(false); }} className="w-full px-3 py-2 rounded text-left hover:bg-amber-50 dark:hover:bg-stone-800">{label}</button>)}</div>}
+            {transferSubmenu === 'import' && <div role="menu" className="absolute left-full top-0 ml-1 w-52 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-1 shadow-xl">{[['PDF 문서 → 새 노트', 'import:pdf'], ['PPT 문서 → 새 노트', 'import:ppt'], ['PPTX 문서 → 새 노트', 'import:pptx'], ['Word DOCX → 새 노트', 'import:docx'], ['MD 문서 → 새 노트', 'import:md'], ['Excel/CSV → 새 노트', 'import:excel'], ['WONNOTE 교환 파일', 'exchange-import']].map(([label, action]) => <button key={action} type="button" role="menuitem" onClick={() => { window.dispatchEvent(new CustomEvent('wonbee:file-transfer', { detail: action })); setIsOpen(false); }} className="w-full px-3 py-2 rounded text-left hover:bg-amber-50 dark:hover:bg-stone-800">{label}</button>)}</div>}
           </div>
           <div className="relative" onMouseLeave={() => setTransferSubmenu(null)}>
             <button type="button" onMouseEnter={() => setTransferSubmenu('export')} onClick={() => setTransferSubmenu(transferSubmenu === 'export' ? null : 'export')} className="w-full px-2.5 py-2 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between font-semibold"><span className="flex items-center gap-2"><Download className="w-3.5 h-3.5 text-amber-500" />내보내기</span><ChevronDown className="w-3 h-3 -rotate-90" /></button>
-            {transferSubmenu === 'export' && <div role="menu" className="absolute left-full top-0 ml-1 w-52 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-1 shadow-xl">{[['PDF 문서 만들기', 'export:pdf'], ['PPTX 문서 만들기', 'export:pptx'], [selectedFolderId ? 'WONNOTE 폴더 내보내기' : 'WONNOTE 파일 내보내기', selectedFolderId ? 'export:folder' : 'export:wonnote']].map(([label, action]) => <button key={action} type="button" role="menuitem" onClick={() => { window.dispatchEvent(new CustomEvent('wonbee:file-transfer', { detail: action })); setIsOpen(false); }} className="w-full px-3 py-2 rounded text-left hover:bg-amber-50 dark:hover:bg-stone-800">{label}</button>)}</div>}
+            {transferSubmenu === 'export' && <div role="menu" className="absolute left-full top-0 ml-1 w-52 rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 p-1 shadow-xl">{[['PDF 문서 만들기', 'export:pdf'], ['PPTX 문서 만들기', 'export:pptx'], ['Word DOCX 문서 만들기', 'export:docx'], [selectedFolderId ? 'WONNOTE 폴더 내보내기' : 'WONNOTE 파일 내보내기', selectedFolderId ? 'export:folder' : 'export:wonnote']].map(([label, action]) => <button key={action} type="button" role="menuitem" onClick={() => { window.dispatchEvent(new CustomEvent('wonbee:file-transfer', { detail: action })); setIsOpen(false); }} className="w-full px-3 py-2 rounded text-left hover:bg-amber-50 dark:hover:bg-stone-800">{label}</button>)}</div>}
           </div>
           {/* Section 2: Unified Import */}
           <div className="px-2.5 py-1 text-[10px] font-bold text-stone-400 dark:text-[#888888] uppercase tracking-wider flex items-center justify-between">
@@ -386,7 +394,7 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
             className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center gap-2 transition-colors"
           >
             <FileJson className="w-3.5 h-3.5 text-emerald-500" />
-            <span>user_data.json 파일 불러오기</span>
+            <span>클라이언트 데이터 파일 불러오기</span>
           </button>
 
           <button
@@ -406,12 +414,12 @@ export const FileMenuDropdown: React.FC<FileMenuDropdownProps> = ({
           </div>
 
           <button
-            onClick={handleExportUserDataJson}
+        onClick={() => void handleExportUserDataJson()}
             className="w-full px-2.5 py-1.5 rounded-lg text-left hover:bg-stone-100 dark:hover:bg-[#2e2e2e] flex items-center justify-between text-stone-800 dark:text-[#f0f0f0] font-semibold transition-colors"
           >
             <span className="flex items-center gap-2">
               <Database className="w-3.5 h-3.5 text-amber-500" />
-              user_data.json 백업
+            복원 가능한 클라이언트 데이터 백업
             </span>
             <span className="text-[10px] text-stone-400">트리 & 테이블</span>
           </button>

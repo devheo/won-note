@@ -8,17 +8,17 @@ import { discardNoteImages } from '../utils/noteImageAssets';
 
 type PdfSession = Awaited<ReturnType<typeof openPdfImport>>;
 
-export type NoteImportFormat = 'ppt' | 'pptx' | 'pdf';
-export type NoteExportFormat = 'pptx' | 'pdf';
+export type NoteImportFormat = 'ppt' | 'pptx' | 'pdf' | 'md' | 'excel' | 'docx';
+export type NoteExportFormat = 'pptx' | 'pdf' | 'docx';
 export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUpdate?: (doc: WonNoteDocument) => void) {
   const latest = useRef({ documents, onUpdate });
   latest.current = { documents, onUpdate };
   const input = useRef<HTMLInputElement>(null);
-  const target = useRef<{ id: string; format: NoteImportFormat } | null>(null);
+  const target = useRef<{ id: string; format: NoteImportFormat; newNote?: boolean } | null>(null);
   const busyRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
-  const [pdfPending, setPdfPending] = useState<{ session: PdfSession; id: string; name: string } | null>(null);
+  const [pdfPending, setPdfPending] = useState<{ session: PdfSession; id: string; name: string; newNoteTitle?: string } | null>(null);
   const sessionRef = useRef<PdfSession | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [pageRange, setPageRange] = useState('');
@@ -47,24 +47,25 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
     if (!note) throw new Error('대상 노트가 삭제되었거나 존재하지 않습니다.');
     return { ...note, content: currentNoteContent(id, note.content) };
   };
-  const chooseImport = (id: string, format: NoteImportFormat) => {
+  const chooseImport = (id: string, format: NoteImportFormat, newNote = false) => {
     if (busyRef.current || !input.current) return;
-    target.current = { id, format };
-    input.current.accept = `.${format}`;
+    target.current = { id, format, newNote };
+    input.current.accept = format === 'excel' ? '.xlsx,.csv,.tsv' : `.${format}`;
     input.current.value = '';
     input.current.click();
   };
   const commitImport = (
     id: string,
     result: { html: string; pageCount?: number; slideCount?: number; warnings: string[] },
+    newNoteTitle?: string,
   ) => {
     const note = getNote(id);
     const content = (note.content || '') + (note.content && note.content !== '<p></p>' ? '<hr>' : '') + result.html;
     if (!latest.current.onUpdate) throw new Error('노트 저장 기능을 사용할 수 없습니다.');
     replaceNoteContent(note.id, content);
-    latest.current.onUpdate({ ...note, content, updatedAt: Date.now() });
-    const count = result.pageCount !== undefined ? `${result.pageCount}페이지` : `${result.slideCount}개 슬라이드`;
-    setNotice({ text: `“${note.title}” 끝에 ${count}를 추가했습니다. ${result.warnings.join(' ')}` });
+    latest.current.onUpdate({ ...note, title: newNoteTitle || note.title, content, updatedAt: Date.now() });
+    const count = result.pageCount !== undefined ? `${result.pageCount}페이지` : result.slideCount !== undefined ? `${result.slideCount}개 슬라이드` : '문서 내용';
+    setNotice({ text: `“${newNoteTitle || note.title}”에 ${count}를 가져왔습니다. ${result.warnings.join(' ')}` });
   };
   const load = async (file?: File) => {
     const selected = target.current;
@@ -74,11 +75,16 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
     setNotice({ text: `${file.name} 가져오는 중…` });
     let waitingForPdf = false;
     try {
-      if (!file.name.toLowerCase().endsWith(`.${selected.format}`))
-        throw new Error(`.${selected.format} 파일을 선택해주세요.`);
+      const extension = file.name.split('.').pop()?.toLowerCase() || '';
+      const allowedExtensions = selected.format === 'excel' ? ['xlsx', 'csv', 'tsv'] : [selected.format];
+      if (!allowedExtensions.includes(extension))
+        throw new Error(`${allowedExtensions.map(value => `.${value}`).join(', ')} 파일을 선택해주세요.`);
       const limit = selected.format === 'pdf' ? 250 : 50;
       if (file.size > limit * 1024 * 1024) throw new Error(`${limit}MB 이하의 파일을 선택해주세요.`);
       getNote(selected.id);
+      const importedTitle = selected.newNote
+        ? file.name.replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 100) || '가져온 노트'
+        : undefined;
       abortRef.current = new AbortController();
       let data = await file.arrayBuffer();
       if (selected.format === 'pdf') {
@@ -89,7 +95,7 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         setPdfMode('text-images');
         setPdfError('');
         setProgress(null);
-        setPdfPending({ session, id: selected.id, name: file.name });
+        setPdfPending({ session, id: selected.id, name: file.name, newNoteTitle: importedTitle });
         waitingForPdf = true;
         setNotice(null);
         return;
@@ -106,8 +112,31 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         }
         data = await response.arrayBuffer();
       }
-      const result = await (await import('../utils/pptxConversion')).importPptx(data);
-      commitImport(selected.id, result);
+      if (selected.format === 'ppt' || selected.format === 'pptx') {
+        const result = await (await import('../utils/pptxConversion')).importPptx(data);
+        commitImport(selected.id, result, importedTitle);
+      } else if (selected.format === 'md') {
+        const { markdownToHtml } = await import('../utils/markdownHelper');
+        const html = markdownToHtml((await file.text()).replace(/^\uFEFF/, ''));
+        commitImport(selected.id, { html, warnings: [] }, importedTitle);
+      } else if (selected.format === 'docx') {
+        const result = await (await import('../utils/docxConversion')).docxToEditorHtml(data);
+        commitImport(selected.id, {
+          html: result.html,
+          warnings: result.hasEmbeddedMedia ? ['본문과 표를 가져왔으며, 문서에 포함된 이미지는 제외했습니다.'] : [],
+        }, importedTitle);
+      } else if (selected.format === 'excel') {
+        if (extension === 'xlsx') {
+          const result = await (await import('../utils/xlsxConversion')).xlsxToEditorHtml(data, progress => setNotice({ text: `${file.name} · 시트 ${progress.sheetIndex}/${progress.sheetCount} · ${progress.rowsProcessed}/${progress.totalRows}행 가져오는 중…` }));
+          commitImport(selected.id, { html: result.html, warnings: result.truncated ? ['크기 제한으로 일부 시트/행/열을 생략했습니다.'] : [] }, importedTitle);
+        } else {
+          const { convertTextDataToEditorContent } = await import('../utils/csvParser');
+          const result = convertTextDataToEditorContent((await file.text()).replace(/^\uFEFF/, ''), {
+            format: 'csv', delimiter: extension === 'tsv' ? 'tab' : 'auto', outputType: 'table', tableWidth: '100%',
+          });
+          commitImport(selected.id, { html: result.html, warnings: [] }, importedTitle);
+        }
+      }
     } catch (error) {
       setNotice({ text: error instanceof Error ? error.message : '가져오기에 실패했습니다.', error: true });
     } finally {
@@ -147,7 +176,7 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         onProgress: setProgress,
       });
       assets = result.assetIds;
-      commitImport(pdfPending.id, result);
+      commitImport(pdfPending.id, result, pdfPending.newNoteTitle);
       committed = true;
     } catch (error) {
       if (!committed && assets.length) await discardNoteImages(assets);
@@ -182,9 +211,18 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         const result = await (await import('../utils/pptxConversion')).createPptx(note.content, note.title);
         warnings = result.warnings;
         await result.pptx.writeFile({ fileName: `${filename}.pptx`, compression: true });
-      } else {
+      } else if (format === 'pdf') {
         const pdf = await (await import('../utils/pdfConversion')).createPdf(note.content, note.title);
         pdf.save(`${filename}.pdf`);
+      } else {
+        if (/<img\b/i.test(note.content)) warnings.push('이미지는 DOCX에 포함되지 않았습니다.');
+        const blob = await (await import('../utils/docxConversion')).createDocx(note.content);
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `${filename}.docx`;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
       setNotice({ text: `“${note.title}” ${format.toUpperCase()} 내보내기를 완료했습니다. ${warnings.join(' ')}` });
     } catch (error) {

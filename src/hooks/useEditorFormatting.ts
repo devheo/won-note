@@ -1,5 +1,24 @@
 import { useCallback } from 'react';
 
+function applyWholeTableTextStyle(editor: any, attribute: 'fontFamily' | 'fontSize', value: string | null) {
+  const { state, view } = editor;
+  const { selection } = state;
+  let match: { pos: number; node: any } | null = null;
+  state.doc.nodesBetween(selection.from, selection.to, (node: any, pos: number) => {
+    if (node.type.name !== 'table') return true;
+    const coversTableContent = selection.from <= pos + 1 && selection.to >= pos + node.nodeSize - 1;
+    if (coversTableContent) {
+      match = { pos, node };
+      return false;
+    }
+    return true;
+  });
+  if (!match) return false;
+  const { pos, node } = match;
+  view.dispatch(state.tr.setNodeMarkup(pos, undefined, { ...node.attrs, [attribute]: value }));
+  return true;
+}
+
 interface UseEditorFormattingProps {
   editor: any;
   setActiveTopDialog: (dialog: any) => void;
@@ -24,6 +43,8 @@ export function useEditorFormatting({
   const setFontSize = useCallback(
     (size: string) => {
       if (!editor) return;
+      const nextValue = size === 'default' ? null : size;
+      if (applyWholeTableTextStyle(editor, 'fontSize', nextValue)) return;
       if (size === 'default') {
         editor.chain().focus().unsetFontSize().run();
       } else {
@@ -36,6 +57,8 @@ export function useEditorFormatting({
   const setFontFamily = useCallback(
     (family: string) => {
       if (!editor) return;
+      const nextValue = family === 'default' ? null : family;
+      if (applyWholeTableTextStyle(editor, 'fontFamily', nextValue)) return;
       if (family === 'default') {
         editor.chain().focus().unsetFontFamily().run();
       } else {

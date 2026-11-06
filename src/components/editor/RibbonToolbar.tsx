@@ -1,4 +1,4 @@
-import React, { memo, useRef } from 'react';
+import React, { memo, useEffect, useRef, useState } from 'react';
 import {
   Type,
   Plus,
@@ -21,11 +21,8 @@ import {
   AlignCenter,
   AlignRight,
   AlignJustify,
-  Outdent,
-  Indent,
-  List,
-  ListOrdered,
   CheckSquare,
+  ListOrdered,
   Quote,
   Minus,
   Table as TableIcon,
@@ -40,13 +37,30 @@ import {
   Rows,
   Columns,
   Trash2,
+  ClipboardCopy,
+  Scissors,
+  Paintbrush,
+  Subscript,
+  Superscript,
+  Tag,
+  Search,
+  Pencil,
+  Eraser,
+  Highlighter as HighlighterIcon,
+  Presentation,
+  FileSpreadsheet,
+  FileText,
+  FileDown,
 } from 'lucide-react';
 import { TableColumn } from '../../types';
+import { DOMSerializer } from '@tiptap/pm/model';
+import { DrawingStylePicker } from './DrawingStylePicker';
+import { FontSizePixelControl, InsertShapeControls, ListToolbarControls, ShapeSizeControls, TableBorderToolbarControl } from './DocumentToolbarControls';
 
 interface RibbonToolbarProps {
   editor: any;
-  activeRibbonTab: 'home' | 'insert' | 'format';
-  setActiveRibbonTab: (tab: 'home' | 'insert' | 'format') => void;
+  activeRibbonTab: 'home' | 'insert' | 'draw';
+  setActiveRibbonTab: (tab: 'home' | 'insert' | 'draw') => void;
   activeTopDialog: string | null;
   setActiveTopDialog: (dialog: any) => void;
   savedSelectionRef: React.MutableRefObject<{ from: number; to: number } | null>;
@@ -59,6 +73,7 @@ interface RibbonToolbarProps {
   handlePasteMarkdownFromClipboard: () => void;
   handleImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   handleMdFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  handleInsertFiles: (files: File[]) => void;
   openTableDialog: () => void;
   openImageDialog: () => void;
   openVideoDialog: () => void;
@@ -68,6 +83,42 @@ interface RibbonToolbarProps {
   handleFormatExpress?: () => void;
   columnMap: Map<string, TableColumn>;
   columns: TableColumn[];
+  onNotify?: (message: string) => void;
+  onInsertDrawing?: () => void;
+  drawingTool?: 'select' | 'pen' | 'highlighter' | 'eraser';
+  setDrawingTool?: (tool: 'select' | 'pen' | 'highlighter' | 'eraser') => void;
+  drawingColor?: string;
+  setDrawingColor?: (color: string) => void;
+  drawingWidth?: number;
+  setDrawingWidth?: (width: number) => void;
+}
+
+const INLINE_FORMAT_MARKS = ['bold', 'italic', 'underline', 'strike', 'textStyle', 'color', 'highlight', 'subscript', 'superscript', 'oneNoteTag'];
+const ONE_NOTE_TAGS = [
+  { id: 'todo', label: '할 일', icon: '☐' },
+  { id: 'important', label: '중요', icon: '★' },
+  { id: 'question', label: '질문', icon: '?' },
+  { id: 'idea', label: '아이디어', icon: '💡' },
+];
+
+function cleanClipboardHtml(source: string): string {
+  const document = new DOMParser().parseFromString(source, 'text/html');
+  document.querySelectorAll('script,style,meta,link,iframe,object,embed,svg,math').forEach(element => element.remove());
+  for (const element of Array.from(document.body.querySelectorAll('*'))) {
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim();
+      if (name.startsWith('on') || name === 'srcdoc') element.removeAttribute(attribute.name);
+      else if (name === 'style' && /(url\s*\(|expression\s*\()/i.test(value)) element.removeAttribute(attribute.name);
+      else if (['href', 'src', 'xlink:href'].includes(name)) {
+        const scheme = value.match(/^([a-z][a-z\d+.-]*):/i)?.[1]?.toLowerCase();
+        const isImageData = name === 'src' && element.tagName === 'IMG' && /^data:image\//i.test(value);
+        const allowed = name === 'href' ? ['http', 'https', 'mailto', 'tel'] : ['http', 'https', 'blob'];
+        if (scheme && !allowed.includes(scheme) && !isImageData) element.removeAttribute(attribute.name);
+      }
+    }
+  }
+  return document.body.innerHTML;
 }
 
 export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
@@ -86,6 +137,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
   handlePasteMarkdownFromClipboard,
   handleImageUpload,
   handleMdFileUpload,
+  handleInsertFiles,
   openTableDialog,
   openImageDialog,
   openVideoDialog,
@@ -93,9 +145,193 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
   setCodeDialogTab,
   setIsAiAgentDrawerOpen,
   handleFormatExpress,
+  onNotify,
+  onInsertDrawing,
+  drawingTool = 'select',
+  setDrawingTool,
+  drawingColor = '#1f2937',
+  setDrawingColor,
+  drawingWidth = 3,
+  setDrawingWidth,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mdFileInputRef = useRef<HTMLInputElement | null>(null);
+  const pptxFileInputRef = useRef<HTMLInputElement | null>(null);
+  const excelFileInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfFileInputRef = useRef<HTMLInputElement | null>(null);
+  const markdownFileInputRef = useRef<HTMLInputElement | null>(null);
+  const docxFileInputRef = useRef<HTMLInputElement | null>(null);
+  const formatSnapshotRef = useRef<{ marks: any[]; blockType: string; blockAttrs: Record<string, any> } | null>(null);
+  const formatPainterArmedRef = useRef(false);
+  const isApplyingFormatRef = useRef(false);
+  const tagSearchIndexRef = useRef(0);
+  const [isFormatPainterArmed, setIsFormatPainterArmed] = useState(false);
+  const [lineHeight, setLineHeight] = useState('');
+  useEffect(() => {
+    if (!editor) return;
+    const syncLineHeight = () => {
+      const type = editor.isActive('heading') ? 'heading' : 'paragraph';
+      setLineHeight(editor.getAttributes(type).lineHeight || '');
+    };
+    const applyCopiedFormat = () => {
+      if (!formatPainterArmedRef.current || isApplyingFormatRef.current) { syncLineHeight(); return; }
+      const { from, to, empty } = editor.state.selection;
+      const snapshot = formatSnapshotRef.current;
+      if (empty || !snapshot) { syncLineHeight(); return; }
+
+      const transaction = editor.state.tr;
+      for (const name of INLINE_FORMAT_MARKS) {
+        const markType = editor.schema.marks[name];
+        if (markType) transaction.removeMark(from, to, markType);
+      }
+      for (const mark of snapshot.marks) {
+        const markType = editor.schema.marks[mark.type.name];
+        if (markType) transaction.addMark(from, to, markType.create(mark.attrs));
+      }
+
+      isApplyingFormatRef.current = true;
+      editor.view.dispatch(transaction);
+      if (snapshot.blockType && Object.keys(snapshot.blockAttrs).length) {
+        editor.commands.updateAttributes(snapshot.blockType, snapshot.blockAttrs);
+      }
+      isApplyingFormatRef.current = false;
+      formatPainterArmedRef.current = false;
+      formatSnapshotRef.current = null;
+      setIsFormatPainterArmed(false);
+      syncLineHeight();
+      onNotify?.('선택한 글자에 서식을 적용했습니다.');
+    };
+    editor.on('selectionUpdate', applyCopiedFormat);
+    return () => { editor.off('selectionUpdate', applyCopiedFormat); };
+  }, [editor, onNotify]);
+
+  const toggleFormatPainter = () => {
+    if (formatPainterArmedRef.current) {
+      formatPainterArmedRef.current = false;
+      formatSnapshotRef.current = null;
+      setIsFormatPainterArmed(false);
+      return;
+    }
+    const selection = editor.state.selection;
+    const sourceMarks = selection.empty
+      ? selection.$from.marks()
+      : (editor.state.doc.nodeAt(selection.from)?.marks || selection.$from.marks());
+    const marks = sourceMarks.filter((mark: any) => INLINE_FORMAT_MARKS.includes(mark.type.name));
+    const sourceBlock = selection.$from.parent;
+    const blockType = ['paragraph', 'heading'].includes(sourceBlock.type.name) ? sourceBlock.type.name : '';
+    const blockAttrs: Record<string, any> = {};
+    if (blockType) {
+      blockAttrs.textAlign = sourceBlock.attrs.textAlign || null;
+      blockAttrs.lineHeight = sourceBlock.attrs.lineHeight || null;
+    }
+    if (!marks.length && !blockAttrs.textAlign && !blockAttrs.lineHeight) {
+      onNotify?.('서식을 복사할 글자나 서식이 있는 위치에 커서를 놓아주세요.');
+      return;
+    }
+    formatSnapshotRef.current = { marks, blockType, blockAttrs };
+    formatPainterArmedRef.current = true;
+    setIsFormatPainterArmed(true);
+    onNotify?.('서식을 복사했습니다. 적용할 글자 범위를 선택하세요.');
+  };
+
+  const applyOneNoteTag = (tag: string) => {
+    if (!tag) return;
+    editor.chain().focus().setMark('oneNoteTag', { tag }).run();
+    onNotify?.('선택 영역에 태그를 추가했습니다.');
+  };
+
+  const findNextOneNoteTag = () => {
+    const matches: Array<{ from: number; to: number; tag: string }> = [];
+    editor.state.doc.descendants((node: any, pos: number) => {
+      if (!node.isText) return;
+      const mark = node.marks.find((candidate: any) => candidate.type.name === 'oneNoteTag');
+      if (!mark) return;
+      const previous = matches[matches.length - 1];
+      const to = pos + node.nodeSize;
+      if (previous && previous.to === pos && previous.tag === mark.attrs.tag) previous.to = to;
+      else matches.push({ from: pos, to, tag: mark.attrs.tag });
+    });
+    if (!matches.length) {
+      tagSearchIndexRef.current = 0;
+      onNotify?.('이 문서에 태그가 없습니다.');
+      return;
+    }
+    const match = matches[tagSearchIndexRef.current % matches.length];
+    tagSearchIndexRef.current += 1;
+    editor.chain().focus().setTextSelection({ from: match.from, to: match.to }).scrollIntoView().run();
+    const label = ONE_NOTE_TAGS.find(item => item.id === match.tag)?.label || '태그';
+    onNotify?.(`${label} 태그 ${tagSearchIndexRef.current}/${matches.length}`);
+  };
+
+  const copySelection = async (cut = false) => {
+    const { from, to, empty } = editor.state.selection;
+    if (empty) {
+      onNotify?.(cut ? '잘라낼 내용을 먼저 선택해주세요.' : '복사할 내용을 먼저 선택해주세요.');
+      return;
+    }
+    const text = editor.state.doc.textBetween(from, to, '\n');
+    try {
+      if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        const wrapper = document.createElement('div');
+        wrapper.appendChild(DOMSerializer.fromSchema(editor.schema).serializeFragment(editor.state.selection.content().content));
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/html': new Blob([wrapper.innerHTML], { type: 'text/html' }),
+          'text/plain': new Blob([text], { type: 'text/plain' }),
+        })]);
+      } else if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        editor.view.focus();
+        document.execCommand(cut ? 'cut' : 'copy');
+        return;
+      }
+      if (cut) editor.chain().focus().setTextSelection({ from, to }).deleteSelection().run();
+      onNotify?.(cut ? '선택한 내용을 잘라냈습니다.' : '선택한 내용을 복사했습니다.');
+    } catch {
+      try {
+        await navigator.clipboard.writeText(text);
+        if (cut) editor.chain().focus().setTextSelection({ from, to }).deleteSelection().run();
+        onNotify?.(cut ? '선택한 내용을 잘라냈습니다.' : '서식 없이 내용을 복사했습니다.');
+      } catch {
+        onNotify?.('클립보드 접근 권한을 확인해주세요.');
+      }
+    }
+  };
+
+  const pasteFromClipboard = async () => {
+    try {
+      if (navigator.clipboard?.read) {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          if (item.types.includes('text/html')) {
+            const html = cleanClipboardHtml(await (await item.getType('text/html')).text());
+            if (html.trim()) {
+              editor.chain().focus().insertContent(html).run();
+              return;
+            }
+          }
+          if (item.types.includes('text/plain')) {
+            const text = await (await item.getType('text/plain')).text();
+            if (text) {
+              editor.chain().focus().insertContent(text).run();
+              return;
+            }
+          }
+        }
+      } else {
+        const text = await navigator.clipboard.readText();
+        if (text) editor.chain().focus().insertContent(text).run();
+      }
+    } catch {
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text) editor.chain().focus().insertContent(text).run();
+        else onNotify?.('붙여넣을 내용이 없습니다.');
+      } catch {
+        onNotify?.('붙여넣기 권한을 허용하거나 Ctrl+V를 사용해주세요.');
+      }
+    }
+  };
 
   if (!editor) return null;
 
@@ -132,15 +368,15 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
 
           <button
             type="button"
-            onClick={() => setActiveRibbonTab('format')}
+            onClick={() => setActiveRibbonTab('draw')}
             className={`px-3.5 py-1.5 text-xs font-semibold rounded-t-lg transition-all border-t border-x flex items-center gap-1.5 ${
-              activeRibbonTab === 'format'
+              activeRibbonTab === 'draw'
                 ? 'bg-white dark:bg-stone-900 text-amber-600 dark:text-amber-400 border-stone-200 dark:border-stone-800 -mb-[1px] shadow-xs'
                 : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800/60'
             }`}
           >
-            <Grid className="w-3.5 h-3.5" />
-            <span>서식</span>
+            <Pencil className="w-3.5 h-3.5" />
+            <span>그리기</span>
             {editor.isActive('table') && (
               <span className="flex items-center gap-1 text-[10px] font-semibold text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-950/80 px-1.5 py-0.2 rounded-full ring-1 ring-amber-400/40">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
@@ -150,13 +386,13 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
           </button>
         </div>
 
-        {/* Quick Action Buttons on Top Right (Undo, Redo, Paste MD, AI Agent) */}
+        {/* 빠른 실행: AI, 마크다운 붙여넣기, 실행 취소/다시 실행 */}
         <div className="flex items-center gap-1.5 pb-1">
           <button
             type="button"
             onClick={() => setIsAiAgentDrawerOpen(true)}
             className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-500 hover:bg-amber-400 text-stone-950 transition-colors shadow-2xs"
-            title="WonBee AI 에이전트 (양식 변환, 맞춤법/문체 린팅, Diff 비교, 다이어그램, RAG)"
+            title="원비 AI 도우미 (양식 변환, 맞춤법·문체 검사, 내용 비교, 다이어그램)"
           >
             <Sparkles className="w-3.5 h-3.5" />
             <span>AI 에이전트</span>
@@ -166,10 +402,10 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
             type="button"
             onClick={handlePasteMarkdownFromClipboard}
             className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 text-amber-800 dark:text-amber-300 border border-amber-300/80 dark:border-amber-700/80 hover:bg-amber-500/20 transition-colors shadow-2xs"
-            title="클립보드에 복사된 마크다운(.md) 파일/텍스트를 에디터에 즉시 하이라이팅 서식으로 붙여넣어 적용합니다."
+            title="클립보드의 마크다운 파일이나 텍스트를 서식과 함께 붙여넣습니다."
           >
             <ClipboardPaste className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-            <span>MD 붙여넣기</span>
+            <span>마크다운 붙여넣기</span>
           </button>
 
           <div className="w-[1px] h-3.5 bg-stone-200 dark:bg-stone-700 mx-0.5" />
@@ -200,41 +436,60 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
         {/* TAB 1: 홈 (Home) - Typography, Colors, Alignment, Lists */}
         {activeRibbonTab === 'home' && (
           <div className="flex items-center gap-1 shrink-0 flex-nowrap text-xs">
+            <div className="flex items-center gap-0.5">
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void pasteFromClipboard()}
+                className="p-1.5 rounded text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
+                title="클립보드에서 서식과 함께 붙여넣기"
+                aria-label="붙여넣기"
+              >
+                <ClipboardPaste className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void copySelection(true)}
+                className="p-1.5 rounded text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
+                title="선택한 내용 잘라내기"
+                aria-label="잘라내기"
+              >
+                <Scissors className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void copySelection(false)}
+                className="p-1.5 rounded text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
+                title="선택한 내용 복사"
+                aria-label="복사"
+              >
+                <ClipboardCopy className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-0.5" />
+
             {/* Font Family Selector */}
             <select
               value={editor.getAttributes('textStyle').fontFamily || 'default'}
               onChange={(e) => setFontFamily(e.target.value)}
               className="h-7 px-2 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 focus:outline-hidden focus:ring-1 focus:ring-amber-500 max-w-[105px]"
-              title="글꼴 (Font Family)"
+              title="글꼴"
             >
               <option value="default">기본 글꼴</option>
               <option value="Pretendard, -apple-system, sans-serif">Pretendard</option>
               <option value="'Malgun Gothic', '맑은 고딕', sans-serif">맑은 고딕</option>
               <option value="'Nanum Gothic', '나눔고딕', sans-serif">나눔고딕</option>
               <option value="'Nanum Myeongjo', '나눔명조', serif">나눔명조</option>
-              <option value="'Noto Sans KR', sans-serif">Noto Sans</option>
-              <option value="sans-serif">고딕 (Sans)</option>
-              <option value="serif">명조 (Serif)</option>
-              <option value="ui-monospace, monospace">코딩 (Monospace)</option>
+              <option value="'Noto Sans KR', sans-serif">본고딕</option>
+              <option value="sans-serif">고딕</option>
+              <option value="serif">명조</option>
+              <option value="ui-monospace, monospace">고정폭 글꼴</option>
             </select>
 
-            {/* Font Size Selector */}
-            <select
-              value={editor.getAttributes('textStyle').fontSize || 'default'}
-              onChange={(e) => setFontSize(e.target.value)}
-              className="h-7 px-1.5 text-xs rounded-lg border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 text-stone-700 dark:text-stone-200 focus:outline-hidden focus:ring-1 focus:ring-amber-500 w-[68px]"
-              title="글자 크기 (Font Size)"
-            >
-              <option value="default">크기</option>
-              <option value="12px">12px</option>
-              <option value="14px">14px</option>
-              <option value="16px">16px</option>
-              <option value="18px">18px</option>
-              <option value="20px">20px</option>
-              <option value="24px">24px</option>
-              <option value="28px">28px</option>
-              <option value="32px">32px</option>
-            </select>
+            <FontSizePixelControl editor={editor} onApply={setFontSize} />
 
             <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-0.5" />
 
@@ -283,6 +538,26 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                 title="취소선"
               >
                 <Strikethrough className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => editor.chain().focus().toggleMark('subscript').run()}
+                className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 ${editor.isActive('subscript') ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400' : 'text-stone-600 dark:text-stone-300'}`}
+                title="아래첨자"
+                aria-label="아래첨자"
+              >
+                <Subscript className="w-3.5 h-3.5" />
+              </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => editor.chain().focus().toggleMark('superscript').run()}
+                className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 ${editor.isActive('superscript') ? 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-400' : 'text-stone-600 dark:text-stone-300'}`}
+                title="위첨자"
+                aria-label="위첨자"
+              >
+                <Superscript className="w-3.5 h-3.5" />
               </button>
             </div>
 
@@ -411,6 +686,16 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
               >
                 <RemoveFormatting className="w-3.5 h-3.5" />
               </button>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={toggleFormatPainter}
+                className={`p-1.5 rounded transition-colors ${isFormatPainterArmed ? 'bg-indigo-100 text-indigo-700 ring-1 ring-indigo-300 dark:bg-indigo-950 dark:text-indigo-300' : 'text-stone-500 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800'}`}
+                title={isFormatPainterArmed ? '서식 복사 취소' : '서식 복사: 원본 위치에서 누른 뒤 적용할 글자 범위를 선택하세요'}
+                aria-label="서식 복사"
+              >
+                <Paintbrush className="w-3.5 h-3.5" />
+              </button>
             </div>
 
             <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
@@ -465,26 +750,29 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
 
             <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
 
+            <select
+              value={lineHeight}
+              onChange={(event) => {
+                const value = event.target.value;
+                setLineHeight(value);
+                const nodeType = editor.isActive('heading') ? 'heading' : 'paragraph';
+                editor.chain().focus().updateAttributes(nodeType, { lineHeight: value || null }).run();
+              }}
+              className="h-7 w-[92px] rounded-lg border border-stone-200 bg-white px-1.5 text-xs text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
+              title="줄 간격"
+              aria-label="줄 간격"
+            >
+              <option value="">줄 간격</option>
+              <option value="1">좁게</option>
+              <option value="1.15">보통</option>
+              <option value="1.5">넓게</option>
+              <option value="2">두 배</option>
+            </select>
+
+            <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-1" />
+
             {/* Lists & Quotes & Indent */}
             <div className="flex items-center gap-0.5">
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={handleOutdent}
-                className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
-                title="내어쓰기 (Shift+Tab)"
-              >
-                <Outdent className="w-3.5 h-3.5" />
-              </button>
-              <button
-                type="button"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={handleIndent}
-                className="p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors"
-                title="들여쓰기 (Tab)"
-              >
-                <Indent className="w-3.5 h-3.5" />
-              </button>
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
@@ -492,9 +780,9 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                 className={`p-1.5 rounded hover:bg-stone-100 dark:hover:bg-stone-800 transition-colors ${
                   editor.isActive('bulletList') ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-bold' : 'text-stone-600 dark:text-stone-300'
                 }`}
-                title="글머리 기호 목록"
+                title="기본 글머리 기호 목록"
               >
-                <List className="w-3.5 h-3.5" />
+                •
               </button>
               <button
                 type="button"
@@ -507,6 +795,8 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
               >
                 <ListOrdered className="w-3.5 h-3.5" />
               </button>
+              <ListToolbarControls editor={editor} onIndent={handleIndent} onOutdent={handleOutdent} />
+              <TableBorderToolbarControl editor={editor} />
               <button
                 type="button"
                 onMouseDown={(e) => e.preventDefault()}
@@ -539,6 +829,31 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                 <Minus className="w-3.5 h-3.5" />
               </button>
 
+              <select
+                defaultValue=""
+                onChange={(event) => {
+                  applyOneNoteTag(event.target.value);
+                  event.target.value = '';
+                }}
+                className="h-7 w-[92px] rounded-lg border border-stone-200 bg-white px-1.5 text-xs text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
+                title="선택한 글자에 태그 추가"
+                aria-label="태그 추가"
+              >
+                <option value="">태그 추가</option>
+                {ONE_NOTE_TAGS.map(item => <option key={item.id} value={item.id}>{item.icon} {item.label}</option>)}
+              </select>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={findNextOneNoteTag}
+                className="px-2 py-1.5 rounded-lg flex items-center gap-1 text-xs text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"
+                title="문서에서 다음 태그 위치 찾기"
+                aria-label="태그 찾기"
+              >
+                <Search className="w-3.5 h-3.5" />
+                <span>태그 찾기</span>
+              </button>
+
               <div className="w-[1px] h-4 bg-stone-200 dark:bg-stone-800 mx-0.5" />
 
               {/* Quick Access to Table & Code from Home Tab */}
@@ -547,7 +862,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={openTableDialog}
                 className="px-2 py-1 rounded hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300 transition-colors flex items-center gap-1 text-xs"
-                title="새 표 삽입 (Excel 스타일 매트릭스 대화상자)"
+                title="스프레드시트 방식의 표 삽입"
               >
                 <TableIcon className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 <span className="hidden sm:inline">표</span>
@@ -568,7 +883,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                     ? 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-semibold'
                     : 'hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300'
                 }`}
-                title={editor && !editor.state.selection.empty ? '선택 데이터 자동 감지 코드 블록 변환' : '코드 & MD 대화상자 열기'}
+                title={editor && !editor.state.selection.empty ? '선택 데이터를 코드 블록으로 변환' : '코드·마크다운 도구 열기'}
               >
                 <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                 <span className="hidden sm:inline">코드</span>
@@ -580,6 +895,27 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
         {/* TAB 2: 삽입 (Insert) - Table, Image, Code & MD, Sticky Notes, Link */}
         {activeRibbonTab === 'insert' && (
           <div className="flex items-center gap-1 shrink-0 flex-nowrap text-xs">
+            <button type="button" onClick={onInsertDrawing} disabled={!editor || !onInsertDrawing} className="px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-colors border-stone-200 bg-white text-stone-700 hover:bg-stone-100 disabled:opacity-50 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700" title="문서에 자유롭게 그릴 수 있는 캔버스 삽입">
+              <Pencil className="h-3.5 w-3.5 text-indigo-600" /><span>그리기</span>
+            </button>
+            <InsertShapeControls editor={editor} />
+            <ShapeSizeControls editor={editor} />
+            <input ref={pptxFileInputRef} type="file" accept=".pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+            <input ref={markdownFileInputRef} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+            <input ref={docxFileInputRef} type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+            <input ref={excelFileInputRef} type="file" accept=".xlsx,.xls,.csv,.tsv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv,text/tab-separated-values" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+            <input ref={pdfFileInputRef} type="file" accept=".pdf,application/pdf" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
+            {([
+              { label: 'PPT', title: 'PPTX 슬라이드 내용을 문서에 삽입', icon: <Presentation className="h-3.5 w-3.5 text-orange-600" />, ref: pptxFileInputRef },
+              { label: 'MD', title: '마크다운 파일 내용을 서식으로 삽입', icon: <FileText className="h-3.5 w-3.5 text-sky-600" />, ref: markdownFileInputRef },
+              { label: 'DOCX', title: 'Word 문서의 본문과 표를 삽입', icon: <FileText className="h-3.5 w-3.5 text-blue-700" />, ref: docxFileInputRef },
+              { label: 'Excel', title: 'Excel 시트를 편집 가능한 표로 삽입', icon: <FileSpreadsheet className="h-3.5 w-3.5 text-emerald-600" />, ref: excelFileInputRef },
+              { label: 'PDF', title: 'PDF 페이지와 텍스트를 문서에 삽입', icon: <FileDown className="h-3.5 w-3.5 text-rose-600" />, ref: pdfFileInputRef },
+            ] as const).map(item => (
+              <button key={item.label} type="button" onClick={() => item.ref.current?.click()} className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white px-2.5 py-1.5 text-stone-700 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 dark:hover:bg-stone-700" title={item.title}>
+                {item.icon}<span className="font-medium">{item.label}</span>
+              </button>
+            ))}
             <button
               type="button"
               onClick={openTableDialog}
@@ -602,7 +938,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                   ? 'bg-emerald-100 dark:bg-emerald-950/80 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-700 font-semibold'
                   : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
               }`}
-              title="이미지 파일 삽입 (파일 업로드 또는 웹 URL)"
+              title="이미지 파일 또는 웹 주소 삽입"
             >
               <ImageIcon className="w-3.5 h-3.5 text-emerald-500" />
               <span className="font-medium">이미지</span>
@@ -623,7 +959,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                   ? 'bg-rose-100 dark:bg-rose-950/80 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-700 font-semibold'
                   : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
               }`}
-              title="동영상 삽입 (YouTube 링크 또는 웹 동영상 URL)"
+              title="유튜브 링크 또는 동영상 웹 주소 삽입"
             >
               <Video className="w-3.5 h-3.5 text-rose-500" />
               <span className="font-medium">동영상</span>
@@ -647,10 +983,10 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                     ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700 font-semibold'
                     : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
                 }`}
-                title={editor && !editor.state.selection.empty ? '선택 영역 자동 감지 코드 블록으로 변환' : '코드 템플릿 & MD 붙여넣기 통합 대화상자 열기'}
+                title={editor && !editor.state.selection.empty ? '선택 영역을 코드 블록으로 변환' : '코드 서식과 마크다운 붙여넣기 도구 열기'}
               >
                 <Code className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-                <span className="font-medium">코드 & MD</span>
+                <span className="font-medium">코드·마크다운</span>
               </button>
               <button
                 type="button"
@@ -659,7 +995,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
                   setActiveTopDialog(activeTopDialog === 'code' ? null : 'code');
                 }}
                 className="px-1.5 py-1.5 rounded-r-lg border-y border-r transition-colors flex items-center justify-center bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-500 hover:text-stone-800 dark:text-stone-400 dark:hover:text-stone-200 border-stone-200 dark:border-stone-700"
-                title="마크다운(.md) 붙여넣기 탭으로 즉시 열기"
+                title="마크다운 붙여넣기 도구 열기"
               >
                 <ChevronDown className="w-3 h-3" />
               </button>
@@ -715,8 +1051,11 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
         )}
 
         {/* TAB 3: 서식 (Format) - Table Borders, Cell Styles, Rows & Columns, Merge/Split */}
-        {activeRibbonTab === 'format' && (
+        {activeRibbonTab === 'draw' && (
           <div className="flex items-center gap-1.5 shrink-0 flex-nowrap text-xs">
+            <span className="mr-1 text-[10px] font-semibold text-stone-500">펜</span>
+            {([['pen', <Pencil size={14}/>, '펜'], ['highlighter', <HighlighterIcon size={14}/>, '형광펜'], ['eraser', <Eraser size={14}/>, '지우개'], ['select', <Type size={14}/>, '선택·이동']] as const).map(([mode, icon, label]) => <button key={mode} type="button" onMouseDown={event => event.preventDefault()} onClick={() => { if (mode !== 'select') onInsertDrawing?.(); setDrawingTool?.(mode); }} className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 ${drawingTool === mode ? 'border-indigo-300 bg-indigo-100 font-semibold text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/70 dark:text-indigo-200' : 'border-stone-200 text-stone-700 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800'}`}>{icon}<span>{label}</span></button>)}
+            <DrawingStylePicker color={drawingColor} width={drawingWidth} onColorChange={color => setDrawingColor?.(color)} onWidthChange={nextWidth => setDrawingWidth?.(nextWidth)}/>
             <button
               type="button"
               onClick={() => setActiveTopDialog(activeTopDialog === 'border' ? null : 'border')}

@@ -47,15 +47,13 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
   const isFsSupported = localFileService.isSupported();
   const connectedLocalFile = localFileService.getConnectedFileName();
 
-  const handleExportJson = () => {
-    const jsonStr = JSON.stringify(currentWorkspace, null, 2);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `wonbee_data.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+  const handleExportJson = async () => {
+    try {
+      setErrorMsg(null);
+      await localFileService.downloadAsFile(currentWorkspace);
+    } catch (error) {
+      setErrorMsg(`데이터 파일 내보내기 실패: ${(error as Error).message}`);
+    }
   };
 
   const handleCopyJson = () => {
@@ -131,7 +129,10 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
     if (!parsedImport) return;
     try {
       setIsMerging(true);
-      await onMergeWorkspace(parsedImport, mergeMode);
+      const restored = importedJson
+        ? await localFileService.restoreFromText(importedJson)
+        : parsedImport;
+      await onMergeWorkspace(ensureWorkspaceTree(restored), mergeMode);
       setIsMerging(false);
       onClose();
     } catch (err: any) {
@@ -253,7 +254,7 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
               <div className="flex items-center justify-between mb-2">
                 <span className="font-bold text-emerald-900 dark:text-emerald-200 flex items-center gap-1.5">
                   <HardDrive className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
-                  로컬 폴더 내 데이터 파일 직접 연동 (File System Sync)
+                  클라이언트 데이터 파일 자동 저장
                 </span>
                 {connectedLocalFile && (
                   <span className="px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200 text-[10px] font-bold">
@@ -262,7 +263,7 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
                 )}
               </div>
               <p className="text-emerald-950/80 dark:text-emerald-300/80 mb-3 leading-relaxed">
-                컴퓨터의 특정 폴더 내 <code className="font-mono bg-emerald-100 dark:bg-emerald-900/60 px-1 py-0.5 rounded text-emerald-900 dark:text-emerald-200 font-semibold">wonbee_data.json</code> 파일을 직접 연결하여 수정 시 파일에 실시간 자동 저장합니다. (서버/싱글HTML 완벽 호환)
+                클라이언트 모드 데이터는 기본적으로 이 브라우저에 저장됩니다. 브라우저 데이터를 지워도 보존하려면 컴퓨터의 파일을 연결하세요. 노트와 표 데이터, 참조 중인 이미지까지 파일에 자동 저장하며, 브라우저 초기화 후에는 이 파일을 다시 열어 복원할 수 있습니다.
               </p>
               <div className="flex items-center gap-2 flex-wrap">
                 <button
@@ -270,14 +271,14 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
                   className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white font-bold rounded-lg flex items-center gap-1.5 shadow-2xs transition-colors"
                 >
                   <FileJson className="w-3.5 h-3.5" />
-                  기존 wonbee_data.json 파일 열기
+                  기존 데이터 파일 연결 / 복원
                 </button>
                 <button
                   onClick={handleLinkNewLocalFile}
                   className="px-3.5 py-1.5 bg-white dark:bg-emerald-950/80 border border-emerald-400 dark:border-emerald-700 text-emerald-900 dark:text-emerald-200 font-semibold rounded-lg flex items-center gap-1.5 hover:bg-emerald-50 transition-colors"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  새 wonbee_data.json 파일로 저장/연결
+                  새 클라이언트 데이터 파일 만들기
                 </button>
               </div>
             </div>
@@ -295,15 +296,15 @@ export const DataPortabilityModal: React.FC<DataPortabilityModalProps> = ({
               </span>
             </div>
             <p className="text-stone-500 dark:text-stone-400 mb-3">
-              현재 작성된 모든 폴더, 테이블, 셀 데이터 및 원노트 스티커를 표준 <code className="font-mono">wonbee_data.json</code> 파일로 다운로드합니다.
+                현재 워크스페이스와 참조 중인 이미지를 포함한 복원용 JSON 파일을 다운로드합니다.
             </p>
             <div className="flex items-center gap-2">
               <button
-                onClick={handleExportJson}
+                onClick={() => void handleExportJson()}
                 className="px-3 py-1.5 bg-stone-900 dark:bg-stone-100 hover:bg-amber-500 dark:hover:bg-amber-400 text-stone-100 dark:text-stone-900 font-semibold rounded-lg flex items-center gap-1.5 transition-colors"
               >
                 <Download className="w-3.5 h-3.5" />
-                wonbee_data.json 다운로드
+                복원용 데이터 파일 다운로드
               </button>
               <button
                 onClick={handleCopyJson}

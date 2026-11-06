@@ -28,12 +28,16 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
   const lastLoadedTimestampRef = useRef<number>(0);
   const isFetchingRef = useRef<boolean>(false);
   const initialFetchDoneRef = useRef<boolean>(false);
+  const pendingSilentLoadRef = useRef(false);
+  const loadWorkspaceDataRef = useRef<((isSilent?: boolean, signal?: AbortSignal) => Promise<void>) | null>(null);
 
   // Single centralized load function with in-flight lock and AbortSignal support
   const loadWorkspaceData = useCallback(
     async (isSilent = false, signal?: AbortSignal) => {
-      // Prevent overlapping concurrent executions
-      if (isFetchingRef.current && !isSilent) {
+      // Serialize loads. A silent refresh that arrives during the initial load
+      // is queued once instead of racing it and replacing newer UI state.
+      if (isFetchingRef.current) {
+        if (isSilent) pendingSilentLoadRef.current = true;
         return;
       }
       isFetchingRef.current = true;
@@ -157,10 +161,15 @@ export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
       } finally {
         isFetchingRef.current = false;
         if (!isSilent) setIsLoading(false);
+        if (pendingSilentLoadRef.current) {
+          pendingSilentLoadRef.current = false;
+          Promise.resolve().then(() => loadWorkspaceDataRef.current?.(true));
+        }
       }
     },
     [repository]
   );
+  loadWorkspaceDataRef.current = loadWorkspaceData;
 
   const retryWorkspaceLoad = useCallback(() => {
     initialFetchDoneRef.current = false;

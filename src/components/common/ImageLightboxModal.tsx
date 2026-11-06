@@ -53,6 +53,11 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
     }
   }, [isOpen, imageUrl]);
 
+  // Return to the centered view once the image reaches its unscaled size.
+  useEffect(() => {
+    if (zoom <= 1) setPosition({ x: 0, y: 0 });
+  }, [zoom]);
+
   // Keyboard shortcut listener (Escape to close, +/- to zoom)
   useEffect(() => {
     if (!isOpen) return;
@@ -123,6 +128,11 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
 
   const handleMouseUp = () => {
     setIsDragging(false);
+  };
+
+  const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setZoom((current) => Math.max(0.5, Math.min(4, current + (e.deltaY < 0 ? 0.15 : -0.15))));
   };
 
   return (
@@ -216,6 +226,7 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
       <div
         className="flex-1 w-full flex items-center justify-center overflow-hidden cursor-grab active:cursor-grabbing p-4"
         onMouseDown={handleMouseDown}
+        onWheel={handleWheel}
       >
         <img
           src={displayImageUrl}
@@ -223,10 +234,13 @@ export const ImageLightboxModal: React.FC<ImageLightboxModalProps> = ({
           loading="lazy"
           decoding="async"
           style={{
-            transform: `translate(${position.x}px, ${position.y}px) scale(${zoom}) rotate(${rotation}deg)`,
+            transform: `translate3d(${position.x}px, ${position.y}px, 0) rotate(${rotation}deg) scale(${zoom})`,
+            transformOrigin: 'center center',
             transition: isDragging ? 'none' : 'transform 0.15s ease-out',
-            maxHeight: '85vh',
-            maxWidth: '90vw',
+            // Keep the unscaled image box stable; only the transform changes on zoom.
+            flex: '0 0 auto',
+            maxHeight: rotation % 180 === 0 ? '85vh' : '90vw',
+            maxWidth: rotation % 180 === 0 ? '90vw' : '85vh',
             objectFit: 'contain',
           }}
           className="rounded-lg shadow-2xl pointer-events-auto border border-stone-700/50"
