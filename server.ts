@@ -66,7 +66,7 @@ async function startServer() {
   // 1. Initialize SQLite WebAssembly Database & Auto-Migration
   await initDatabase();
   initChatStorage();
-  if (process.env.AUTH_REQUIRED === 'true' && !authEnabled()) throw new Error('AUTH_REQUIRED=true 이지만 OIDC_ISSUER 또는 OIDC_CLIENT_ID가 설정되지 않았습니다.');
+  if (process.env.AUTH_REQUIRED === 'true' && !authEnabled()) throw new Error('AUTH_REQUIRED=true 설정 시 마스터 계정(AUTH_MASTER_EMAIL, AUTH_MASTER_PASSWORD) 또는 OIDC 설정이 필요합니다.');
   bootstrapMaster();
 
   const app = express();
@@ -750,7 +750,11 @@ async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       configLoader: 'runner',
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        host: '0.0.0.0',
+        allowedHosts: true,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -764,7 +768,7 @@ async function startServer() {
 
   const httpServer = createHttpServer(app);
   chatIo = attachChatSocket(httpServer);
-  httpServer.listen(PORT, '127.0.0.1', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`[WonBee Backend] Server running on http://localhost:${PORT}`);
   });
 }

@@ -3,8 +3,17 @@ import { wonbeeDexieDB, type DexieDocumentHistory } from './storage/dexieDb';
 
 export type DocumentHistoryEntry = DexieDocumentHistory;
 
+function generateUUID(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    try {
+      return crypto.randomUUID();
+    } catch (_) {}
+  }
+  return 'hist_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 9);
+}
+
 export async function saveHistorySnapshot(input: Omit<DocumentHistoryEntry, 'id' | 'createdAt'> & { serverMode: boolean; tableId?: string }): Promise<DocumentHistoryEntry> {
-  const entry: DocumentHistoryEntry = { ...input, id: crypto.randomUUID(), createdAt: Date.now() };
+  const entry: DocumentHistoryEntry = { ...input, id: generateUUID(), createdAt: Date.now() };
   await wonbeeDexieDB.saveDocumentHistory(entry, 50);
   if (input.serverMode) {
     try {

@@ -4,6 +4,8 @@ import { getAppNotificationPermission, isAppNotificationSupported, requestAppNot
 import { CHAT_NOTIFICATIONS_PREFERENCE_KEY, notifyChatMessage } from '../utils/chatNotifications';
 import { CLIENT_CHAT_CHANNEL } from '../services/storage/clientChatStore';
 
+import { resolveApiUrl, fetchBridge } from '../services/httpBridge';
+
 type Conversation = { id: string; title: string; members: Array<{ id: string }> };
 type Message = { id: string; conversationId: string; senderId: string; senderName: string; text: string; attachment?: { filename: string }; document?: { title: string } };
 
@@ -35,10 +37,10 @@ export function useChatNotifications(userId: string | null) {
       };
       return () => { disposed = true; window.removeEventListener('focus', syncPermission); window.removeEventListener('storage', syncPreference); channel.close(); };
     }
-    const socket = io({ withCredentials: true, transports: ['websocket', 'polling'] });
+    const socket = io(resolveApiUrl(''), { withCredentials: true, transports: ['websocket', 'polling'] });
     const titles = new Map<string, string>();
     const joinConversations = () => {
-      void fetch('/api/chat/conversations', { credentials: 'include' }).then(response => response.ok ? response.json() as Promise<Conversation[]> : []).then(items => {
+      void fetchBridge(resolveApiUrl('/api/chat/conversations'), { credentials: 'include' }).then(response => response.ok ? response.json() as Promise<Conversation[]> : []).then(items => {
         if (!disposed) items.forEach(conversation => { titles.set(conversation.id, conversation.title); socket.emit('chat:join', conversation.id); });
       }).catch(() => {});
     };

@@ -4,6 +4,7 @@ import { ArrowDownToLine, Bell, BellOff, FileText, MessageCircle, Paperclip, Plu
 import { useChatNotifications } from '../../hooks/useChatNotifications';
 import { CLIENT_CHAT_CHANNEL, getClientChatAttachment, listClientChatMessages, newClientChatId, saveClientChatAttachment, saveClientChatMessage, type ClientChatMessage } from '../../services/storage/clientChatStore';
 import { wonbeeDexieDB } from '../../services/storage/dexieDb';
+import { resolveApiUrl, fetchBridge } from '../../services/httpBridge';
 
 type ChatUser = { id: string; email: string; displayName: string };
 type Conversation = { id: string; type: 'direct' | 'group'; title: string; members: ChatUser[] };
@@ -13,7 +14,8 @@ type Message = { id: string; conversationId: string; senderId: string; senderNam
 type Presence = { userId: string; name: string; status: 'online' | 'away' | 'offline' };
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, { credentials: 'include', ...init });
+  const targetUrl = resolveApiUrl(url);
+  const response = await fetchBridge(targetUrl, { credentials: 'include', ...init });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error || `요청 실패 (${response.status})`);
@@ -87,7 +89,7 @@ export default function ChatWindow() {
       return () => { disposed = true; channel?.close(); localChannelRef.current = null; };
     }
     void refresh().catch(reason => { if (!disposed) setError(reason instanceof Error ? reason.message : '채팅 정보를 불러오지 못했습니다.'); }).finally(() => { if (!disposed) setLoading(false); });
-    const socket = io({ withCredentials: true, transports: ['websocket', 'polling'] });
+    const socket = io(resolveApiUrl(''), { withCredentials: true, transports: ['websocket', 'polling'] });
     socketRef.current = socket;
     socket.on('connect', () => { setError(''); socket.emit('presence:heartbeat'); });
     socket.on('connect_error', reason => setError(reason.message || '실시간 채팅 서버에 연결하지 못했습니다.'));

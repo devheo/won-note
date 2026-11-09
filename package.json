@@ -58,6 +58,7 @@
     "@types/marked": "^6.0.0",
     "@types/sql.js": "^1.4.11",
     "@vitejs/plugin-react": "^5.0.4",
+    "better-sqlite3": "^13.0.3",
     "canvas-confetti": "^1.9.4",
     "dexie": "^4.4.6",
     "diff": "^9.0.0",
@@ -88,6 +89,7 @@
   "devDependencies": {
     "@playwright/test": "^1.64.1",
     "@tauri-apps/cli": "^2.12.4",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/canvas-confetti": "^1.9.0",
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",

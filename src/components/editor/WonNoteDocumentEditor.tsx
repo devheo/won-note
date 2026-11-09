@@ -740,7 +740,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       <div ref={scrollContainerRef} className="relative flex-1 overflow-auto" onBlur={flushEditorUpdate} onContextMenu={event => {
         event.preventDefault();
         event.stopPropagation();
-        openCommentAt(event);
+        setEditorContextMenu({ x: event.clientX, y: event.clientY });
       }}>
         <div className="relative mx-auto min-h-full w-full max-w-[1440px] px-5 pb-12 pt-5">
           <div style={{ zoom: `${zoomLevel}%` }} className="transition-[zoom] duration-150">
@@ -749,13 +749,60 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
           </div>
         </div>
       </div>
-      {editorContextMenu && <div id="won-note-document-context-menu" className="fixed z-[12000] min-w-52 rounded-xl border border-stone-200 bg-white p-1.5 text-xs shadow-2xl dark:border-stone-700 dark:bg-stone-900" style={{ left: Math.max(8, Math.min(editorContextMenu.x, window.innerWidth - 230)), top: Math.max(8, Math.min(editorContextMenu.y, window.innerHeight - 110)) }} onMouseDown={event => event.preventDefault()} onClickCapture={event => {
-        const target = event.target as HTMLElement;
-        if (!target.closest('button, input, select, [role="menuitem"]')) setEditorContextMenu(null);
-      }}>
-        <button type="button" onClick={() => { setCommentDraft(''); setCommentComposer(editorContextMenu); setIsCommentPanelOpen(true); setEditorContextMenu(null); }} className="flex w-full items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-left font-semibold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"><MessageSquare size={14} />여기에 댓글 추가</button>
-        <button type="button" onClick={() => { flushEditorUpdate(); void history.recordNow(editor?.getHTML() || document.content); setEditorContextMenu(null); history.setIsOpen(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800"><Clock3 size={14} className="text-stone-500" />문서 이력 보기</button>
-      </div>}
+      {editorContextMenu && (
+        <div
+          id="won-note-document-context-menu"
+          className="fixed z-[12000] min-w-56 rounded-xl border border-stone-200 bg-white p-1.5 text-xs shadow-2xl dark:border-stone-700 dark:bg-stone-900 text-stone-700 dark:text-stone-200"
+          style={{
+            left: Math.max(8, Math.min(editorContextMenu.x, window.innerWidth - 240)),
+            top: Math.max(8, Math.min(editorContextMenu.y, window.innerHeight - 340)),
+          }}
+          onMouseDown={(event) => event.preventDefault()}
+          onClickCapture={(event) => {
+            const target = event.target as HTMLElement;
+            if (!target.closest('button, input, select, [role="menuitem"]')) setEditorContextMenu(null);
+          }}
+        >
+          <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">텍스트 서식</div>
+          <div className="grid grid-cols-5 gap-1 p-1">
+            <button type="button" onClick={() => { editor?.chain().focus().toggleBold().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('bold') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="굵게"><Bold size={14} /></button>
+            <button type="button" onClick={() => { editor?.chain().focus().toggleItalic().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('italic') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="기울임"><Italic size={14} /></button>
+            <button type="button" onClick={() => { editor?.chain().focus().toggleUnderline().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('underline') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="밑줄"><UnderlineIcon size={14} /></button>
+            <button type="button" onClick={() => { editor?.chain().focus().toggleStrike().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('strike') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="취소선"><Strikethrough size={14} /></button>
+            <button type="button" onClick={() => { editor?.chain().focus().toggleHighlight().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('highlight') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="형광펜"><Highlighter size={14} /></button>
+          </div>
+
+          <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
+          <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">단락 스타일</div>
+          <button type="button" onClick={() => { editor?.chain().focus().setParagraph().run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 cursor-pointer">본문</button>
+          <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 1 }).run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 font-bold cursor-pointer">제목 1 (H1)</button>
+          <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 2 }).run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 font-bold cursor-pointer">제목 2 (H2)</button>
+          <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 3 }).run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 font-bold cursor-pointer">제목 3 (H3)</button>
+          <button type="button" onClick={() => { editor?.chain().focus().toggleBlockquote().run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 cursor-pointer">인용구 (Quote)</button>
+
+          {editor?.isActive('table') && (
+            <>
+              <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
+              <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">표(Table) 편집</div>
+              <div className="grid grid-cols-2 gap-1 p-1">
+                <button type="button" onClick={() => { editor?.chain().focus().addRowBefore().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">위 행 추가</button>
+                <button type="button" onClick={() => { editor?.chain().focus().addRowAfter().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">아래 행 추가</button>
+                <button type="button" onClick={() => { editor?.chain().focus().addColumnBefore().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">좌측 열 추가</button>
+                <button type="button" onClick={() => { editor?.chain().focus().addColumnAfter().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">우측 열 추가</button>
+              </div>
+              <div className="flex gap-1 p-1">
+                <button type="button" onClick={() => { editor?.chain().focus().deleteRow().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 rounded text-center cursor-pointer">행 삭제</button>
+                <button type="button" onClick={() => { editor?.chain().focus().deleteColumn().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 rounded text-center cursor-pointer">열 삭제</button>
+                <button type="button" onClick={() => { editor?.chain().focus().deleteTable().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-600 text-white rounded text-center font-bold cursor-pointer">표 삭제</button>
+              </div>
+            </>
+          )}
+
+          <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
+          <button type="button" onClick={() => { setCommentDraft(''); setCommentComposer(editorContextMenu); setIsCommentPanelOpen(true); setEditorContextMenu(null); }} className="flex w-full items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-left font-semibold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70 cursor-pointer"><MessageSquare size={14} />여기에 댓글 추가</button>
+          <button type="button" onClick={() => { flushEditorUpdate(); void history.recordNow(editor?.getHTML() || document.content); setEditorContextMenu(null); history.setIsOpen(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"><Clock3 size={14} className="text-stone-500" />문서 이력 보기</button>
+        </div>
+      )}
       {collaboration && <aside aria-label="문서 댓글" className={`absolute inset-y-0 right-0 z-40 flex w-[min(22rem,92vw)] flex-col border-l border-stone-200 bg-white shadow-2xl transition-transform duration-200 dark:border-stone-700 dark:bg-stone-900 ${isCommentPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}>
         <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-stone-700">
           <div><h2 className="text-sm font-bold text-stone-800 dark:text-stone-100">댓글</h2><p className="text-[11px] text-stone-500">이 문서 · {comments.length}개</p></div>

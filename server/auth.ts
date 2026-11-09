@@ -65,7 +65,7 @@ function cookie(req: Request, name: string) {
   return (req.headers.cookie || '').split(';').map(x => x.trim()).find(x => x.startsWith(`${name}=`))?.slice(name.length + 1);
 }
 
-export function authEnabled() { return !!config(); }
+export function authEnabled() { return process.env.AUTH_REQUIRED === 'true' || !!config(); }
 
 /** Authenticate a Socket.IO handshake with the same HttpOnly session cookie used by REST. */
 export function getSocketUser(cookieHeader?: string) {

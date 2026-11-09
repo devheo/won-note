@@ -375,9 +375,9 @@ export async function initDatabase(): Promise<Database> {
   try {
     dbInstance.run("CREATE VIRTUAL TABLE IF NOT EXISTS document_history_fts USING fts5(history_id UNINDEXED, title, content, tokenize='unicode61');");
     documentHistoryFtsAvailable = true;
-  } catch (error) {
+  } catch {
     documentHistoryFtsAvailable = false;
-    console.warn('[SQLite] FTS5 unavailable; document history search will use LIKE fallback.', error);
+    console.log('[SQLite] FTS5 unavailable (using standard SQL LIKE search)');
   }
 
   // Add password fields to databases created before password login was introduced.

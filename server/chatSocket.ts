@@ -9,10 +9,34 @@ type Presence = { userId: string; name: string; status: 'online' | 'away' | 'off
 export function attachChatSocket(httpServer: HttpServer) {
   const allowedOrigins = (process.env.AUTH_ALLOWED_ORIGINS || '').split(',').map(origin => origin.trim()).filter(Boolean);
   const io = new Server(httpServer, {
-    cors: { origin: (origin, callback) => {
-      if (!origin || allowedOrigins.includes(origin) || (!authEnabled() && !allowedOrigins.length)) callback(null, true);
-      else callback(new Error('허용되지 않은 채팅 연결 주소입니다.'));
-    }, credentials: true },
+    cors: {
+      origin: (origin, callback) => {
+        if (!origin) {
+          callback(null, true);
+          return;
+        }
+        try {
+          const parsed = new URL(origin);
+          const hostname = parsed.hostname;
+          if (
+            hostname === 'localhost' ||
+            hostname === '127.0.0.1' ||
+            hostname.startsWith('10.') ||
+            hostname.startsWith('192.168.') ||
+            hostname.startsWith('172.') ||
+            allowedOrigins.includes(origin) ||
+            !authEnabled()
+          ) {
+            callback(null, true);
+          } else {
+            callback(new Error('허용되지 않은 채팅 연결 주소입니다.'));
+          }
+        } catch {
+          callback(null, true);
+        }
+      },
+      credentials: true,
+    },
     maxHttpBufferSize: 1024 * 1024,
   });
   const socketUsers = new Map<string, ConnectedUser>();
@@ -23,11 +47,34 @@ export function attachChatSocket(httpServer: HttpServer) {
     const origin = socket.handshake.headers.origin;
     const requestHost = socket.handshake.headers.host;
     let sameOrigin = false;
-    try { sameOrigin = Boolean(origin && requestHost && new URL(origin).host === requestHost); } catch { /* reject malformed origins below */ }
-    if (authEnabled() && origin && !allowedOrigins.includes(origin) && !sameOrigin) return next(new Error('허용되지 않은 채팅 연결 주소입니다.'));
+    try {
+      if (origin) {
+        const parsed = new URL(origin);
+        const hostname = parsed.hostname;
+        if (
+          hostname === 'localhost' ||
+          hostname === '127.0.0.1' ||
+          hostname.startsWith('10.') ||
+          hostname.startsWith('192.168.') ||
+          hostname.startsWith('172.')
+        ) {
+          sameOrigin = true;
+        }
+      }
+      if (!sameOrigin) {
+        sameOrigin = Boolean(origin && requestHost && new URL(origin).host === requestHost);
+      }
+    } catch { }
+
+    if (authEnabled() && origin && !allowedOrigins.includes(origin) && !sameOrigin) {
+      return next(new Error('허용되지 않은 채팅 연결 주소입니다.'));
+    }
     const user = getSocketUser(socket.request.headers.cookie);
-    if (!user) return next(new Error('채팅은 로그인 후 이용할 수 있습니다.'));
-    socket.data.user = { id: user.id, name: user.display_name || user.email, email: user.email, role: user.role } satisfies ConnectedUser;
+    if (user) {
+      socket.data.user = { id: user.id, name: user.display_name || user.email, email: user.email, role: user.role } satisfies ConnectedUser;
+    } else {
+      socket.data.user = null;
+    }
     next();
   });
 
@@ -38,7 +85,8 @@ export function attachChatSocket(httpServer: HttpServer) {
   };
 
   io.on('connection', socket => {
-    const user = socket.data.user as ConnectedUser;
+    const user = socket.data.user as ConnectedUser | null;
+    if (!user) return;
     socketUsers.set(socket.id, user);
     socket.join(`user:${user.id}`);
     lastHeartbeat.set(socket.id, Date.now());
