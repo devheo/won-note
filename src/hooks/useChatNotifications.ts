@@ -37,7 +37,7 @@ export function useChatNotifications(userId: string | null) {
       };
       return () => { disposed = true; window.removeEventListener('focus', syncPermission); window.removeEventListener('storage', syncPreference); channel.close(); };
     }
-    const socket = io(resolveApiUrl(''), { withCredentials: true, transports: ['websocket', 'polling'] });
+    const socket = io(resolveApiUrl(''), { withCredentials: true });
     const titles = new Map<string, string>();
     const joinConversations = () => {
       void fetchBridge(resolveApiUrl('/api/chat/conversations'), { credentials: 'include' }).then(response => response.ok ? response.json() as Promise<Conversation[]> : []).then(items => {
@@ -54,6 +54,11 @@ export function useChatNotifications(userId: string | null) {
       let chatWindowFocused = false;
       try { chatWindowFocused = localStorage.getItem('wonbee_chat_window_focused') === 'true'; } catch { /* Treat inaccessible storage as an inactive chat window. */ }
       if (message.senderId === userId || chatWindowFocused) return;
+      try {
+        const preferences = JSON.parse(localStorage.getItem(`wonbee_chat_room_preferences:${userId}`) || '{}');
+        const room = preferences[message.conversationId];
+        if (room?.muted || room?.notifications === false) return;
+      } catch { /* Use default notification behavior if preferences cannot be read. */ }
       const conversation = titles.get(message.conversationId) || 'WonNote 새 메시지';
       void notifyChatMessage(message, conversation);
     });

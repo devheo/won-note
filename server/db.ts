@@ -1999,6 +1999,79 @@ export function saveImageAsset(imageId: string, mimeType: string, data: Uint8Arr
   persistDatabase(true);
 }
 
+export function getAdminRowImages(): Array<{
+  id: string;
+  table_id: string;
+  row_id: string;
+  column_key: string;
+  mime_type: string;
+  size: number;
+  created_at: number;
+  owner_id?: string;
+}> {
+  if (!dbInstance) return [];
+  try {
+    const tableInfo = dbInstance.exec('PRAGMA table_info(row_images)')[0]?.values || [];
+    const colNames = new Set(tableInfo.map((r) => String(r[1])));
+
+    if (!colNames.has('id')) return [];
+
+    const hasOwnerId = colNames.has('owner_id');
+    const hasCreatedAt = colNames.has('created_at');
+
+    const sql = `SELECT id, table_id, row_id, column_key, mime_type, ${
+      hasCreatedAt ? 'created_at' : '0'
+    }, ${hasOwnerId ? 'owner_id' : 'NULL'} FROM row_images;`;
+
+    const res = dbInstance.exec(sql);
+    if (!res[0] || !res[0].values) return [];
+
+    return res[0].values.map((r) => {
+      const id = String(r[0] || '');
+      const table_id = String(r[1] || '');
+      const row_id = String(r[2] || '');
+      const column_key = String(r[3] || '');
+      const mime_type = String(r[4] || 'image/png');
+      const created_at = Number(r[5]) || Date.now();
+      const owner_id = r[6] ? String(r[6]) : undefined;
+
+      let size = 0;
+      try {
+        const sizeRes = dbInstance!.exec(`SELECT length(image_data) FROM row_images WHERE id = '${id.replace(/'/g, "''")}';`);
+        if (sizeRes[0]?.values[0]?.[0]) {
+          size = Number(sizeRes[0].values[0][0]);
+        }
+      } catch (_) {}
+
+      return {
+        id,
+        table_id,
+        row_id,
+        column_key,
+        mime_type,
+        size,
+        created_at,
+        owner_id,
+      };
+    });
+  } catch (err) {
+    console.error('[SQLite] getAdminRowImages error:', err);
+    return [];
+  }
+}
+
+export function deleteRowImage(id: string): boolean {
+  if (!dbInstance) return false;
+  try {
+    dbInstance.run('DELETE FROM row_images WHERE id = ?;', [toSqliteParam(id)]);
+    persistDatabase(true);
+    return true;
+  } catch (err) {
+    console.warn('[SQLite] deleteRowImage failed:', err);
+    return false;
+  }
+}
+
 /** Insert one received copy. Other rows/tables are never replaced or deleted. */
 export function importSharedItem(received: ReturnType<typeof materializeItem>): void {
   if (!dbInstance || !SQL) throw new Error('Database not initialized');

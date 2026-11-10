@@ -11,7 +11,9 @@ import { addUser, adminHistory, adminUsers, authEnabled, authMe, bootstrapMaster
 import { createServer as createViteServer } from 'vite';
 import { createServer as createHttpServer } from 'node:http';
 import { attachChatSocket } from './server/chatSocket';
-import { createChatConversation, getChatAttachment, initChatStorage, listChatConversations, listChatMessages, listChatUsers, saveChatAttachment } from './server/chat';
+import { createChatConversation, createChatMessage, deleteChatMessage, getChatAttachment, initChatStorage, leaveChatConversation, listChatConversations, listChatMessages, listChatUsers, renameChatConversation, saveChatAttachment, updateChatConversation } from './server/chat';
+import { checkChatS3Bucket, chatAttachmentsUseS3 } from './server/chatS3';
+import { listAdminFiles, deleteAdminFile } from './server/adminFiles';
 import {
   initDatabase,
   getWorkspaceDataForUser,
@@ -66,6 +68,7 @@ async function startServer() {
   // 1. Initialize SQLite WebAssembly Database & Auto-Migration
   await initDatabase();
   initChatStorage();
+  await checkChatS3Bucket();
   if (process.env.AUTH_REQUIRED === 'true' && !authEnabled()) throw new Error('AUTH_REQUIRED=true 설정 시 마스터 계정(AUTH_MASTER_EMAIL, AUTH_MASTER_PASSWORD) 또는 OIDC 설정이 필요합니다.');
   bootstrapMaster();
 
@@ -126,6 +129,24 @@ async function startServer() {
   app.patch(API_PATHS.admin.userByIdPattern, requireMaster, updateUser);
   app.get(API_PATHS.admin.loginHistory, requireMaster, adminHistory);
 
+  app.get('/api/admin/files', requireMaster, async (_req, res) => {
+    try {
+      const files = await listAdminFiles();
+      res.json(files);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/admin/files/:id', requireMaster, async (req, res) => {
+    try {
+      const success = await deleteAdminFile(req.params.id);
+      res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   app.get(API_PATHS.groups, (req, res) => {
     if (!req.authUser) { res.status(401).json({ error: '그룹 기능은 서버 로그인 후 사용할 수 있습니다.' }); return; }
     res.json(listUserGroups(req.authUser.id, req.authUser.role));
@@ -179,6 +200,36 @@ async function startServer() {
       res.status(201).json(conversation);
     } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '대화방을 만들지 못했습니다.' }); }
   });
+  app.patch(API_PATHS.chat.conversationPattern, (req, res) => {
+    try {
+      if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
+      const conversation = renameChatConversation(req.params.id, req.authUser.id, String(req.body?.title || ''));
+      conversation.members.forEach(member => chatIo?.to(`user:${member.id}`).emit('chat:conversation-updated', conversation));
+      res.json(conversation);
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '대화방 이름을 변경하지 못했습니다.' }); }
+  });
+  app.patch(API_PATHS.chat.conversationMembersPattern, (req, res) => {
+    try {
+      if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
+      const memberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds.map(String) : [];
+      const { previousMemberIds, conversation } = updateChatConversation(req.params.id, req.authUser.id, String(req.body?.title || ''), memberIds);
+      const room = `conversation:${req.params.id}`;
+      const nextMemberIds = conversation.members.map(member => member.id);
+      previousMemberIds.filter(id => !nextMemberIds.includes(id)).forEach(id => chatIo?.in(`user:${id}`).socketsLeave(room));
+      nextMemberIds.filter(id => !previousMemberIds.includes(id)).forEach(id => chatIo?.in(`user:${id}`).socketsJoin(room));
+      [...new Set([...previousMemberIds, ...nextMemberIds])].forEach(id => chatIo?.to(`user:${id}`).emit('chat:conversation-updated', conversation));
+      res.json(conversation);
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '대화방을 변경하지 못했습니다.' }); }
+  });
+  app.delete(API_PATHS.chat.conversationPattern, async (req, res) => {
+    try {
+      if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
+      await leaveChatConversation(req.params.id, req.authUser.id);
+      chatIo?.in(`user:${req.authUser.id}`).socketsLeave(`conversation:${req.params.id}`);
+      chatIo?.to(`user:${req.authUser.id}`).emit('chat:conversation-left', { id: req.params.id });
+      res.json({ ok: true });
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '대화방에서 나가지 못했습니다.' }); }
+  });
   app.get(API_PATHS.chat.messagesPattern, (req, res) => {
     try {
       if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
@@ -186,24 +237,109 @@ async function startServer() {
       res.json(listChatMessages(req.params.id, req.authUser.id, limit));
     } catch (error) { res.status(403).json({ error: error instanceof Error ? error.message : '메시지를 불러오지 못했습니다.' }); }
   });
-  app.post(API_PATHS.chat.attachments, express.raw({ type: 'application/octet-stream', limit: '20mb' }), (req, res) => {
+  app.post(API_PATHS.chat.messagesPattern, (req, res) => {
+    try {
+      if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
+      const document = req.body?.document && typeof req.body.document.id === 'string'
+        ? { id: req.body.document.id, title: String(req.body.document.title || '') }
+        : undefined;
+      const message = createChatMessage(
+        req.params.id,
+        req.authUser.id,
+        String(req.body?.text || ''),
+        typeof req.body?.attachmentId === 'string' ? req.body.attachmentId : undefined,
+        document,
+      );
+      chatIo?.to(`conversation:${req.params.id}`).emit('chat:message', message);
+      res.status(201).json(message);
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '메시지를 보내지 못했습니다.' }); }
+  });
+
+  app.delete('/api/chat/messages/:id', (req, res) => {
+    try {
+      if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
+      const messageId = req.params.id;
+      const scope = req.query.scope === 'everyone' ? 'everyone' : 'me';
+      deleteChatMessage(messageId, req.authUser.id, scope);
+      chatIo?.emit('chat:message-deleted', { messageId });
+      res.json({ success: true, messageId });
+    } catch (error) {
+      res.status(400).json({ error: error instanceof Error ? error.message : '메시지를 삭제하지 못했습니다.' });
+    }
+  });
+  app.post(API_PATHS.chat.attachments, express.raw({ type: 'application/octet-stream', limit: '20mb' }), async (req, res) => {
     try {
       if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
       const conversationId = String(req.query.conversationId || '');
       const filename = String(req.query.filename || 'attachment');
       const mimeType = String(req.query.mimeType || 'application/octet-stream');
       if (!Buffer.isBuffer(req.body)) { res.status(400).json({ error: '첨부 파일 데이터가 비어 있습니다.' }); return; }
-      res.status(201).json(saveChatAttachment(conversationId, req.authUser.id, filename, mimeType, req.body));
+      res.status(201).json(await saveChatAttachment(conversationId, req.authUser.id, filename, mimeType, req.body));
     } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : '첨부 파일을 저장하지 못했습니다.' }); }
   });
-  app.get(API_PATHS.chat.attachmentPattern, (req, res) => {
-    if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
-    const attachment = getChatAttachment(req.params.id, req.authUser.id);
-    if (!attachment) { res.status(404).json({ error: '파일을 찾을 수 없습니다.' }); return; }
-    res.setHeader('Content-Type', attachment.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
-    res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.send(Buffer.from(attachment.content));
+const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>파일을 찾을 수 없습니다</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f9fafb; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; color: #1f2937; }
+    .card { background: white; padding: 2.5rem; border-radius: 1rem; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); text-align: center; max-width: 400px; width: 100%; border: 1px solid #e5e7eb; }
+    h2 { font-size: 1.25rem; font-weight: bold; margin-bottom: 0.5rem; color: #dc2626; }
+    p { font-size: 0.875rem; color: #6b7280; line-height: 1.5; margin-bottom: 1.5rem; }
+    button { background: #111827; color: white; border: none; padding: 0.625rem 1.25rem; font-size: 0.875rem; font-weight: 600; border-radius: 0.5rem; cursor: pointer; }
+    button:hover { background: #1f2937; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>📁 파일을 찾을 수 없습니다</h2>
+    <p>요청하신 첨부 파일이 서버나 스토리지에서 삭제되었거나 존재하지 않습니다.</p>
+    <button onclick="window.close()">창 닫기</button>
+  </div>
+</body>
+</html>`;
+
+  app.get(API_PATHS.chat.attachmentPattern, async (req, res) => {
+    try {
+      if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
+      const attachment = await getChatAttachment(req.params.id, req.authUser.id);
+      if (!attachment) {
+        if (req.query.inline === '1') {
+          res.setHeader('Content-Type', 'image/svg+xml');
+          res.status(404).send(DEFAULT_MISSING_IMAGE_SVG);
+          return;
+        }
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.status(404).send(DEFAULT_MISSING_FILE_HTML);
+        return;
+      }
+      res.setHeader('Content-Type', attachment.mimeType);
+      res.setHeader('Content-Disposition', `${req.query.inline === '1' && attachment.mimeType.startsWith('image/') ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.send(Buffer.from(attachment.content));
+    } catch (error) {
+      if (req.query.inline === '1') {
+        res.setHeader('Content-Type', 'image/svg+xml');
+        res.status(404).send(DEFAULT_MISSING_IMAGE_SVG);
+        return;
+      }
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.status(404).send(DEFAULT_MISSING_FILE_HTML);
+    }
+  });
+
+  app.get('/api/chat/s3/health', async (_req, res) => {
+    try {
+      if (!chatAttachmentsUseS3()) {
+        res.json({ enabled: false, message: 'CHAT_ATTACHMENT_STORAGE가 s3로 설정되어 있지 않습니다.' });
+        return;
+      }
+      await checkChatS3Bucket();
+      res.json({ enabled: true, status: 'connected', bucket: process.env.CHAT_S3_BUCKET, endpoint: process.env.CHAT_S3_ENDPOINT });
+    } catch (err: any) {
+      res.status(500).json({ enabled: true, status: 'error', error: err.message });
+    }
   });
 
   // API Routes
@@ -578,14 +714,16 @@ async function startServer() {
         ? getRowImageForUser(req.params.id, req.authUser?.id, req.authUser?.role)
         : getRowImage(req.params.id);
       if (!img) {
-        res.status(404).json({ error: 'Image asset not found' });
+        res.setHeader('Content-Type', 'image/svg+xml');
+        res.status(404).send(DEFAULT_MISSING_IMAGE_SVG);
         return;
       }
       res.setHeader('Content-Type', img.mimeType || 'application/octet-stream');
       res.setHeader('Cache-Control', 'private, no-store');
       res.send(Buffer.from(img.data));
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.status(500).send(DEFAULT_MISSING_IMAGE_SVG);
     }
   });
 
@@ -595,14 +733,16 @@ async function startServer() {
         ? getRowImageForUser(req.params.id, req.authUser?.id, req.authUser?.role)
         : getRowImage(req.params.id);
       if (!img) {
-        res.status(404).json({ error: 'Image not found' });
+        res.setHeader('Content-Type', 'image/svg+xml');
+        res.status(404).send(DEFAULT_MISSING_IMAGE_SVG);
         return;
       }
       res.setHeader('Content-Type', img.mimeType || 'image/png');
       res.setHeader('Cache-Control', 'private, no-store');
       res.send(Buffer.from(img.data));
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.status(500).send(DEFAULT_MISSING_IMAGE_SVG);
     }
   });
 

@@ -16,6 +16,8 @@ export const API_PATHS = {
   groups: '/api/groups',
   chat: {
     conversations: '/api/chat/conversations',
+    conversationPattern: '/api/chat/conversations/:id',
+    conversationMembersPattern: '/api/chat/conversations/:id/members',
     users: '/api/chat/users',
     messagesPattern: '/api/chat/conversations/:id/messages',
     attachments: '/api/chat/attachments',

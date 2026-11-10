@@ -6,8 +6,9 @@ export interface SsePayload {
   [key: string]: any;
 }
 
-const VERSION_POLL_INTERVAL_MS = 3_000;
-const VERSION_POLL_MAX_INTERVAL_MS = 30_000;
+const VERSION_POLL_INTERVAL_MS = 12_000; // 12 seconds (optimized to prevent excessive polling)
+const VERSION_POLL_MAX_INTERVAL_MS = 60_000; // 60 seconds max backoff on network issues
+const MIN_POLL_GAP_MS = 6_000; // Minimum 6 seconds throttle between wake polls
 
 /**
  * Robust Real-time Synchronization Service (Smart Polling / Version Check)
@@ -26,6 +27,7 @@ export function createSseConnection(
   let consecutiveFailures = 0;
   let lastCheckedVersion = 0;
   let lastEtag: string | null = null;
+  let lastPollTimestamp = 0;
 
   const pollVersion = async () => {
     if (isCancelled) return;
@@ -35,6 +37,7 @@ export function createSseConnection(
     }
 
     isRequestInFlight = true;
+    lastPollTimestamp = Date.now();
     let nextDelay = VERSION_POLL_INTERVAL_MS;
     try {
       const cleanServerUrl = serverUrl.replace(/\/+$/, '');
@@ -81,6 +84,8 @@ export function createSseConnection(
 
   const wakePolling = () => {
     if (isCancelled) return;
+    const now = Date.now();
+    if (now - lastPollTimestamp < MIN_POLL_GAP_MS) return; // Throttled to prevent spamming on focus/visibility changes
     if (isRequestInFlight) {
       wakeRequested = true;
       return;

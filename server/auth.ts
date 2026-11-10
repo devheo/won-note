@@ -170,13 +170,19 @@ export function addUser(req: Request, res: Response) {
 export function updateUser(req: Request, res: Response) {
   const id = String(req.params.id);
   const body = req.body || {};
-  if (id === req.authUser?.id && body.status === 'disabled') { res.status(400).json({ error: '현재 로그인한 마스터 계정은 비활성화할 수 없습니다.' }); return; }
+  const target = authQuery<any>('SELECT id,role,status FROM auth_users WHERE id=?', [id])[0];
+  if (!target) { res.status(404).json({ error: '계정을 찾을 수 없습니다.' }); return; }
   const role = body.role === 'master' ? 'master' : body.role === 'user' ? 'user' : null;
   const status = body.status === 'disabled' ? 'disabled' : body.status === 'active' ? 'active' : null;
-  if (!role && !status) { res.status(400).json({ error: '변경할 권한 또는 상태를 지정하세요.' }); return; }
+  const revokeSessions = body.revokeSessions === true;
+  if (!role && !status && !revokeSessions) { res.status(400).json({ error: '변경할 권한, 계정 상태 또는 세션 종료를 지정하세요.' }); return; }
+  if (id === req.authUser?.id && (status === 'disabled' || role === 'user')) { res.status(400).json({ error: '현재 로그인한 관리자 계정은 정지하거나 권한을 회수할 수 없습니다.' }); return; }
+  if (target.role === 'master' && target.status === 'active' && (role === 'user' || status === 'disabled') && authQuery<any>("SELECT COUNT(*) AS count FROM auth_users WHERE role='master' AND status='active'")[0]?.count <= 1) {
+    res.status(400).json({ error: '마지막 활성 관리자 권한은 회수할 수 없습니다.' }); return;
+  }
   if (role) authRun('UPDATE auth_users SET role=? WHERE id=?', [role, id]);
   if (status) authRun('UPDATE auth_users SET status=? WHERE id=?', [status, id]);
-  if (status === 'disabled') authRun('UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL', [Date.now(), id]);
+  if (status === 'disabled' || revokeSessions) authRun('UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL', [Date.now(), id]);
   res.json({ ok: true });
 }
 

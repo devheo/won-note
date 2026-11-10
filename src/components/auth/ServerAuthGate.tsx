@@ -33,12 +33,17 @@ export const ServerAuthGate: React.FC<{ useServer: boolean }> = ({ useServer }) 
   const [error, setError] = useState('');
   const [adminOpen, setAdminOpen] = useState(false);
 
+  // A browser opened directly on the hosted server must honor server auth
+  // even when this browser has a persisted local-workspace preference.
+  // Non-browser desktop/file builds keep their local mode independent.
+  const shouldCheckServerAuth = useServer || (typeof window !== 'undefined' && /^https?:$/.test(window.location.protocol));
+
   const refresh = async () => {
-    if (!useServer) { setState({ enabled: false, user: null }); return; }
+    if (!shouldCheckServerAuth) { setState({ enabled: false, user: null }); return; }
     try { setState(await jsonRequest<AuthState>(API_PATHS.auth.me)); }
     catch { setState({ enabled: true, user: null }); }
   };
-  useEffect(() => { void refresh(); }, [useServer]);
+  useEffect(() => { void refresh(); }, [shouldCheckServerAuth]);
 
   useEffect(() => {
     const openAdmin = () => {
@@ -48,9 +53,18 @@ export const ServerAuthGate: React.FC<{ useServer: boolean }> = ({ useServer }) 
     return () => window.removeEventListener(APP_EVENTS.openAdminConsole, openAdmin);
   }, [state]);
 
-  if (!useServer) return null;
+  if (!shouldCheckServerAuth) return null;
 
-  if (!useServer || !state?.enabled) return null;
+  // Keep the workspace covered until the server has confirmed whether this
+  // deployment requires authentication. Otherwise protected content briefly
+  // renders while /api/auth/me is still in flight.
+  if (!state) return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-stone-950/90 p-4 text-sm text-stone-200 backdrop-blur-sm" role="status" aria-live="polite">
+      서버 로그인 상태를 확인하고 있습니다...
+    </div>
+  );
+
+  if (!state.enabled) return null;
   if (!state.user) return (
     <div className="fixed inset-0 z-[100] bg-stone-950/90 backdrop-blur-sm flex items-center justify-center p-4">
       <form

@@ -36,7 +36,7 @@
     ],
     "windows": {
       "webviewInstallMode": {
-        "type": "fixedRuntime",
+        "type": "embedBootstrapper",
         "path": "./Microsoft.WebView2.FixedVersionRuntime.156.0.4314.58.x64"
       },
       "nsis": {

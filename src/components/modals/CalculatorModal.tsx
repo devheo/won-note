@@ -8,6 +8,7 @@ import {
   History,
   Copy,
   Check,
+  Trash2,
   Sparkles,
   ArrowRightLeft,
   Scale,
@@ -22,8 +23,17 @@ interface CalculatorModalProps {
 
 type CalcMode = 'standard' | 'scientific' | 'converter';
 
+const formatCalcResult = (value: number) => Number.isFinite(value)
+  ? Number(value.toPrecision(15)).toString()
+  : value.toString();
+
+const sanitizeExpression = (value: string) => value
+  .replace(/[−–—﹣－]/g, '-')
+  .replace(/[^\d.+\-×÷*/%()\s]/g, '');
+
 interface HistoryRecord {
   id: string;
+  title?: string;
   expression: string;
   result: string;
   timestamp: number;
@@ -33,11 +43,15 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
   const [calcMode, setCalcMode] = useState<CalcMode>('standard');
   const [displayValue, setDisplayValue] = useState<string>('0');
   const [expression, setExpression] = useState<string>('');
+  const [editingHistoryExpression, setEditingHistoryExpression] = useState(false);
   const [memory, setMemory] = useState<number>(0);
   const [history, setHistory] = useState<HistoryRecord[]>(() => {
     try {
       const saved = localStorage.getItem('wonbee_calc_history');
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const records = JSON.parse(saved);
+        if (Array.isArray(records)) return records.map(record => ({ ...record, title: typeof record.title === 'string' ? record.title : '' }));
+      }
     } catch {}
     return [];
   });
@@ -75,7 +89,13 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
   };
 
   const handleOperator = (op: string) => {
-    setExpression((prev) => prev + ' ' + displayValue + ' ' + op);
+    setExpression((prev) => {
+      const current = prev.trimEnd();
+      if (/[+\-×÷%^]$/.test(current)) return `${current.slice(0, -1).trimEnd()} ${op}`.trimStart();
+      if (editingHistoryExpression) return `(${current}) ${op}`.trim();
+      return `${current} ${displayValue} ${op}`.trim();
+    });
+    setEditingHistoryExpression(false);
     setDisplayValue('0');
   };
 
@@ -124,7 +144,7 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
         default:
           return;
       }
-      const rounded = parseFloat(res.toFixed(10)).toString();
+      const rounded = formatCalcResult(res);
       setDisplayValue(rounded);
       addToHistory(exprLabel, rounded);
     } catch {
@@ -148,6 +168,7 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
   const addToHistory = (expr: string, res: string) => {
     const newItem: HistoryRecord = {
       id: `calc-${Date.now()}`,
+      title: '',
       expression: expr,
       result: res,
       timestamp: Date.now(),
@@ -159,10 +180,27 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
     });
   };
 
+  const updateHistoryTitle = (id: string, title: string) => {
+    setHistory((prev) => {
+      const next = prev.map(item => item.id === id ? { ...item, title } : item);
+      localStorage.setItem('wonbee_calc_history', JSON.stringify(next));
+      return next;
+    });
+  };
+
+  const deleteHistoryItem = (id: string) => {
+    setHistory(prev => {
+      const next = prev.filter(item => item.id !== id);
+      localStorage.setItem('wonbee_calc_history', JSON.stringify(next));
+      return next;
+    });
+  };
+
   const handleCalculate = useCallback(() => {
     try {
-      const fullExpr = expression + ' ' + displayValue;
-      // Sanitize expression for safe eval
+      const fullExpr = sanitizeExpression(editingHistoryExpression ? expression : expression + ' ' + displayValue);
+      if (!fullExpr.trim()) throw new Error('Empty expression');
+      // Only numeric literals and calculator operators reach the evaluator.
       const sanitized = fullExpr
         .replace(/×/g, '*')
         .replace(/÷/g, '/')
@@ -170,15 +208,16 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
 
       // eslint-disable-next-line no-new-func
       const result = Function(`'use strict'; return (${sanitized})`)();
-      const formatted = parseFloat(Number(result).toFixed(10)).toString();
+      const formatted = formatCalcResult(Number(result));
 
       addToHistory(fullExpr.trim(), formatted);
       setDisplayValue(formatted);
       setExpression('');
+      setEditingHistoryExpression(false);
     } catch {
       setDisplayValue('Error');
     }
-  }, [expression, displayValue]);
+  }, [expression, displayValue, editingHistoryExpression]);
 
   // Keyboard shortcut support
   useEffect(() => {
@@ -385,13 +424,24 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
                     key={item.id}
                     onClick={() => {
                       setDisplayValue(item.result);
-                      showToast(`✓ 결과(${item.result})가 복원되었습니다.`);
+                      setExpression(item.expression);
+                      setEditingHistoryExpression(true);
+                      showToast('수식을 불러왔습니다. 위 수식란에서 수정한 뒤 계산하세요.');
                     }}
                     className="p-2 rounded-xl border border-stone-200/80 dark:border-stone-800 bg-white dark:bg-[#202020] hover:bg-amber-500/10 dark:hover:bg-amber-950/20 cursor-pointer transition-all group"
                   >
-                    <div className="text-[11px] text-stone-400 font-mono truncate">{item.expression}</div>
+                    <input
+                      value={item.title || ''}
+                      maxLength={80}
+                      placeholder="계산 제목 입력 (예: 월세 분담)"
+                      aria-label="계산 기록 제목"
+                      onClick={event => event.stopPropagation()}
+                      onChange={event => updateHistoryTitle(item.id, event.target.value)}
+                      className="mb-1 w-full rounded-md border border-transparent bg-transparent px-1 py-1 text-xs font-semibold text-stone-700 placeholder:font-normal placeholder:text-stone-400 hover:border-stone-200 focus:border-amber-400 focus:outline-none dark:text-stone-200 dark:hover:border-stone-700"
+                    />
+                    <div className="mb-1 px-1 py-1 text-[11px] font-mono text-stone-500 dark:text-stone-400">{item.expression}</div>
                     <div className="text-xs font-mono font-bold text-amber-600 dark:text-amber-400 truncate flex items-center justify-between">
-                      <span>= {item.result}</span>
+                      <span className="min-w-0 flex-1">= {item.result}</span>
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
@@ -401,6 +451,15 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
                         title="결과 복사"
                       >
                         <Copy className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={event => { event.stopPropagation(); deleteHistoryItem(item.id); }}
+                        className="ml-1 rounded p-0.5 text-stone-400 opacity-0 hover:text-rose-500 group-hover:opacity-100"
+                        title="이 기록 삭제"
+                        aria-label={`${item.title || item.expression} 기록 삭제`}
+                      >
+                        <Trash2 className="w-3 h-3" />
                       </button>
                     </div>
                   </div>
@@ -541,7 +600,7 @@ export const CalculatorModal: React.FC<CalculatorModalProps> = ({ isOpen, onClos
               <div className="max-w-md mx-auto w-full flex flex-col h-full justify-center space-y-4">
                 {/* Screen Display */}
                 <div className="bg-stone-900 text-stone-100 p-4 rounded-2xl border border-stone-800 shadow-inner text-right space-y-1 font-mono">
-                  <div className="text-xs text-stone-400 min-h-[16px] truncate">{expression}</div>
+                  <input aria-label="계산 수식" value={expression} onChange={event => setExpression(sanitizeExpression(event.target.value))} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); handleCalculate(); } }} placeholder="수식" className="w-full bg-transparent text-xs text-stone-400 min-h-[24px] truncate outline-none focus:text-stone-700 dark:focus:text-stone-200" />
                   <div className="text-3xl font-bold tracking-tight truncate">{displayValue}</div>
                 </div>
 

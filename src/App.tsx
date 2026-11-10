@@ -2211,20 +2211,16 @@ export default function App() {
                   <span>동기화 다시 시도 (Retry)</span>
                 </button>
               </div>
-            ) : isLoading && (!workspace || (
-              Object.keys(workspace.tables || {}).length === 0 &&
-              workspace.tree.length === 0 &&
-              Object.keys(workspace.documents || {}).length === 0
-            )) ? (
+            ) : isLoading ? (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
                 <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center mb-3 animate-pulse border border-amber-500/30">
                   <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
                 </div>
                 <h3 className="text-base font-bold text-stone-900 dark:text-stone-100">
-                  🐝 초기 데이터 동기화 중...
+                  🐝 워크스페이스 로딩 중...
                 </h3>
                 <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 max-w-sm leading-relaxed">
-                  서버에서 최신 데이터베이스 스키마와 테이블을 안전하게 내려받고 있습니다.
+                  마지막으로 보던 노트와 위치를 불러오고 있습니다.
                 </p>
               </div>
             ) : activeDocument ? (
