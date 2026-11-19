@@ -4,6 +4,26 @@ import { STORAGE_KEYS } from '../constants/storageKeys';
 
 const assetUrlCache = new Map<string, string>();
 const assetUrlInFlight = new Map<string, Promise<string>>();
+const MAX_CACHE_SIZE = 120;
+
+function cleanupOldObjectUrls() {
+  if (assetUrlCache.size > MAX_CACHE_SIZE) {
+    const keys = Array.from(assetUrlCache.keys());
+    const toRemove = keys.slice(0, keys.length - MAX_CACHE_SIZE);
+    for (const key of toRemove) {
+      const url = assetUrlCache.get(key);
+      if (url && url.startsWith('blob:')) {
+        URL.revokeObjectURL(url);
+      }
+      assetUrlCache.delete(key);
+    }
+  }
+}
+
+function setCacheItem(key: string, url: string) {
+  assetUrlCache.set(key, url);
+  cleanupOldObjectUrls();
+}
 
 export async function resolveAssetUrl(assetUrl: string): Promise<string> {
   if (!assetUrl.startsWith('asset://')) return assetUrl;
@@ -25,19 +45,19 @@ export async function resolveAssetUrl(assetUrl: string): Promise<string> {
         // note/table save, avoiding one upload per image-view mount.
         if (asset.is_dirty !== 0) {
           const objectUrl = URL.createObjectURL(asset.blob);
-          assetUrlCache.set(cacheKey, objectUrl);
+          setCacheItem(cacheKey, objectUrl);
           return objectUrl;
         }
         try {
           const serverUrl = resolveApiUrl(`/api/assets/${encodeURIComponent(assetId)}`);
-          assetUrlCache.set(cacheKey, serverUrl);
+          setCacheItem(cacheKey, serverUrl);
           return serverUrl;
         } catch {
           // Keep the local copy usable while offline; it can be uploaded on a later read.
         }
       }
       const objectUrl = URL.createObjectURL(asset.blob);
-      assetUrlCache.set(cacheKey, objectUrl);
+      setCacheItem(cacheKey, objectUrl);
       return objectUrl;
     }
     } catch (err) {

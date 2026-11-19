@@ -12,7 +12,7 @@ const escape = (s: string) =>
 import { FILE_LIMITS } from '../constants/limits';
 
 export const MAX_PDF_BYTES = FILE_LIMITS.pdfBytes;
-export type PdfImportMode = 'text-images' | 'text' | 'images';
+export type PdfImportMode = 'text-images' | 'text' | 'images' | 'images-text';
 export interface PdfImportProgress {
   completed: number;
   total: number;
@@ -76,7 +76,7 @@ export async function openPdfImport(data: ArrayBuffer, signal?: AbortSignal) {
         if (closed) throw new Error('PDF를 다시 선택해주세요.');
         const selected = parsePdfPages(options.pages || '', pdf.numPages);
         const mode = options.mode || 'text-images';
-        const pages: string[] = [],
+        const pages: string[] = [], imagePages: string[] = [], textOnlyPages: string[] = [],
           assetIds: string[] = [];
         let textPages = 0;
         const estimate = await navigator.storage?.estimate?.();
@@ -144,7 +144,13 @@ export async function openPdfImport(data: ArrayBuffer, signal?: AbortSignal) {
                   .join('');
                 if (!textHtml) textHtml = '<p><em>추출 가능한 텍스트가 없습니다.</em></p>';
               }
-              pages.push(`<div data-pdf-page="${number}" data-pdf-total="${pdf.numPages}">${textHtml}${imageHtml}</div>`);
+              const wrapper = (content: string) => `<div data-pdf-page="${number}" data-pdf-total="${pdf.numPages}">${content}</div>`;
+              if (mode === 'images-text') {
+                imagePages.push(wrapper(imageHtml));
+                textOnlyPages.push(wrapper(textHtml));
+              } else {
+                pages.push(wrapper(`${textHtml}${imageHtml}`));
+              }
             } finally {
               page.cleanup();
               canvas.width = 0;
@@ -158,7 +164,7 @@ export async function openPdfImport(data: ArrayBuffer, signal?: AbortSignal) {
           }
           checkAbort(options.signal);
           return {
-            html: pages.join('<hr>'),
+            html: (mode === 'images-text' ? [...imagePages, ...textOnlyPages] : pages).join('<hr>'),
             pageCount: selected.length,
             assetIds,
             warnings:
@@ -211,10 +217,20 @@ export async function createPdf(html: string, title: string) {
       const img = document.createElement('img');
       img.src = src;
       img.alt = node.getAttribute('alt') || '';
+      if (node.getAttribute('style')) img.setAttribute('style', node.getAttribute('style')!);
       return img;
     }
-    const allowed = /^(P|H[1-6]|BR|HR|UL|OL|LI|BLOCKQUOTE|PRE|CODE|STRONG|EM|B|I|U|S|TABLE|THEAD|TBODY|TR|TD|TH)$/;
+    const allowed = /^(P|H[1-6]|BR|HR|UL|OL|LI|BLOCKQUOTE|PRE|CODE|STRONG|EM|B|I|U|S|TABLE|THEAD|TBODY|TR|TD|TH|COLGROUP|COL|SPAN|DIV)$/;
     const element = document.createElement(allowed.test(node.tagName) ? node.tagName.toLowerCase() : 'span');
+
+    // Preserve styling and dimension attributes for table rows, columns and cells
+    for (const attr of Array.from(node.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (['style', 'colspan', 'rowspan', 'class', 'width', 'height', 'align', 'valign', 'data-border-style', 'data-table-width', 'data-colwidth'].includes(name)) {
+        element.setAttribute(attr.name, attr.value);
+      }
+    }
+
     for (const child of Array.from(node.childNodes)) {
       const copy = await safe(child);
       if (copy) element.append(copy);
@@ -226,7 +242,7 @@ export async function createPdf(html: string, title: string) {
   host.setAttribute('aria-hidden', 'true');
   const style = document.createElement('style');
   style.textContent =
-    '.note-pdf-sheet{width:794px;min-height:1123px;padding:48px;box-sizing:border-box;background:#fff;color:#292524;font:16px/1.6 "Malgun Gothic",sans-serif;overflow-wrap:anywhere}.note-pdf-sheet h1{font-size:28px;font-weight:bold;margin:12px 0;color:#92400e}.note-pdf-sheet h2{font-size:23px;font-weight:bold;margin:12px 0}.note-pdf-sheet h3{font-size:20px;font-weight:bold}.note-pdf-sheet p,.note-pdf-sheet pre{margin:8px 0;white-space:pre-wrap}.note-pdf-sheet img{max-width:100%;max-height:900px;object-fit:contain}.note-pdf-sheet table{width:100%;border-collapse:collapse;table-layout:fixed}.note-pdf-sheet td,.note-pdf-sheet th{border:1px solid #aaa;padding:8px;word-break:break-word}.note-pdf-sheet blockquote{border-left:3px solid #d6d3d1;padding-left:12px}.note-pdf-sheet ul{list-style:disc;padding-left:24px}.note-pdf-sheet ol{list-style:decimal;padding-left:24px}.note-pdf-sheet hr{border-top:1px solid #aaa;margin:16px 0}';
+    '.note-pdf-sheet{width:794px;min-height:1123px;padding:48px;box-sizing:border-box;background:#fff;color:#292524;font:16px/1.6 "Malgun Gothic",sans-serif;overflow-wrap:anywhere}.note-pdf-sheet h1{font-size:28px;font-weight:bold;margin:12px 0;color:#92400e}.note-pdf-sheet h2{font-size:23px;font-weight:bold;margin:12px 0}.note-pdf-sheet h3{font-size:20px;font-weight:bold}.note-pdf-sheet p,.note-pdf-sheet pre{margin:8px 0;white-space:pre-wrap}.note-pdf-sheet img{max-width:100%;max-height:900px;object-fit:contain}.note-pdf-sheet table{width:100%;border-collapse:collapse;table-layout:auto}.note-pdf-sheet td,.note-pdf-sheet th{border:1px solid #aaa;padding:8px;word-break:break-word}.note-pdf-sheet blockquote{border-left:3px solid #d6d3d1;padding-left:12px}.note-pdf-sheet ul{list-style:disc;padding-left:24px}.note-pdf-sheet ol{list-style:decimal;padding-left:24px}.note-pdf-sheet hr{border-top:1px solid #aaa;margin:16px 0}';
   host.append(style);
   document.body.append(host);
   const sheets: HTMLElement[] = [];
@@ -272,9 +288,18 @@ export async function createPdf(html: string, title: string) {
     if (block instanceof Element && block.tagName === 'TABLE') {
       const rows = Array.from(block.querySelectorAll('tr'));
       if (rows.length > 1) {
+        const colgroup = block.querySelector('colgroup');
         for (const row of rows) {
           const table = document.createElement('table');
-          table.append(row);
+          for (const attr of Array.from(block.attributes)) {
+            table.setAttribute(attr.name, attr.value);
+          }
+          if (colgroup) {
+            table.append(colgroup.cloneNode(true));
+          }
+          const tbody = document.createElement('tbody');
+          tbody.append(row.cloneNode(true));
+          table.append(tbody);
           await add(table);
         }
       } else {

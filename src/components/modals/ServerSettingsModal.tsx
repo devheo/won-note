@@ -19,7 +19,7 @@ interface ServerSettingsModalProps {
   onClose: () => void;
   useServer: boolean;
   serverUrl: string;
-  onToggleUseServer: (useServer: boolean, serverUrl?: string) => void;
+  onToggleUseServer: (useServer: boolean, serverUrl?: string) => Promise<void>;
   onRefreshData: () => Promise<void>;
 }
 
@@ -64,11 +64,13 @@ export const ServerSettingsModal: React.FC<ServerSettingsModalProps> = ({
   if (!isOpen) return null;
 
   const handleSave = async () => {
-    onToggleUseServer(tempUseServer, tempServerUrl);
     setIsRefreshing(true);
-    await onRefreshData();
-    setIsRefreshing(false);
-    onClose();
+    try {
+      await onToggleUseServer(tempUseServer, tempServerUrl);
+      onClose();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : '저장소 반영에 실패했습니다.');
+    } finally { setIsRefreshing(false); }
   };
 
   const formattedBytes = (bytes: number) => {

@@ -20,12 +20,15 @@ import {
   Image as ImageIcon,
   MessageSquare,
   ExternalLink,
+  Database,
+  Sparkles,
+  Loader2,
 } from 'lucide-react';
 import { API_PATHS } from '../../constants/api';
-import { fetchBridge } from '../../services/httpBridge';
+import { fetchBridge, resolveApiUrl } from '../../services/httpBridge';
 import type { TableDocument, WorkspaceData } from '../../types';
 
-type Tab = 'overview' | 'accounts' | 'groups' | 'boards' | 'files' | 'history';
+type Tab = 'overview' | 'accounts' | 'groups' | 'boards' | 'files' | 'history' | 'database';
 type User = { id: string; email: string; display_name: string; role: 'master' | 'user'; status: string; created_at: number; last_login_at: number | null };
 type Member = { id: string; email: string; display_name: string; role: string };
 type Group = { id: string; name: string; owner_id: string; members: Member[]; users: Member[] };
@@ -43,6 +46,24 @@ type AdminFile = {
   downloadUrl: string;
   tableId?: string;
 };
+type AdminDbStats = {
+  fileSize: number;
+  filePath: string;
+  lastUpdated: number;
+  counts: {
+    tables: number;
+    treeItems: number;
+    tableRows: number;
+    notes: number;
+    tableColumns: number;
+    calendarEvents: number;
+    rowImages: number;
+    documentHistory: number;
+    authUsers: number;
+    userGroups: number;
+  };
+};
+type AdminTablePage = { tableName: string; columns: string[]; rows: Array<Record<string, unknown>>; total: number; offset: number; limit: number };
 
 type Props = { user: CurrentUser; onClose: () => void };
 
@@ -70,6 +91,12 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
   const [workspace, setWorkspace] = useState<WorkspaceData | null>(null);
   const [history, setHistory] = useState<Login[]>([]);
   const [files, setFiles] = useState<AdminFile[]>([]);
+  const [dbStats, setDbStats] = useState<AdminDbStats | null>(null);
+  const [selectedDbTable, setSelectedDbTable] = useState('');
+  const [dbTablePage, setDbTablePage] = useState<AdminTablePage | null>(null);
+  const [dbTableBusy, setDbTableBusy] = useState(false);
+  const [dbRowDetail, setDbRowDetail] = useState<Record<string, unknown> | null>(null);
+  const [dbTableSearch, setDbTableSearch] = useState('');
   const [groupName, setGroupName] = useState('');
   const [newAccount, setNewAccount] = useState({ email: '', name: '', password: '' });
   const [accountQuery, setAccountQuery] = useState('');
@@ -78,6 +105,36 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
+
+  const refreshDbStats = async () => {
+    try {
+      const stats = await api<AdminDbStats>('/api/admin/db/stats');
+      setDbStats(stats);
+      return true;
+    } catch (reason) {
+      setDbStats(null);
+      setError(reason instanceof Error ? reason.message : 'DB 통계를 불러오지 못했습니다.');
+      return false;
+    }
+  };
+
+  const loadDbTable = async (tableName: string, offset = 0, search = dbTableSearch) => {
+    setSelectedDbTable(tableName); setDbTableBusy(true); setError('');
+    try {
+      const params = new URLSearchParams({ offset: String(offset), limit: '50', search });
+      const page = await api<AdminTablePage>(`/api/admin/db/tables/${encodeURIComponent(tableName)}/rows?${params.toString()}`);
+      setDbTablePage(page);
+    } catch (reason) {
+      setDbTablePage(null);
+      setError(reason instanceof Error ? reason.message : '테이블 데이터를 불러오지 못했습니다.');
+    } finally { setDbTableBusy(false); }
+  };
+  const loadDbRowDetail = async (tableName: string, rowOffset: number) => {
+    setDbTableBusy(true);
+    try { setDbRowDetail(await api<Record<string, unknown>>(`/api/admin/db/tables/${encodeURIComponent(tableName)}/rows/${rowOffset}?search=${encodeURIComponent(dbTableSearch)}`)); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : '상세 데이터를 불러오지 못했습니다.'); }
+    finally { setDbTableBusy(false); }
+  };
 
   const refresh = async () => {
     setBusy(true); setError('');
@@ -89,6 +146,7 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
         api<Login[]>(API_PATHS.admin.loginHistory),
         api<AdminFile[]>('/api/admin/files').catch(() => []),
       ]);
+      await refreshDbStats();
       setUsers(Array.isArray(nextUsers) ? nextUsers : []);
       setGroups(Array.isArray(nextGroups) ? nextGroups : []);
       setWorkspace(nextWorkspace);
@@ -103,6 +161,7 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
   };
 
   useEffect(() => { void refresh(); }, []);
+  useEffect(() => { if (tab === 'database') void refreshDbStats(); }, [tab]);
 
   const tables = useMemo(() => Object.values(workspace?.tables || {}) as TableDocument[], [workspace]);
   const documentsCount = Object.keys(workspace?.documents || {}).length;
@@ -149,6 +208,35 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
     }, '파일을 삭제했습니다.');
   };
 
+  const handleVacuumDb = async () => {
+    await run(async () => {
+      const result = await api<{ message: string; stats: AdminDbStats }>('/api/admin/db/vacuum', { method: 'POST' });
+      if (result.stats) setDbStats(result.stats);
+    }, 'SQLite 데이터베이스 최적화(VACUUM)를 성공적으로 완료했습니다.');
+  };
+
+  const handleCleanOrphansDb = async () => {
+    if (!window.confirm('트리에 존재하지 않는 고아 테이블 및 정리되지 않은 물리 레코드를 정돈할까요?')) return;
+    await run(async () => {
+      const result = await api<{ message: string; stats: AdminDbStats }>('/api/admin/db/clean-orphans', { method: 'POST' });
+      if (result.stats) setDbStats(result.stats);
+    }, '고아 레코드 및 비일관성 데이터 정돈을 완료했습니다.');
+  };
+
+  const handleReloadDb = async () => {
+    if (!window.confirm('디스크에서 데이터베이스를 재로드하시겠습니까? 메모리의 미저장 변경사항이 덮어씌워질 수 있습니다.')) return;
+    await run(async () => {
+      await api(API_PATHS.databaseReload, { method: 'POST' });
+    }, '디스크 데이터베이스 재로드를 완료했습니다.');
+  };
+
+  const handleDownloadDbBackup = () => {
+    const a = document.createElement('a');
+    a.href = resolveApiUrl('/api/admin/db/download');
+    a.download = 'wonnote_backup.sqlite';
+    a.click();
+  };
+
   const tabs: Array<{ id: Tab; label: string; icon: React.ReactNode }> = [
     { id: 'overview', label: '현황', icon: <BarChart3 size={16}/> },
     { id: 'accounts', label: '계정', icon: <Users size={16}/> },
@@ -156,6 +244,7 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
     { id: 'boards', label: '보드·자료', icon: <FolderKanban size={16}/> },
     { id: 'files', label: '업로드 파일', icon: <HardDrive size={16}/> },
     { id: 'history', label: '접속 기록', icon: <History size={16}/> },
+    { id: 'database', label: 'DB 관리', icon: <Database size={16}/> },
   ];
 
   return createPortal(
@@ -163,7 +252,7 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
       className="fixed inset-0 z-[999999] flex items-center justify-center bg-black/65 backdrop-blur-sm p-3 sm:p-6 animate-in fade-in duration-150"
       onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}
     >
-      <section className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900 animate-in zoom-in-95 duration-150 text-stone-900 dark:text-stone-100">
+      <section aria-busy={busy} className="relative flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900 animate-in zoom-in-95 duration-150 text-stone-900 dark:text-stone-100">
         <header className="flex items-center justify-between border-b border-stone-200 px-5 py-4 dark:border-stone-700 shrink-0">
           <div className="flex items-center gap-3">
             <span className="rounded-xl bg-amber-100 p-2 text-amber-800 dark:bg-amber-950 dark:text-amber-300">
@@ -364,7 +453,180 @@ export const AdminConsole: React.FC<Props> = ({ user, onClose }) => {
           </>}
 
           {tab === 'history' && <><div className="mb-4 flex items-center gap-2"><History size={18}/><h3 className="text-lg font-bold">계정 접속 기록</h3></div><div className="overflow-hidden rounded-xl border border-stone-200 dark:border-stone-700">{history.map(item => <div key={item.id} className="grid gap-1 border-b p-3 last:border-0 dark:border-stone-800 sm:grid-cols-[minmax(0,1fr)_100px_180px]"><span className="text-sm">{item.display_name || item.email || '알 수 없는 계정'}<small className="block text-xs text-stone-500">{item.reason} · {item.ip || 'IP 미확인'}</small></span><span className={`text-xs ${item.success ? 'text-emerald-600' : 'text-rose-600'}`}>{item.success ? '로그인 성공' : '로그인 실패'}</span><time className="text-xs text-stone-500">{new Date(item.created_at).toLocaleString()}</time></div>)}</div>{!history.length && <p className="p-8 text-center text-sm text-stone-500">로그인 기록이 없습니다.</p>}</>}
+
+          {tab === 'database' && (
+            <>
+              {!dbStats && <p role="alert" className="mb-4 rounded-xl border border-rose-300 bg-rose-50 p-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/30 dark:text-rose-200">DB 통계를 불러오지 못했습니다. 위 오류를 확인한 뒤 새로고침을 눌러 다시 시도해 주세요.</p>}
+              <div className="mb-3 flex flex-wrap items-end justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-bold">SQLite 데이터베이스(DB) 관리 및 최적화</h3>
+                  <p className="text-sm text-stone-500">데이터베이스 통계 확인, 공간 최적화(VACUUM), 고아 레코드 정돈 및 물리 백업을 관리합니다.</p>
+                </div>
+                <span className="text-xs text-stone-500 font-mono">
+                  {dbStats?.filePath ? `경로: ${dbStats.filePath}` : 'SQLite DB Active'}
+                </span>
+              </div>
+
+              {/* DB Status & Metrics Grid */}
+              <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded-xl border border-stone-200 p-4 dark:border-stone-700 bg-amber-50/40 dark:bg-amber-950/20">
+                  <div className="text-xs text-stone-500 dark:text-stone-400">데이터베이스 파일 용량</div>
+                  <div className="my-1.5 text-2xl font-bold text-amber-700 dark:text-amber-400 font-mono">
+                    {formatBytes(dbStats?.fileSize || 0)}
+                  </div>
+                  <div className="text-[11px] text-stone-400">SQLite 물리 DB 크기</div>
+                </div>
+
+                <div className="rounded-xl border border-stone-200 p-4 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800/40">
+                  <div className="text-xs text-stone-500 dark:text-stone-400">등록된 테이블 / 노트 레코드</div>
+                  <div className="my-1.5 text-2xl font-bold text-stone-900 dark:text-stone-100 font-mono">
+                    {dbStats?.counts?.tables || 0}개 / {dbStats?.counts?.notes || 0}개
+                  </div>
+                  <div className="text-[11px] text-stone-400">트리 항목: {dbStats?.counts?.treeItems || 0}개</div>
+                </div>
+
+                <div className="rounded-xl border border-stone-200 p-4 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800/40">
+                  <div className="text-xs text-stone-500 dark:text-stone-400">테이블 행(Row) / 열(Column)</div>
+                  <div className="my-1.5 text-2xl font-bold text-sky-600 dark:text-sky-400 font-mono">
+                    {dbStats?.counts?.tableRows || 0}행 / {dbStats?.counts?.tableColumns || 0}열
+                  </div>
+                  <div className="text-[11px] text-stone-400">일정: {dbStats?.counts?.calendarEvents || 0}개</div>
+                </div>
+
+                <div className="rounded-xl border border-stone-200 p-4 dark:border-stone-700 bg-stone-50/50 dark:bg-stone-800/40">
+                  <div className="text-xs text-stone-500 dark:text-stone-400">계정 / 그룹 / 이미지 에셋</div>
+                  <div className="my-1.5 text-2xl font-bold text-emerald-600 dark:text-emerald-400 font-mono">
+                    {dbStats?.counts?.authUsers || 0}명 / {dbStats?.counts?.rowImages || 0}개
+                  </div>
+                  <div className="text-[11px] text-stone-400">이력 스냅샷: {dbStats?.counts?.documentHistory || 0}개</div>
+                </div>
+              </div>
+
+              {/* Maintenance Tools Toolbar */}
+              <div className="mb-5 rounded-xl border border-stone-200 p-4 dark:border-stone-700 bg-white dark:bg-stone-900">
+                <h4 className="mb-3 font-bold text-sm text-stone-800 dark:text-stone-200 flex items-center gap-2">
+                  <Database size={16} className="text-amber-500" />
+                  <span>데이터베이스 관리 및 백업 액션</span>
+                </h4>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleVacuumDb()}
+                    className="p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-amber-50 dark:hover:bg-amber-950/30 text-left transition-colors cursor-pointer group disabled:opacity-40"
+                  >
+                    <div className="flex items-center justify-between font-bold text-xs text-amber-700 dark:text-amber-400 mb-1">
+                      <span>🧹 DB VACUUM 최적화</span>
+                      <Sparkles size={14} className="group-hover:scale-110 transition-transform" />
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                      삭제된 미사용 빈 페이지를 정리하고 파편화된 공간을 수축하여 DB 파일 용량을 최적화합니다.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleCleanOrphansDb()}
+                    className="p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-rose-50 dark:hover:bg-rose-950/30 text-left transition-colors cursor-pointer group disabled:opacity-40"
+                  >
+                    <div className="flex items-center justify-between font-bold text-xs text-rose-700 dark:text-rose-400 mb-1">
+                      <span>🛡️ 고아 레코드 정돈</span>
+                      <Trash2 size={14} className="group-hover:scale-110 transition-transform" />
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                      사이드바 트리에 존재하지 않는 무효 물리 테이블과 유령 레코드를 일괄 검사하여 정리합니다.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void handleReloadDb()}
+                    className="p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-sky-50 dark:hover:bg-sky-950/30 text-left transition-colors cursor-pointer group disabled:opacity-40"
+                  >
+                    <div className="flex items-center justify-between font-bold text-xs text-sky-700 dark:text-sky-400 mb-1">
+                      <span>🔄 디스크 DB 재로드</span>
+                      <RefreshCw size={14} className="group-hover:rotate-180 transition-transform duration-300" />
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                      서버 물리 디스크 `.sqlite` 파일 원본으로부터 데이터베이스를 강제로 새로 읽어옵니다.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={handleDownloadDbBackup}
+                    className="p-3.5 rounded-xl border border-stone-200 dark:border-stone-700 hover:bg-emerald-50 dark:hover:bg-emerald-950/30 text-left transition-colors cursor-pointer group disabled:opacity-40"
+                  >
+                    <div className="flex items-center justify-between font-bold text-xs text-emerald-700 dark:text-emerald-400 mb-1">
+                      <span>💾 DB 원본 백업 (.sqlite)</span>
+                      <Download size={14} className="group-hover:translate-y-0.5 transition-transform" />
+                    </div>
+                    <p className="text-[11px] text-stone-500 dark:text-stone-400 leading-relaxed">
+                      현재 SQLite 물리 데이터베이스 원본 파일(`.sqlite`)을 컴퓨터에 안전하게 즉시 백업 다운로드합니다.
+                    </p>
+                  </button>
+                </div>
+              </div>
+
+              {/* SQLite Tables Inventory Breakdown */}
+              <div className="overflow-hidden rounded-xl border border-stone-200 dark:border-stone-700">
+                <div className="px-4 py-3 bg-stone-100/70 dark:bg-stone-800/60 border-b border-stone-200 dark:border-stone-700 flex items-center justify-between">
+                  <h4 className="font-bold text-xs text-stone-800 dark:text-stone-200 flex items-center gap-2">
+                    <Database size={14} className="text-amber-500" />
+                    <span>SQLite 시스템 테이블별 저장 상태</span>
+                  </h4>
+                  <span className="text-[11px] text-stone-500 font-mono">Total Tables: 10</span>
+                </div>
+
+                <div className="divide-y divide-stone-200 dark:divide-stone-800 text-xs">
+                  {[
+                    { name: 'tables', desc: '테이블 메타데이터 및 설정 (Data Tables)', count: dbStats?.counts?.tables || 0, badge: '핵심 테이블' },
+                    { name: 'tree_items', desc: '워크스페이스 무한 깊이 트리 구조 (Folders / Documents / Tables)', count: dbStats?.counts?.treeItems || 0, badge: '트리 계층' },
+                    { name: 'notes', desc: '문서 및 데이터 행 통합 노트 레코드', count: dbStats?.counts?.notes || 0, badge: '통합 노드' },
+                    { name: 'table_rows', desc: '데이터 테이블 개별 행(Row) 및 리치 콘텐츠', count: dbStats?.counts?.tableRows || 0, badge: '행 레코드' },
+                    { name: 'table_columns', desc: '테이블 컬럼 정의 및 스키마', count: dbStats?.counts?.tableColumns || 0, badge: '컬럼 스키마' },
+                    { name: 'calendar_events', desc: '캘린더 일정 및 타임라인 데이터', count: dbStats?.counts?.calendarEvents || 0, badge: '일정 데이터' },
+                    { name: 'row_images', desc: '첨부 이미지 및 BLOB 자산 매핑', count: dbStats?.counts?.rowImages || 0, badge: '이미지 자산' },
+                    { name: 'document_history', desc: '문서 이력 및 타임머신 스냅샷', count: dbStats?.counts?.documentHistory || 0, badge: '이력 스냅샷' },
+                    { name: 'auth_users', desc: '시스템 사용자 계정 및 권한 데이터', count: dbStats?.counts?.authUsers || 0, badge: '보안 계정' },
+                    { name: 'user_groups', desc: '팀 그룹 및 멤버십 권한 데이터', count: dbStats?.counts?.userGroups || 0, badge: '그룹 접근' },
+                  ].map((row) => (
+                    <button type="button" key={row.name} onClick={() => { setDbTableSearch(''); void loadDbTable(row.name, 0, ''); }} className={`grid w-full grid-cols-[160px_1fr_100px_100px] items-center p-3 text-left hover:bg-amber-50 dark:hover:bg-stone-800/50 cursor-pointer ${selectedDbTable === row.name ? 'bg-amber-50 dark:bg-stone-800' : ''}`}>
+                      <span className="font-mono font-bold text-amber-700 dark:text-amber-400">{row.name}</span>
+                      <span className="text-stone-600 dark:text-stone-300">{row.desc}</span>
+                      <span className="font-mono font-bold text-stone-900 dark:text-stone-100 text-right pr-4">{row.count.toLocaleString()}건</span>
+                      <span className="inline-flex items-center justify-center px-2 py-0.5 rounded-md font-bold text-[10px] bg-stone-200/70 dark:bg-stone-800 text-stone-700 dark:text-stone-300">
+                        {row.badge}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {selectedDbTable && <section className="fixed inset-5 z-40 m-auto flex max-h-[85vh] w-[min(1100px,calc(100vw-40px))] flex-col overflow-hidden rounded-xl border border-stone-200 bg-white shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+                <header className="flex items-center justify-between gap-3 border-b bg-stone-100/70 px-4 py-3 dark:border-stone-700 dark:bg-stone-800/60">
+                  <div><h4 className="font-bold">{selectedDbTable} 데이터</h4><p className="text-xs text-stone-500">총 {dbTablePage?.total ?? '…'}건 · 페이지당 50건</p></div>
+                  <button type="button" onClick={() => { setSelectedDbTable(''); setDbTablePage(null); }} className={buttonClass}>닫기</button>
+                </header>
+                <form className="flex gap-2 border-b p-3 dark:border-stone-700" onSubmit={event => { event.preventDefault(); void loadDbTable(selectedDbTable, 0, dbTableSearch); }}><input value={dbTableSearch} onChange={event => setDbTableSearch(event.target.value)} placeholder="전체 컬럼에서 검색" className="min-w-0 flex-1 rounded-lg border border-stone-300 bg-transparent px-3 py-2 text-sm dark:border-stone-700" /><button type="submit" className={buttonClass}>검색</button>{dbTableSearch && <button type="button" className={buttonClass} onClick={() => { setDbTableSearch(''); void loadDbTable(selectedDbTable, 0, ''); }}>초기화</button>}</form>
+                {dbTableBusy ? <p className="p-8 text-center text-sm text-stone-500">불러오는 중…</p> : dbTablePage && <>
+                  <div className="min-h-0 flex-1 overflow-auto"><table className="min-w-full border-collapse text-xs"><thead className="sticky top-0 bg-stone-100 dark:bg-stone-800"><tr>{dbTablePage.columns.filter(c => c !== '__admin_rowid').map(column => <th key={column} className="whitespace-nowrap border-b px-3 py-2 text-left font-semibold">{column}</th>)}<th className="border-b px-3 py-2">상세</th></tr></thead><tbody>{dbTablePage.rows.map((row, index) => <tr key={index} className="border-b last:border-0 dark:border-stone-800">{dbTablePage.columns.filter(c => c !== '__admin_rowid').map(column => <td key={column} className="max-w-64 whitespace-pre-wrap break-all px-3 py-2 align-top">{typeof row[column] === 'string' ? row[column] as string : JSON.stringify(row[column]) ?? 'null'}</td>)}<td className="px-3 py-2"><button type="button" className="whitespace-nowrap text-amber-700 underline dark:text-amber-300" onClick={() => void loadDbRowDetail(selectedDbTable, dbTablePage.offset + index)}>자세히 보기</button></td></tr>)}</tbody></table>{dbTablePage.rows.length === 0 && <p className="p-6 text-center text-stone-500">레코드가 없습니다.</p>}</div>
+                  <footer className="flex items-center justify-between border-t px-4 py-2 dark:border-stone-700"><span className="text-xs text-stone-500">{dbTablePage.total ? dbTablePage.offset + 1 : 0}–{Math.min(dbTablePage.offset + dbTablePage.rows.length, dbTablePage.total)} / {dbTablePage.total}</span><div className="flex gap-2"><button type="button" disabled={dbTablePage.offset <= 0} onClick={() => void loadDbTable(selectedDbTable, Math.max(0, dbTablePage.offset - dbTablePage.limit))} className={buttonClass}>이전</button><button type="button" disabled={dbTablePage.offset + dbTablePage.limit >= dbTablePage.total} onClick={() => void loadDbTable(selectedDbTable, dbTablePage.offset + dbTablePage.limit)} className={buttonClass}>다음</button></div></footer>
+                </>}
+              </section>}
+              {selectedDbTable && <div className="fixed inset-0 z-30 bg-black/45" onClick={() => { setSelectedDbTable(''); setDbTablePage(null); setDbRowDetail(null); }} />}
+              {dbRowDetail && <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 p-5" onClick={() => setDbRowDetail(null)}><section className="max-h-[85vh] w-full max-w-4xl overflow-auto rounded-2xl bg-white p-5 shadow-2xl dark:bg-stone-900" onClick={event => event.stopPropagation()}><div className="mb-4 flex items-center justify-between"><h3 className="text-lg font-bold">레코드 상세</h3><button type="button" className={buttonClass} onClick={() => setDbRowDetail(null)}>닫기</button></div><div className="space-y-3">{Object.entries(dbRowDetail).map(([key, value]) => <div key={key} className="rounded-lg border p-3 dark:border-stone-700"><b className="mb-2 block text-xs text-stone-500">{key}</b><pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs">{typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? 'null'}</pre></div>)}</div></section></div>}
+            </>
+          )}
         </main>
+        {busy && <div className="absolute inset-0 z-30 flex items-center justify-center bg-stone-950/35 backdrop-blur-[2px]" role="status" aria-live="polite">
+          <div className="flex min-w-52 flex-col items-center gap-3 rounded-2xl border border-stone-200 bg-white/95 px-7 py-6 text-stone-800 shadow-2xl dark:border-stone-700 dark:bg-stone-900/95 dark:text-stone-100">
+            <Loader2 size={30} className="animate-spin text-amber-500" />
+            <span className="text-sm font-semibold">관리자 데이터를 불러오는 중…</span>
+          </div>
+        </div>}
         <footer className="flex items-center justify-between border-t px-5 py-3 text-xs text-stone-500 dark:border-stone-700 shrink-0"><span>{user.displayName || user.email} · 마스터 계정</span><span>기본 읽기/쓰기 권한: ON</span></footer>
       </section>
     </div>,

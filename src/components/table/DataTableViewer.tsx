@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useState, useRef, useMemo, useEffect, useCallback, useDeferredValue } from 'react';
+import React, { Suspense, lazy, useState, useRef, useMemo, useEffect, useCallback, useDeferredValue, useTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { TableDocument, TableColumn, TableRow, ColumnType, RowDensity } from '../../types';
@@ -236,6 +236,7 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   const [isFilterConfigOpen, setIsFilterConfigOpen] = useState(false);
   const [filterConfigAnchorRect, setFilterConfigAnchorRect] = useState<DOMRect | null>(null);
   const filterConfigRef = useRef<HTMLDivElement | null>(null);
+  const [isPending, startTransition] = useTransition();
 
   // Reset filters, selection, and sync filter column configuration when table changes
   useEffect(() => {
@@ -1314,7 +1315,13 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
   };
 
   return (
-    <div className="flex-1 h-screen flex flex-col overflow-hidden bg-white dark:bg-[#181818] select-none transition-colors">
+    <div className="relative flex-1 h-screen flex flex-col overflow-hidden bg-white dark:bg-[#181818] select-none transition-colors">
+      {/* Sleek Top Progress Bar during search, filter, or rendering */}
+      {(isSearching || isPending) && (
+        <div className="absolute top-0 left-0 right-0 h-1 bg-amber-200/50 dark:bg-amber-950/50 overflow-hidden z-50">
+          <div className="h-full bg-amber-500 animate-pulse w-3/4 transition-all duration-300" />
+        </div>
+      )}
       {/* Table Action Bar (Sticky Top Pinned) */}
       {/* 🟢 메모 보드 모드가 아닐 때만 상단 헤더/툴바 표시 */}
       {activeViewMode !== 'memo' && (
@@ -1363,7 +1370,12 @@ export const DataTableViewer: React.FC<DataTableViewerProps> = ({
               type="text"
               placeholder="테이블 내 실시간 데이터 필터링..."
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                startTransition(() => {
+                  setSearchQuery(val);
+                });
+              }}
               className="w-full pl-9 pr-16 py-1.5 bg-white dark:bg-[#252525] border border-stone-200 dark:border-[#383838] rounded-xl text-xs placeholder:text-stone-400 dark:placeholder:text-[#777777] text-stone-800 dark:text-[#f0f0f0] outline-none focus:border-amber-500 transition-colors shadow-2xs"
             />
             {searchQuery && (

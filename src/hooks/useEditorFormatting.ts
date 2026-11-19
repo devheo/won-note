@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { changeTextBlockIndent } from '../utils/editorIndent';
 
 function applyWholeTableTextStyle(editor: any, attribute: 'fontFamily' | 'fontSize', value: string | null) {
   const { state, view } = editor;
@@ -78,7 +79,7 @@ export function useEditorFormatting({
       (editor.chain().focus() as any).sinkListItem('taskItem').run();
       return;
     }
-    editor.chain().focus().insertContent('    ').run();
+    changeTextBlockIndent(editor, 24);
   }, [editor]);
 
   const handleOutdent = useCallback(() => {
@@ -91,7 +92,7 @@ export function useEditorFormatting({
       (editor.chain().focus() as any).liftListItem('taskItem').run();
       return;
     }
-    editor.chain().focus().lift('blockquote').run();
+    changeTextBlockIndent(editor, -24);
   }, [editor]);
 
   const handleApplyTextColor = useCallback(

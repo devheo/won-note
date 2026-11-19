@@ -228,7 +228,22 @@ export const DrawingOverlay: React.FC<{
       const dx = (point.x - gesture.start.x) * gesture.bounds.width;
       const dy = (point.y - gesture.start.y) * gesture.coordinateHeight;
       setMoveOffset({ x: dx, y: dy });
-    } else { gesture.points.push(point); setEraserPointer(point); }
+    } else {
+      const previous = gesture.points[gesture.points.length - 1];
+      gesture.points.push(point);
+      setEraserPointer(point);
+      // Commit each short segment during the drag so the affected ink disappears
+      // immediately. Keep the gesture's working copy in sync for subsequent hits.
+      const currentLayer = drawingLayer(editor);
+      if (previous && currentLayer) {
+        const updated = eraseFromDrawing(gesture.strokes, [previous, point], gesture.bounds, gesture.coordinateHeight, gesture.scaleY);
+        if (updated) {
+          gesture.strokes = updated;
+          dispatchDrawingChange(editor, currentLayer.position, { strokes: updated });
+          gesture.position = currentLayer.position;
+        }
+      }
+    }
   };
 
   const onPointerUp = (event: React.PointerEvent<SVGSVGElement>) => {
@@ -252,11 +267,7 @@ export const DrawingOverlay: React.FC<{
         dispatchDrawingChange(editor, gesture.position, { strokes: next });
       }
       setMoveOffset({ x: 0, y: 0 });
-    } else {
-      const updated = eraseFromDrawing(gesture.strokes, gesture.points, gesture.bounds, gesture.coordinateHeight, gesture.scaleY);
-      if (updated) dispatchDrawingChange(editor, gesture.position, { strokes: updated });
-      setEraserPointer(null);
-    }
+    } else setEraserPointer(null);
     if (svgRef.current?.hasPointerCapture(event.pointerId)) svgRef.current.releasePointerCapture(event.pointerId);
   };
 
@@ -278,7 +289,8 @@ export const DrawingOverlay: React.FC<{
       const isMoving = gestureRef.current?.kind === 'move' && gestureRef.current.strokeIndex === index;
       const coordinateHeight = getCoordinateHeight(overlayHeight);
       const moveBoundsWidth = gestureRef.current?.kind === 'move' ? gestureRef.current.bounds.width : svgRef.current?.getBoundingClientRect().width || 1;
-      const transform = isMoving ? `translate(${moveOffset.x * 1000 / moveBoundsWidth} ${moveOffset.y})` : undefined;
+      const moveBoundsHeight = gestureRef.current?.kind === 'move' ? gestureRef.current.bounds.height : svgRef.current?.getBoundingClientRect().height || overlayHeight || 1;
+      const transform = isMoving ? `translate(${moveOffset.x * 1000 / moveBoundsWidth} ${moveOffset.y * overlayHeight / moveBoundsHeight})` : undefined;
       const path = stroke.points.map((point, pointIndex) => `${pointIndex ? 'L' : 'M'} ${point.x * 1000} ${point.y * coordinateHeight}`).join(' ');
       return <g key={index} transform={transform}>
         {isSelected && <path d={path} fill="none" stroke="#6366f1" strokeWidth={stroke.width + 6} strokeLinecap="round" strokeLinejoin="round" opacity="0.35" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
@@ -286,6 +298,6 @@ export const DrawingOverlay: React.FC<{
       </g>;
     })}
     {tool === 'eraser' && eraserPointer && <ellipse cx={eraserPointer.x * 1000} cy={eraserPointer.y * getCoordinateHeight(overlayHeight)} rx={11 * 1000 / (svgRef.current?.getBoundingClientRect().width || 1)} ry={11 / ((svgRef.current?.getBoundingClientRect().height || overlayHeight) / (svgRef.current?.clientHeight || overlayHeight || 1))} fill="rgba(236,72,153,0.12)" stroke="#db2777" strokeWidth="1" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
-    {tool !== 'select' && <rect width="1000" height="1000" fill="transparent" pointerEvents="all" />}
+    {tool !== 'select' && <rect width="1000" height={Math.max(1, overlayHeight)} fill="transparent" pointerEvents="all" />}
   </svg>;
 };

@@ -1078,14 +1078,29 @@ export const AiAgentDrawer: React.FC<AiAgentDrawerProps> = ({
               {/* Row Selector (When in Single Row Mode) */}
               {dataEditMode === 'row' && (
                 <div className="space-y-2 pt-2 border-t border-stone-200/80 dark:border-[#333]">
-                  <div className="flex items-center justify-between text-[11px] text-stone-500 dark:text-stone-400 font-medium">
-                    <span>수정 대상 행 선택:</span>
-                    {currentTargetRow && (
-                      <span className="text-amber-600 dark:text-amber-400 font-mono">
-                        ID: {currentTargetRow.id}
-                      </span>
-                    )}
-                  </div>
+                  {effectiveRows.length === 0 ? (
+                    <div className="p-3 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/50 rounded-xl text-xs text-amber-800 dark:text-amber-200 flex flex-col gap-2">
+                      <span>💡 현재 노트 문서 편집 모드입니다. 문서 양식 변환, 맞춤법/문체 교정, RAG Q&A 기능은 <strong>'노트 AI 어시스턴트'</strong> 탭에서 바로 사용할 수 있습니다.</span>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('editor')}
+                        className="self-start px-3 py-1 bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold rounded-lg text-[11px] cursor-pointer transition-colors"
+                      >
+                        노트 AI 어시스턴트 탭으로 이동
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between text-[11px] text-stone-500 dark:text-stone-400 font-medium">
+                        <span>수정 대상 행 선택:</span>
+                        {currentTargetRow && (
+                          <span className="text-amber-600 dark:text-amber-400 font-mono">
+                            ID: {currentTargetRow.id}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  )}
                   <select
                     value={selectedRowId}
                     onChange={(e) => {

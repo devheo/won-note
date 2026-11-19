@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { TreeItem, ItemType, WonNoteDocument, TableDocument } from '../../types';
 import { useItemExchange, type ReceivedItem } from '../../hooks/useItemExchange';
@@ -90,7 +90,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingTitle, setEditingTitle] = useState('');
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
-  const { chooseImport, exportNote, transferUi } = useNoteTransfer(documents, onUpdateDocument);
+  const { chooseImport, exportNote, transferUi } = useNoteTransfer(documents, onUpdateDocument, onAddNote);
   const exchange = useItemExchange(tree, documents, tables, onImportSharedItem, onImportSharedFolder);
   const [moveMenuOpenId, setMoveMenuOpenId] = useState<string | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState<{ right: number; top?: number; bottom?: number } | null>(null);
@@ -117,18 +117,24 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
       if (action === 'exchange-import') exchange.chooseImport();
       else if (action.startsWith('import:')) {
         const format = action.slice(7) as 'ppt' | 'pptx' | 'pdf' | 'md' | 'excel' | 'docx';
-        void (async () => {
-          if (!onAddNote) return;
-          const noteId = await onAddNote(selectedFolderId, '가져온 문서');
-          if (noteId) chooseImport(noteId, format, true);
-        })();
+        chooseImport(selectedFolderId || '', format, true);
       }
       else if (activeDocId && action === 'export:wonnote') void exchange.exportItem(activeDocId);
       else if (selectedFolderId && action === 'export:folder') void exchange.exportItem(selectedFolderId);
       else if (activeDocId && (action === 'export:pdf' || action === 'export:pptx' || action === 'export:docx')) void exportNote(activeDocId, action.slice(7) as 'pdf' | 'pptx' | 'docx');
     };
     window.addEventListener('wonbee:file-transfer', handleFileTransfer);
-    return () => window.removeEventListener('wonbee:file-transfer', handleFileTransfer);
+    const handleExpandFolder = (event: Event) => {
+      const folderId = (event as CustomEvent<string>).detail;
+      if (folderId) {
+        setExpandedFolderIds((prev) => new Set([...prev, folderId]));
+      }
+    };
+    window.addEventListener('wonbee:expand-folder', handleExpandFolder);
+    return () => {
+      window.removeEventListener('wonbee:file-transfer', handleFileTransfer);
+      window.removeEventListener('wonbee:expand-folder', handleExpandFolder);
+    };
   }, [activeDocId, selectedFolderId, chooseImport, exportNote, exchange, onAddNote]);
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(() => {
     // Default expand folders that contain active table
@@ -151,6 +157,22 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
       setExpandedFolderIds((previous) => new Set([...previous, ...newlyExpandedFolders]));
     }
   }, [tree]);
+
+  const getResolvedParentId = useCallback((): string | null => {
+    if (selectedFolderId) {
+      const selectedItem = tree.find((item) => item.id === selectedFolderId);
+      if (selectedItem?.type === 'folder') return selectedItem.id;
+      if (selectedItem?.parentId) return selectedItem.parentId;
+      return selectedItem?.id || null;
+    }
+    if (activeDocId) {
+      const activeItem = tree.find((item) => item.id === activeDocId);
+      if (activeItem?.type === 'folder') return activeItem.id;
+      if (activeItem?.parentId) return activeItem.parentId;
+      return activeItem?.id || null;
+    }
+    return null;
+  }, [tree, selectedFolderId, activeDocId]);
 
   const [isCreateMenuOpen, setIsCreateMenuOpen] = useState(false);
 
@@ -247,6 +269,44 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     setMenuOpenId(null);
   };
 
+  const handleMoveToTop = (itemId: string) => {
+    const item = tree.find((entry) => entry.id === itemId);
+    if (!item) return;
+    const parentId = item.parentId;
+    const filtered = tree.filter((entry) => entry.id !== itemId);
+    const firstSiblingIndex = filtered.findIndex((entry) => entry.parentId === parentId);
+    if (firstSiblingIndex !== -1) {
+      filtered.splice(firstSiblingIndex, 0, { ...item, updatedAt: Date.now() });
+    } else {
+      filtered.unshift({ ...item, updatedAt: Date.now() });
+    }
+    onUpdateTree(filtered);
+    setMoveMenuOpenId(null);
+    setMenuOpenId(null);
+  };
+
+  const handleMoveToBottom = (itemId: string) => {
+    const item = tree.find((entry) => entry.id === itemId);
+    if (!item) return;
+    const parentId = item.parentId;
+    const filtered = tree.filter((entry) => entry.id !== itemId);
+    let lastIndex = -1;
+    for (let i = filtered.length - 1; i >= 0; i--) {
+      if (filtered[i].parentId === parentId) {
+        lastIndex = i;
+        break;
+      }
+    }
+    if (lastIndex !== -1) {
+      filtered.splice(lastIndex + 1, 0, { ...item, updatedAt: Date.now() });
+    } else {
+      filtered.push({ ...item, updatedAt: Date.now() });
+    }
+    onUpdateTree(filtered);
+    setMoveMenuOpenId(null);
+    setMenuOpenId(null);
+  };
+
   const canMoveInto = (itemId: string, folderId: string) => {
     let parent = tree.find((entry) => entry.id === folderId);
     while (parent) {
@@ -279,20 +339,10 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     const offsetY = e.clientY - rect.top;
     const height = rect.height;
 
-    if (targetItem.type === 'folder') {
-      if (offsetY < height * 0.25) {
-        setDropPosition('before');
-      } else if (offsetY > height * 0.75) {
-        setDropPosition('after');
-      } else {
-        setDropPosition('inside');
-      }
+    if (offsetY < height * 0.5) {
+      setDropPosition('before');
     } else {
-      if (offsetY < height * 0.5) {
-        setDropPosition('before');
-      } else {
-        setDropPosition('after');
-      }
+      setDropPosition('after');
     }
 
     setDropTargetId(targetItem.id);
@@ -318,10 +368,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
     const dragged = tree.find((t) => t.id === draggedItemId);
     if (!dragged) return;
 
-    let newParentId: string | null = targetItem.parentId;
-    if (dropPosition === 'inside' && targetItem.type === 'folder') {
-      newParentId = targetItem.id;
-    }
+    const newParentId: string | null = targetItem.parentId;
 
     const filteredTree = tree.filter((t) => t.id !== draggedItemId);
     const targetIndex = filteredTree.findIndex((t) => t.id === targetItem.id);
@@ -332,14 +379,7 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
       updatedAt: Date.now(),
     };
 
-    let insertIndex = targetIndex;
-    if (dropPosition === 'after') {
-      insertIndex = targetIndex + 1;
-    } else if (dropPosition === 'inside') {
-      insertIndex = targetIndex + 1;
-      const targetInFiltered = filteredTree.find((t) => t.id === targetItem.id);
-      if (targetInFiltered) targetInFiltered.isExpanded = true;
-    }
+    let insertIndex = dropPosition === 'after' ? targetIndex + 1 : targetIndex;
 
     filteredTree.splice(insertIndex, 0, updatedDragged);
     onUpdateTree(filteredTree);
@@ -645,17 +685,38 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
 
                     <button
                       onClick={() => setMoveMenuOpenId(moveMenuOpenId === item.id ? null : item.id)}
-                      className="w-full px-3 py-1.5 text-left flex items-center gap-2 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium"
+                      className="w-full px-3 py-1.5 text-left flex items-center justify-between hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 font-medium cursor-pointer"
                     >
-                      <GripVertical className="w-3.5 h-3.5 text-stone-500" />
-                      이동 위치 선택
+                      <span className="flex items-center gap-2">
+                        <GripVertical className="w-3.5 h-3.5 text-stone-500" />
+                        <span>계층/위치 이동</span>
+                      </span>
+                      <ChevronRight className="w-3 h-3 text-stone-400" />
                     </button>
                     {moveMenuOpenId === item.id && (
-                      <div className="max-h-40 overflow-y-auto border-y border-stone-100 bg-stone-50 py-1 dark:border-stone-800 dark:bg-stone-950/60">
-                        <button onClick={() => handleMoveItem(item.id, null)} className="w-full px-6 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40">최상위</button>
-                        {tree.filter((candidate) => candidate.type === 'folder' && canMoveInto(item.id, candidate.id)).map((folder) => (
-                          <button key={folder.id} onClick={() => handleMoveItem(item.id, folder.id)} className="w-full truncate px-6 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40">📁 {folder.title}</button>
-                        ))}
+                      <div className="max-h-48 overflow-y-auto border-y border-stone-100 bg-stone-50 py-1 dark:border-stone-800 dark:bg-stone-950/80 text-xs shadow-inner">
+                        <button
+                          type="button"
+                          onClick={() => handleMoveToTop(item.id)}
+                          className="w-full px-3 py-1.5 text-left hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-700 dark:text-stone-300 flex items-center gap-1.5 cursor-pointer font-medium"
+                        >
+                          <span>⬆️ 맨 위로 이동 (순서 정렬)</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleMoveToBottom(item.id)}
+                          className="w-full px-3 py-1.5 text-left hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 flex items-center gap-1.5 cursor-pointer font-medium"
+                        >
+                          <span>⬇️ 맨 아래로 이동 (순서 정렬)</span>
+                        </button>
+                        <div className="my-1 border-t border-stone-200 dark:border-stone-800" />
+                        <button
+                          type="button"
+                          onClick={() => handleMoveItem(item.id, null)}
+                          className="w-full px-3 py-1.5 text-left hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 flex items-center gap-1.5 cursor-pointer font-medium"
+                        >
+                          <span>🏠 최상위(루트)로 이동</span>
+                        </button>
                       </div>
                     )}
 
@@ -797,22 +858,22 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
             >
               <button
                 type="button"
-                onClick={() => onAddTable(null)}
-                className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                onClick={() => onAddTable(getResolvedParentId())}
+                className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold cursor-pointer"
               >
                 <Table className="w-4 h-4 text-blue-500" />
                 <span>📋 새 데이터 테이블</span>
               </button>
 
-              {onAddParentNote && <button type="button" onClick={() => onAddParentNote()} className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"><FileText className="w-4 h-4 text-amber-500" /><span>📝 새 노트 섹션</span></button>}
+              {onAddParentNote && <button type="button" onClick={() => onAddParentNote()} className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold cursor-pointer"><FileText className="w-4 h-4 text-amber-500" /><span>📝 새 노트 섹션</span></button>}
 
-              {onAddNote && <button type="button" onClick={() => onAddNote(null)} className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"><FileText className="w-4 h-4 text-amber-600" /><span>📄 새 노트 페이지</span></button>}
+              {onAddNote && <button type="button" onClick={() => onAddNote(getResolvedParentId())} className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold cursor-pointer"><FileText className="w-4 h-4 text-amber-600" /><span>📄 새 노트 페이지</span></button>}
 
               {onAddTodoBoard && (
                 <button
                   type="button"
-                  onClick={() => onAddTodoBoard(null)}
-                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                  onClick={() => onAddTodoBoard(getResolvedParentId())}
+                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold cursor-pointer"
                 >
                   <Layers className="w-4 h-4 text-emerald-500" />
                   <span>🎯 새 TO-DO 칸반보드</span>
@@ -822,8 +883,8 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
               {onAddCalendarTable && (
                 <button
                   type="button"
-                  onClick={() => onAddCalendarTable(null)}
-                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                  onClick={() => onAddCalendarTable(getResolvedParentId())}
+                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold cursor-pointer"
                 >
                   <Calendar className="w-4 h-4 text-purple-500" />
                   <span>📅 새 일정 캘린더</span>
@@ -833,8 +894,8 @@ export const InfiniteTreeSidebar: React.FC<InfiniteTreeSidebarProps> = ({
               {onAddMemoBoard && (
                 <button
                   type="button"
-                  onClick={() => onAddMemoBoard(null)}
-                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold"
+                  onClick={() => onAddMemoBoard(getResolvedParentId())}
+                  className="w-full px-3 py-2 rounded-xl text-left flex items-center gap-2 hover:bg-amber-50 dark:hover:bg-amber-950/40 text-stone-800 dark:text-stone-200 font-semibold cursor-pointer"
                 >
                   <StickyNote className="w-4 h-4 text-amber-500" />
                   <span>📌 새 스티커 메모보드</span>

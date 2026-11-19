@@ -10,15 +10,19 @@ type PdfSession = Awaited<ReturnType<typeof openPdfImport>>;
 
 export type NoteImportFormat = 'ppt' | 'pptx' | 'pdf' | 'md' | 'excel' | 'docx';
 export type NoteExportFormat = 'pptx' | 'pdf' | 'docx';
-export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUpdate?: (doc: WonNoteDocument) => void) {
-  const latest = useRef({ documents, onUpdate });
-  latest.current = { documents, onUpdate };
+export function useNoteTransfer(
+  documents: Record<string, WonNoteDocument>,
+  onUpdate?: (doc: WonNoteDocument) => void,
+  onAddNote?: (parentId: string | null, title?: string, content?: string) => Promise<string | void> | string | void,
+) {
+  const latest = useRef({ documents, onUpdate, onAddNote });
+  latest.current = { documents, onUpdate, onAddNote };
   const input = useRef<HTMLInputElement>(null);
   const target = useRef<{ id: string; format: NoteImportFormat; newNote?: boolean } | null>(null);
   const busyRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<{ text: string; error?: boolean } | null>(null);
-  const [pdfPending, setPdfPending] = useState<{ session: PdfSession; id: string; name: string; newNoteTitle?: string } | null>(null);
+  const [pdfPending, setPdfPending] = useState<{ session: PdfSession; id: string; name: string; newNoteTitle?: string; isNewNote?: boolean } | null>(null);
   const sessionRef = useRef<PdfSession | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const [pageRange, setPageRange] = useState('');
@@ -54,18 +58,31 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
     input.current.value = '';
     input.current.click();
   };
-  const commitImport = (
+  const commitImport = async (
     id: string,
     result: { html: string; pageCount?: number; slideCount?: number; warnings: string[] },
     newNoteTitle?: string,
+    isNewNote = false,
   ) => {
-    const note = getNote(id);
-    const content = (note.content || '') + (note.content && note.content !== '<p></p>' ? '<hr>' : '') + result.html;
-    if (!latest.current.onUpdate) throw new Error('노트 저장 기능을 사용할 수 없습니다.');
-    replaceNoteContent(note.id, content);
-    latest.current.onUpdate({ ...note, title: newNoteTitle || note.title, content, updatedAt: Date.now() });
+    let noteTitle = newNoteTitle;
+    if (isNewNote) {
+      if (!latest.current.onAddNote) throw new Error('노트 생성 기능을 사용할 수 없습니다.');
+      const finalTitle = newNoteTitle || '가져온 노트';
+      const createdId = await latest.current.onAddNote(id || null, finalTitle, result.html);
+      noteTitle = finalTitle;
+      if (createdId) {
+        replaceNoteContent(createdId, result.html);
+      }
+    } else {
+      const note = getNote(id);
+      noteTitle = newNoteTitle || note.title;
+      const content = (note.content || '') + (note.content && note.content !== '<p></p>' ? '<hr>' : '') + result.html;
+      if (!latest.current.onUpdate) throw new Error('노트 저장 기능을 사용할 수 없습니다.');
+      replaceNoteContent(note.id, content);
+      latest.current.onUpdate({ ...note, title: noteTitle, content, updatedAt: Date.now() });
+    }
     const count = result.pageCount !== undefined ? `${result.pageCount}페이지` : result.slideCount !== undefined ? `${result.slideCount}개 슬라이드` : '문서 내용';
-    setNotice({ text: `“${newNoteTitle || note.title}”에 ${count}를 가져왔습니다. ${result.warnings.join(' ')}` });
+    setNotice({ text: `“${noteTitle}”에 ${count}를 가져왔습니다. ${result.warnings.join(' ')}` });
   };
   const load = async (file?: File) => {
     const selected = target.current;
@@ -81,7 +98,9 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         throw new Error(`${allowedExtensions.map(value => `.${value}`).join(', ')} 파일을 선택해주세요.`);
       const limit = selected.format === 'pdf' ? 250 : 50;
       if (file.size > limit * 1024 * 1024) throw new Error(`${limit}MB 이하의 파일을 선택해주세요.`);
-      getNote(selected.id);
+      if (!selected.newNote) {
+        getNote(selected.id);
+      }
       const importedTitle = selected.newNote
         ? file.name.replace(/\.[^.]+$/, '').replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').trim().slice(0, 100) || '가져온 노트'
         : undefined;
@@ -95,7 +114,7 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         setPdfMode('text-images');
         setPdfError('');
         setProgress(null);
-        setPdfPending({ session, id: selected.id, name: file.name, newNoteTitle: importedTitle });
+        setPdfPending({ session, id: selected.id, name: file.name, newNoteTitle: importedTitle, isNewNote: selected.newNote });
         waitingForPdf = true;
         setNotice(null);
         return;
@@ -114,34 +133,36 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
       }
       if (selected.format === 'ppt' || selected.format === 'pptx') {
         const result = await (await import('../utils/pptxConversion')).importPptx(data);
-        commitImport(selected.id, result, importedTitle);
+        await commitImport(selected.id, result, importedTitle, selected.newNote);
       } else if (selected.format === 'md') {
         const { markdownToHtml } = await import('../utils/markdownHelper');
         const html = markdownToHtml((await file.text()).replace(/^\uFEFF/, ''));
-        commitImport(selected.id, { html, warnings: [] }, importedTitle);
+        await commitImport(selected.id, { html, warnings: [] }, importedTitle, selected.newNote);
       } else if (selected.format === 'docx') {
         const result = await (await import('../utils/docxConversion')).docxToEditorHtml(data);
-        commitImport(selected.id, {
+        await commitImport(selected.id, {
           html: result.html,
           warnings: result.hasEmbeddedMedia ? ['본문과 표를 가져왔으며, 문서에 포함된 이미지는 제외했습니다.'] : [],
-        }, importedTitle);
+        }, importedTitle, selected.newNote);
       } else if (selected.format === 'excel') {
         if (extension === 'xlsx') {
           const result = await (await import('../utils/xlsxConversion')).xlsxToEditorHtml(data, progress => setNotice({ text: `${file.name} · 시트 ${progress.sheetIndex}/${progress.sheetCount} · ${progress.rowsProcessed}/${progress.totalRows}행 가져오는 중…` }));
-          commitImport(selected.id, { html: result.html, warnings: result.truncated ? ['크기 제한으로 일부 시트/행/열을 생략했습니다.'] : [] }, importedTitle);
+          await commitImport(selected.id, { html: result.html, warnings: result.truncated ? ['크기 제한으로 일부 시트/행/열을 생략했습니다.'] : [] }, importedTitle, selected.newNote);
         } else {
           const { convertTextDataToEditorContent } = await import('../utils/csvParser');
           const result = convertTextDataToEditorContent((await file.text()).replace(/^\uFEFF/, ''), {
             format: 'csv', delimiter: extension === 'tsv' ? 'tab' : 'auto', outputType: 'table', tableWidth: '100%',
           });
-          commitImport(selected.id, { html: result.html, warnings: [] }, importedTitle);
+          await commitImport(selected.id, { html: result.html, warnings: [] }, importedTitle, selected.newNote);
         }
       }
     } catch (error) {
-      setNotice({ text: error instanceof Error ? error.message : '가져오기에 실패했습니다.', error: true });
-    } finally {
       if (!waitingForPdf) finish();
-    }
+      setNotice({
+          text: error instanceof Error ? error.message : '가져오기에 실패했습니다.',
+          error: true
+        });
+    } finally {}
   };
   const cancelPdf = async () => {
     abortRef.current?.abort();
@@ -176,7 +197,7 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
         onProgress: setProgress,
       });
       assets = result.assetIds;
-      commitImport(pdfPending.id, result, pdfPending.newNoteTitle);
+      await commitImport(pdfPending.id, result, pdfPending.newNoteTitle, pdfPending.isNewNote);
       committed = true;
     } catch (error) {
       if (!committed && assets.length) await discardNoteImages(assets);
@@ -279,6 +300,7 @@ export function useNoteTransfer(documents: Record<string, WonNoteDocument>, onUp
                 className="mt-1 w-full rounded border border-stone-300 bg-white p-2 text-stone-900"
               >
                 <option value="text-images">텍스트 + 원본 이미지</option>
+                <option value="images-text">이미지 전체 후 텍스트 전체</option>
                 <option value="text">텍스트만 (대용량 문서에 권장)</option>
                 <option value="images">원본 이미지만</option>
               </select>

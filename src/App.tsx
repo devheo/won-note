@@ -4,6 +4,7 @@
  */
 
 import React, { Suspense, lazy, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import {
   WorkspaceData,
   TableDocument,
@@ -17,7 +18,8 @@ import {
   ensureUpdateDateColumnInTable,
   applyAutoUpdateDateToRow,
 } from './utils/dateColumnUtils';
-import { WorkspaceRepositoryFactory } from './services/storage/repository';
+import { LOCAL_SERVER_VERSION_KEY, WorkspaceRepositoryFactory } from './services/storage/repository';
+import { cancelNoteEditorPendingUpdate, currentNoteContent } from './services/noteEditorBridge';
 import { wonbeeDexieDB } from './services/storage/dexieDb';
 import { useWorkspaceInit } from './hooks/useWorkspaceInit';
 import { localFileService } from './services/storage/localFileService';
@@ -68,6 +70,7 @@ import type { ReceivedItem } from './hooks/useItemExchange';
 import { packItem, packFolder } from './utils/itemExchange';
 import { createSseConnection } from './services/sseService';
 import { migrateTableToWonNoteFormat } from './utils/migrateTableToWonNoteFormat';
+import { duplicateNoteImageAssets } from './utils/noteImageAssets';
 import { useCalendarReminders } from './hooks/useCalendarReminders';
 import { CalendarNotificationToast } from './components/calendar/CalendarNotificationToast';
 const AiAgentDrawer = lazy(() => import('./components/agent/AiAgentDrawer').then(m => ({ default: m.AiAgentDrawer })));
@@ -80,6 +83,8 @@ import {
   ChevronRight,
   Search,
   X,
+  AlertTriangle,
+  Trash2,
 } from 'lucide-react';
 
 export default function App() {
@@ -121,8 +126,13 @@ export default function App() {
   const latestWorkspaceRef = useRef(workspace);
   latestWorkspaceRef.current = workspace;
   const [activeDocId, setActiveDocId] = useState<string | null>(() => localStorage.getItem(STORAGE_KEYS.activeDocument));
+  const [pendingCloseDocumentId, setPendingCloseDocumentId] = useState<string | null>(null);
+  const [pendingSwitchToId, setPendingSwitchToId] = useState<string | null>(null);
+  const [isSavingBeforeTabClose, setIsSavingBeforeTabClose] = useState(false);
+  const [isDeletingTreeItem, setIsDeletingTreeItem] = useState(false);
+  const [deleteErrorModalMessage, setDeleteErrorModalMessage] = useState<string | null>(null);
   const [selectedFolderId, setSelectedFolderId] = useState<string | null>(null);
-  const [editorRibbonTab, setEditorRibbonTab] = useState<'home' | 'insert' | 'draw'>('home');
+  const [editorRibbonTab, setEditorRibbonTab] = useState<'home' | 'edit' | 'insert' | 'draw'>('home');
   const [guideTopic, setGuideTopic] = useState<GuideTopic | null>(null);
   useEffect(() => {
     if (selectedFolderId && !workspace.tree.some((item) => item.id === selectedFolderId && item.type === 'folder')) setSelectedFolderId(null);
@@ -227,13 +237,36 @@ export default function App() {
 
   // Switch Active Table & Persist (테이블 전환 시 뷰모드 보장)
   const activateTable = (tableId: string) => {
+    setOpenTabIds(previous => previous.includes(tableId) ? previous : [...previous, tableId]);
     setActiveDocId(null);
     localStorage.removeItem(STORAGE_KEYS.activeDocument);
     setActiveTableId(tableId);
   };
 
+  const noteHasUnsavedChanges = (id: string) => {
+    const note = latestWorkspaceRef.current.documents?.[id];
+    if (!note) return false;
+    return pendingSaveDocumentRef.current?.id === id || currentNoteContent(id, note.content) !== note.content;
+  };
+
   const handleSelectActiveTable = (tableId: string | null) => {
     if (!tableId) return;
+    if (activeDocId && activeDocId !== tableId) {
+      const activeDoc = latestWorkspaceRef.current.documents?.[activeDocId];
+      if (activeDoc) {
+        const latestContent = currentNoteContent(activeDocId, activeDoc.content);
+        if (latestContent !== activeDoc.content) {
+          const updatedDoc = { ...activeDoc, content: latestContent, updatedAt: Date.now() };
+          const updatedWs = {
+            ...workspace,
+            documents: { ...(workspace.documents || {}), [activeDocId]: updatedDoc },
+            exportedAt: Date.now(),
+          };
+          setWorkspace(updatedWs);
+          scheduleDocumentWorkspaceSave(updatedDoc, updatedWs, true);
+        }
+      }
+    }
     const treeItem = workspace.tree.find((item) => item.id === tableId);
     const existingDocument = workspace.documents?.[tableId];
     if (existingDocument || treeItem?.type === 'document') {
@@ -265,8 +298,8 @@ export default function App() {
     setViewMode(resolveViewModeForTable(tableId));
   };
 
-  const handleCloseTab = (tableId: string) => {
-    if (!workspace.documents?.[tableId]) return;
+  const closeTabNow = (tableId: string) => {
+    if (!workspace.documents?.[tableId] && !workspace.tables?.[tableId]) return;
     const closingIndex = openTabIds.indexOf(tableId);
     const remaining = openTabIds.filter((id) => id !== tableId);
     setOpenTabIds(remaining);
@@ -283,17 +316,71 @@ export default function App() {
     }
   };
 
+  const handleCloseTab = (tableId: string) => {
+    const document = workspace.documents?.[tableId];
+    if (document) {
+      const latestContent = currentNoteContent(tableId, document.content);
+      if (latestContent !== document.content) {
+        const updatedDoc = { ...document, content: latestContent, updatedAt: Date.now() };
+        const updatedWs = {
+          ...workspace,
+          documents: { ...(workspace.documents || {}), [tableId]: updatedDoc },
+          exportedAt: Date.now(),
+        };
+        setWorkspace(updatedWs);
+        scheduleDocumentWorkspaceSave(updatedDoc, updatedWs, true);
+      }
+    }
+    closeTabNow(tableId);
+  };
+
+  const saveAndClosePendingDocument = async () => {
+    if (!pendingCloseDocumentId || isSavingBeforeTabClose) return;
+    const document = latestWorkspaceRef.current.documents?.[pendingCloseDocumentId];
+    if (!document) { setPendingCloseDocumentId(null); return; }
+    setIsSavingBeforeTabClose(true);
+    try {
+      cancelNoteEditorPendingUpdate(document.id);
+      await cancelPendingDocumentSaveAndWait();
+      const updatedDocument = {
+        ...document,
+        content: currentNoteContent(document.id, document.content),
+        updatedAt: Date.now(),
+      };
+      const updatedWorkspace = {
+        ...latestWorkspaceRef.current,
+        documents: { ...(latestWorkspaceRef.current.documents || {}), [document.id]: updatedDocument },
+        exportedAt: updatedDocument.updatedAt,
+      };
+      setWorkspace(updatedWorkspace);
+      latestWorkspaceRef.current = updatedWorkspace;
+      await repository.saveDocument?.(updatedDocument);
+      await syncToLocalFileIfConnected(updatedWorkspace);
+      const switchToId = pendingSwitchToId;
+      setPendingCloseDocumentId(null);
+      setPendingSwitchToId(null);
+      if (switchToId) handleSelectActiveTable(switchToId);
+      else closeTabNow(document.id);
+    } catch (error) {
+      console.error('[WonNote] Could not save note before closing tab:', error);
+      window.alert('노트를 저장하지 못해 탭을 닫지 않았습니다. 다시 시도해주세요.');
+    } finally {
+      setIsSavingBeforeTabClose(false);
+    }
+  };
+
   const handleRenameNote = (id: string, newTitle: string) => {
     const doc = workspace.documents?.[id];
     if (!doc) return;
     handleUpdateDocumentDebounced({ ...doc, title: newTitle, updatedAt: Date.now() });
   };
 
-  const handleDuplicateNote = (id: string) => {
+  const handleDuplicateNote = async (id: string) => {
     const doc = workspace.documents?.[id];
     if (!doc) return;
     const sourceItem = workspace.tree.find((item) => item.id === id);
-    void handleAddNote(sourceItem?.parentId ?? null, `${doc.title} (복사본)`, doc.content);
+    const content = await duplicateNoteImageAssets(doc.content);
+    await handleAddNote(sourceItem?.parentId ?? null, `${doc.title} (복사본)`, content);
   };
 
   const handleDeleteNote = async (id: string) => {
@@ -322,7 +409,7 @@ export default function App() {
 
     setWorkspace(updatedWs);
     await cancelPendingDocumentSaveAndWait();
-    handleCloseTab(id);
+    closeTabNow(id);
 
     try {
       await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
@@ -340,17 +427,14 @@ export default function App() {
     }
   }, [activeTableId]);
 
-  const prevActiveTableIdRef = useRef<string | null>(activeTableId);
-
-  // Auto-sync viewMode ONLY when activeTableId changes to a different table
+  // Auto-sync viewMode whenever activeTableId or workspace changes
   useEffect(() => {
-    if (activeTableId && activeTableId !== prevActiveTableIdRef.current) {
-      prevActiveTableIdRef.current = activeTableId;
+    if (activeTableId) {
       localStorage.setItem(STORAGE_KEYS.activeTable, activeTableId);
       const mode = resolveViewModeForTable(activeTableId);
       setViewMode(mode);
     }
-  }, [activeTableId, resolveViewModeForTable]);
+  }, [activeTableId, workspace, resolveViewModeForTable]);
 
   // Modals state management via custom hook
   const {
@@ -418,7 +502,7 @@ export default function App() {
 
   useEffect(() => {
     if (isLoading) return;
-    const validTabIds = openTabIds.filter((id) => Boolean(workspace.documents?.[id]));
+      const validTabIds = openTabIds.filter((id) => Boolean(workspace.documents?.[id] || workspace.tables?.[id]));
     if (activeDocId && workspace.documents?.[activeDocId] && !validTabIds.includes(activeDocId)) validTabIds.push(activeDocId);
     if (validTabIds.length !== openTabIds.length || validTabIds.some((id, index) => id !== openTabIds[index])) setOpenTabIds(validTabIds);
   }, [isLoading, workspace.documents, activeDocId, openTabIds]);
@@ -456,11 +540,16 @@ export default function App() {
   const pendingSaveDocumentRef = useRef<WonNoteDocument | null>(null);
   const pendingDocumentWorkspaceRef = useRef<WorkspaceData | null>(null);
   const documentSaveInFlightRef = useRef<Promise<void> | null>(null);
-  const deferredRemoteRefreshRef = useRef(false);
+  const deferredRemoteRefreshRef = useRef(0);
+  const getLocalServerVersion = () => typeof localStorage === 'undefined'
+    ? 0
+    : Number(localStorage.getItem(LOCAL_SERVER_VERSION_KEY) || 0);
   const refreshAfterLocalWrites = useCallback(() => {
-    if (!deferredRemoteRefreshRef.current) return;
+    const deferredVersion = deferredRemoteRefreshRef.current;
+    if (!deferredVersion) return;
     if (pendingSaveDocumentRef.current || pendingSaveTableRef.current || documentSaveInFlightRef.current) return;
-    deferredRemoteRefreshRef.current = false;
+    deferredRemoteRefreshRef.current = 0;
+    if (deferredVersion <= getLocalServerVersion()) return;
     void loadWorkspaceData(true);
   }, [loadWorkspaceData]);
 
@@ -487,6 +576,10 @@ export default function App() {
           // Keep document writes ordered. A slow earlier request must never
           // finish after a newer edit and replace it on the server.
           await documentSaveInFlightRef.current?.catch(() => {});
+          if (!latestWorkspaceRef.current.documents?.[targetDocument.id]) {
+            console.log(`[WonNote] Skipping save for deleted document: ${targetDocument.id}`);
+            return;
+          }
           await repository.saveDocument(targetDocument);
           if (syncTree) await repository.saveTree(targetWorkspace.tree);
           await syncToLocalFileIfConnected(targetWorkspace);
@@ -550,6 +643,10 @@ export default function App() {
 
         saveDebounceTimerRef.current = setTimeout(async () => {
           try {
+            if (!latestWorkspaceRef.current.tables?.[updatedTableWithTime.id]) {
+              console.log(`[WonNote] Skipping save for deleted table: ${updatedTableWithTime.id}`);
+              return;
+            }
             if (useServer) {
               // 테이블과 트리 변경분만 저장하고, 서버 인덱스와 자산만 동기화합니다.
               await repository.saveTable(updatedTableWithTime);
@@ -782,15 +879,27 @@ export default function App() {
         // Prefer the server ETag over local exportedAt timestamps. Client clocks
         // can be ahead of the server and otherwise suppress valid remote updates.
         if (hasRemoteVersionChanged && info.lastUpdated) {
+          if (Number(info.lastUpdated) <= getLocalServerVersion()) return;
           if (pendingSaveDocumentRef.current || pendingSaveTableRef.current || documentSaveInFlightRef.current) {
-            deferredRemoteRefreshRef.current = true;
+            deferredRemoteRefreshRef.current = Math.max(deferredRemoteRefreshRef.current, Number(info.lastUpdated));
             return;
           }
+
+          try {
+            const serverWs = await repository.loadWorkspace();
+            if (activeDocId && serverWs.documents?.[activeDocId]) {
+              const serverDocContent = serverWs.documents[activeDocId].content;
+              const localDocContent = latestWorkspaceRef.current.documents?.[activeDocId]?.content;
+              if (serverDocContent === localDocContent) {
+                latestWorkspaceRef.current = serverWs;
+                return;
+              }
+            }
+          } catch {}
+
           console.log('[Event Sync] Remote updates detected on server, delta syncing in background...');
           lastLoadedTimestampRef.current = info.lastUpdated;
-          // The repository load pushes dirty local notes, merges metadata, and
-          // pulls deltas in order as one refresh.
-          await loadWorkspaceData(true); // SILENT SYNC!
+          await loadWorkspaceData(true);
         }
       } catch {
         // Ignore network hiccups during background sync check
@@ -825,15 +934,26 @@ export default function App() {
         // createSseConnection calls this only after the server version advances;
         // do not compare it with client timestamps, which may be clock-skewed.
         if (payload.lastUpdated) {
+          if (Number(payload.lastUpdated) <= getLocalServerVersion()) return;
           if (pendingSaveDocumentRef.current || pendingSaveTableRef.current || documentSaveInFlightRef.current) {
-            deferredRemoteRefreshRef.current = true;
+            deferredRemoteRefreshRef.current = Math.max(deferredRemoteRefreshRef.current, Number(payload.lastUpdated));
             return;
           }
-          console.log('[SSE Multi-User Sync] 서버 변경 감지! 자동 리렌더링 실행:', payload.type);
-          lastLoadedTimestampRef.current = payload.lastUpdated;
 
-          // The repository load pushes dirty local notes, merges metadata, and
-          // pulls deltas in order as one refresh.
+          try {
+            const serverWs = await repository.loadWorkspace();
+            if (activeDocId && serverWs.documents?.[activeDocId]) {
+              const serverDocContent = serverWs.documents[activeDocId].content;
+              const localDocContent = latestWorkspaceRef.current.documents?.[activeDocId]?.content;
+              if (serverDocContent === localDocContent) {
+                latestWorkspaceRef.current = serverWs;
+                return;
+              }
+            }
+          } catch {}
+
+          console.log('[SSE Multi-User Sync] 서버 변경 감지 및 백그라운드 머지:', payload.type);
+          lastLoadedTimestampRef.current = payload.lastUpdated;
           await loadWorkspaceData(true);
         }
   });
@@ -1115,6 +1235,11 @@ export default function App() {
       createdAt: now,
       updatedAt: now,
     };
+    // Keep imported notes visible in the sidebar immediately when placed in a folder.
+    if (normalizedParentId) {
+      const folder = workspace.tree.find(item => item.id === normalizedParentId && item.type === 'folder');
+      if (folder) folder.isExpanded = true;
+    }
     const updatedWs: WorkspaceData = {
       ...workspace,
       tree: [treeItem, ...workspace.tree],
@@ -1122,6 +1247,9 @@ export default function App() {
       exportedAt: now,
     };
     setWorkspace(updatedWs);
+    if (normalizedParentId) {
+      window.dispatchEvent(new CustomEvent('wonbee:expand-folder', { detail: normalizedParentId }));
+    }
     setActiveTableId(null);
     setActiveDocId(id);
     setOpenTabIds((previous) => [...previous.filter((tabId) => tabId !== id), id]);
@@ -1670,11 +1798,12 @@ export default function App() {
     }
   };
 
-  // Confirm and Execute Bulk Deletion of Tree Item and Database Records
+  // Confirm and Execute Server-Authoritative Deletion of Tree Item and Database Records
   const handleConfirmDeleteTreeItem = async () => {
     if (!treeItemToDelete) return;
     const itemId = treeItemToDelete.id;
 
+    // 1. Check read-only tables before proceeding
     const findDescendantIds = (rootId: string): string[] => {
       const children = workspace.tree.filter((t) => t.parentId === rootId);
       let ids = [rootId];
@@ -1684,87 +1813,115 @@ export default function App() {
       return ids;
     };
 
-    const idsToDelete = findDescendantIds(itemId);
-    const documentIdsToDelete = idsToDelete.filter((id) => Boolean(workspace.documents?.[id]));
-    const updatedTree = workspace.tree.filter((t) => !idsToDelete.includes(t.id));
-
-    const updatedTables = { ...workspace.tables };
-    const updatedDocuments = { ...(workspace.documents || {}) };
-    idsToDelete.forEach((id) => {
-      delete updatedTables[id];
-      delete updatedTables[id.replace(/-/g, '_')];
-      delete updatedTables[id.replace(/_/g, '-')];
-      delete updatedTables[id.replace(/^table[-_]/, '')];
-      delete updatedTables[`table_${id.replace(/^table[-_]/, '')}`];
-      delete updatedTables[`table-${id.replace(/^table[-_]/, '')}`];
-      delete updatedDocuments[id];
-    });
-
-    // If the entire tree is deleted, wipe all remaining tables to guarantee no ghost/orphan sample tables remain!
-    if (updatedTree.length === 0) {
-      Object.keys(updatedTables).forEach((k) => delete updatedTables[k]);
+    const localIdsToDelete = findDescendantIds(itemId);
+    const readOnlyTable = localIdsToDelete.map(id => workspace.tables[id]).find(tbl => tbl && tbl.accessLevel === 'read');
+    if (readOnlyTable) {
+      setDeleteErrorModalMessage('읽기 전용 보드(쓰기 권한이 없는 보드)이므로 삭제할 수 없습니다.');
+      setTreeItemToDelete(null);
+      return;
     }
 
-    const now = Date.now();
-    lastLoadedTimestampRef.current = now;
-
-    const updatedWs: WorkspaceData = {
-      ...workspace,
-      tree: updatedTree,
-      tables: updatedTables,
-      documents: updatedDocuments,
-      exportedAt: now,
-    };
-
-    setWorkspace(updatedWs);
-    await cancelPendingDocumentSaveAndWait();
-    await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
-    setOpenTabIds((previous) => previous.filter((id) => !idsToDelete.includes(id)));
-    if (activeDocId && idsToDelete.includes(activeDocId)) {
-      setActiveDocId(null);
-      localStorage.removeItem(STORAGE_KEYS.activeDocument);
-    }
-    if (activeTableId && (idsToDelete.includes(activeTableId) || updatedTree.length === 0)) {
-      setActiveTableId(null);
-    }
-    if ((activeDocId && idsToDelete.includes(activeDocId)) || (activeTableId && idsToDelete.includes(activeTableId))) {
-      const nextId = openTabIds.find((id) => !idsToDelete.includes(id) && (updatedTables[id] || updatedDocuments[id]));
-      if (nextId) handleSelectActiveTable(nextId);
-      else {
-        setActiveTableId(null);
-        setActiveDocId(null);
-        localStorage.removeItem(STORAGE_KEYS.activeTable);
-        localStorage.removeItem(STORAGE_KEYS.activeDocument);
-      }
-    }
-
-    // Call deleteTable for all affected tables on server repository to cascade delete SQLite data & drop physical table
-    for (const id of idsToDelete) {
-      try {
-        if (workspace.tables[id]) await repository.deleteTable(id);
-        if (documentIdsToDelete.includes(id)) await repository.deleteDocument?.(id);
-      } catch (err) {
-        console.warn(`[Delete] repository.deleteTable(${id}) error:`, err);
-      }
-    }
+    setTreeItemToDelete(null);
+    setIsDeletingTreeItem(true);
 
     try {
-      await repository.saveWorkspace(updatedWs);
-    } catch (saveErr) {
-          console.error('[Repository] Failed to save workspace after delete:', saveErr);
+      // 2. Synchronously cancel all pending in-flight saves
+      await cancelPendingDocumentSaveAndWait();
+
+      let idsToDelete = localIdsToDelete;
+
+      if (useServer) {
+        // 3. SERVER AUTHORITATIVE DELETION: Call dedicated server deletion API FIRST!
+        const res = await fetchBridge(`/api/tree/${encodeURIComponent(itemId)}`, {
+          method: 'DELETE',
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setIsDeletingTreeItem(false);
+          const errorMsg = data.error || (res.status === 403 ? '쓰기/삭제 권한이 없는 보드이므로 삭제할 수 없습니다.' : res.status === 404 ? '서버에 존재하지 않거나 접근 권한이 없는 보드입니다.' : `서버 삭제 처리 실패 (${res.status})`);
+          setDeleteErrorModalMessage(errorMsg);
+          return;
         }
-
-    // If the tree is now completely empty, trigger cleanDatabase to wipe ALL remaining orphan tables and physical tables in SQLite!
-    if (updatedTree.length === 0 && repository.cleanDatabase) {
-      try {
-        await repository.cleanDatabase([]);
-      } catch (cleanErr) {
-        console.warn('[Clean] cleanDatabase error:', cleanErr);
+        if (Array.isArray(data.deletedIds) && data.deletedIds.length > 0) {
+          idsToDelete = data.deletedIds;
+        }
       }
-    }
 
-    await syncToLocalFileIfConnected(updatedWs);
-    setTreeItemToDelete(null);
+      // 4. SERVER DELETION SUCCEEDED: Now remove deleted IDs from local workspace state and Dexie DB
+      const updatedTree = workspace.tree.filter((t) => !idsToDelete.includes(t.id));
+      const updatedTables = { ...workspace.tables };
+      const updatedDocuments = { ...(workspace.documents || {}) };
+      idsToDelete.forEach((id) => {
+        delete updatedTables[id];
+        delete updatedTables[id.replace(/-/g, '_')];
+        delete updatedTables[id.replace(/_/g, '-')];
+        delete updatedTables[id.replace(/^table[-_]/, '')];
+        delete updatedTables[`table_${id.replace(/^table[-_]/, '')}`];
+        delete updatedTables[`table-${id.replace(/^table[-_]/, '')}`];
+        delete updatedDocuments[id];
+      });
+
+      if (updatedTree.length === 0) {
+        Object.keys(updatedTables).forEach((k) => delete updatedTables[k]);
+      }
+
+      const now = Date.now();
+      lastLoadedTimestampRef.current = now;
+
+      const updatedWs: WorkspaceData = {
+        ...workspace,
+        tree: updatedTree,
+        tables: updatedTables,
+        documents: updatedDocuments,
+        exportedAt: now,
+      };
+
+      latestWorkspaceRef.current = updatedWs;
+
+      if (!useServer) {
+        for (const id of idsToDelete) {
+          if (workspace.tables[id]) await repository.deleteTable(id);
+          if (workspace.documents?.[id] && repository.deleteDocument) await repository.deleteDocument(id);
+        }
+        await repository.saveWorkspace(updatedWs);
+      }
+
+      // 5. Synchronously save to Dexie local DB & connected local file
+      await wonbeeDexieDB.saveFullWorkspace(updatedWs, 1);
+      await syncToLocalFileIfConnected(updatedWs);
+
+      // 6. Synchronously update local React state and active tab selections
+      setWorkspace(updatedWs);
+      setOpenTabIds((previous) => previous.filter((id) => !idsToDelete.includes(id)));
+
+      if (activeDocId && idsToDelete.includes(activeDocId)) {
+        setActiveDocId(null);
+        localStorage.removeItem(STORAGE_KEYS.activeDocument);
+      }
+      if (activeTableId && (idsToDelete.includes(activeTableId) || updatedTree.length === 0)) {
+        setActiveTableId(null);
+      }
+      if ((activeDocId && idsToDelete.includes(activeDocId)) || (activeTableId && idsToDelete.includes(activeTableId))) {
+        const nextId = openTabIds.find((id) => !idsToDelete.includes(id) && (updatedTables[id] || updatedDocuments[id]));
+        if (nextId) handleSelectActiveTable(nextId);
+        else {
+          setActiveTableId(null);
+          setActiveDocId(null);
+          localStorage.removeItem(STORAGE_KEYS.activeTable);
+          localStorage.removeItem(STORAGE_KEYS.activeDocument);
+        }
+      }
+
+      // 7. Final re-sync with server state
+      await loadWorkspaceData(true);
+    } catch (err: any) {
+      console.error('[Delete Error] Server-authoritative deletion failed:', err);
+      // RETAIN ITEM ON FAILURE & DISPLAY ERROR POPUP MODAL WITH [OK] BUTTON!
+      setDeleteErrorModalMessage(err?.message || '삭제 처리 중 동기화 오류가 발생했습니다.');
+      await loadWorkspaceData(true);
+    } finally {
+      setIsDeletingTreeItem(false);
+    }
   };
 
   // Load Sample Templates (Roadmap, Sprint, SQL Dict, Feedback)
@@ -2122,7 +2279,7 @@ export default function App() {
               }}
             />
             {activeDocument && <div className="ml-1 flex items-center gap-0.5 rounded-lg border border-stone-200 bg-stone-100/70 p-0.5 dark:border-stone-700 dark:bg-stone-800/70" role="tablist" aria-label="노트 편집 도구">
-              {([['home', '홈'], ['insert', '삽입'], ['draw', '그리기']] as const).map(([tab, label]) => <button key={tab} type="button" role="tab" aria-selected={editorRibbonTab === tab} onClick={() => setEditorRibbonTab(tab)} className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${editorRibbonTab === tab ? 'bg-white text-indigo-700 shadow-sm dark:bg-stone-700 dark:text-indigo-200' : 'text-stone-600 hover:bg-white/70 dark:text-stone-300 dark:hover:bg-stone-700/70'}`}>{label}</button>)}
+              {([['edit', '편집'], ['home', '홈'], ['insert', '삽입'], ['draw', '그리기']] as const).map(([tab, label]) => <button key={tab} type="button" role="tab" aria-selected={editorRibbonTab === tab} onClick={() => setEditorRibbonTab(tab)} className={`rounded-md px-2.5 py-1.5 text-[11px] font-semibold transition-colors ${editorRibbonTab === tab ? 'bg-white text-indigo-700 shadow-sm dark:bg-stone-700 dark:text-indigo-200' : 'text-stone-600 hover:bg-white/70 dark:text-stone-300 dark:hover:bg-stone-700/70'}`}>{label}</button>)}
             </div>}
             <ToolsMenuDropdown onOpen={(tool) => openModal(tool)} />
             <HelpMenuDropdown onOpenGuide={setGuideTopic} />
@@ -2147,8 +2304,11 @@ export default function App() {
             {/* AI Multi-Agent Trigger Button */}
             {aiEnabled && (
               <button
-                onClick={() => openModal('aiAgent')}
-                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs"
+                onClick={() => {
+                  setAiAgentInitialTab(activeDocId ? 'editor' : 'data');
+                  openModal('aiAgent');
+                }}
+                className="px-3 py-1 bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
                 title="WON 노트 AI 에이전트 열기"
               >
                 <Sparkles className="w-3.5 h-3.5 text-amber-500" />
@@ -2172,11 +2332,13 @@ export default function App() {
         </header>
 
         {/* MS OneNote-style Draggable Tab Bar */}
-        {activeDocument && (
+        {(activeDocument || activeTable) && (
           <WonNoteTabBar
             openTabIds={openTabIds}
             documents={workspace.documents || {}}
+            tables={workspace.tables}
             activeDocId={activeDocId}
+            activeTableId={activeTableId}
             onSelectTab={(id) => handleSelectActiveTable(id)}
             onCloseTab={(id) => handleCloseTab(id)}
             onReorderTabs={(newOrder) => setOpenTabIds(newOrder)}
@@ -2212,19 +2374,38 @@ export default function App() {
                 </button>
               </div>
             ) : isLoading ? (
-              <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+              <div className="relative h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in">
+                {/* Top Animated Progress Bar */}
+                <div className="absolute top-0 left-0 right-0 h-1.5 bg-stone-200 dark:bg-stone-800 overflow-hidden z-50">
+                  <div className="h-full bg-amber-500 animate-pulse w-3/4 transition-all duration-300" />
+                </div>
                 <div className="w-12 h-12 rounded-2xl bg-amber-500/15 text-amber-500 flex items-center justify-center mb-3 animate-pulse border border-amber-500/30">
                   <Loader2 className="w-6 h-6 animate-spin text-amber-500" />
                 </div>
                 <h3 className="text-base font-bold text-stone-900 dark:text-stone-100">
-                  🐝 워크스페이스 로딩 중...
+                  🐝 워크스페이스 및 데이터 로딩 중...
                 </h3>
                 <p className="text-xs text-stone-500 dark:text-stone-400 mt-1 max-w-sm leading-relaxed">
-                  마지막으로 보던 노트와 위치를 불러오고 있습니다.
+                  마지막으로 보던 노트와 최신 데이터를 불러오고 있습니다.
                 </p>
               </div>
             ) : activeDocument ? (
-              <WonNoteDocumentEditor key={activeDocument.id} document={activeDocument} onUpdateDocument={handleUpdateDocumentDebounced} zoomLevel={zoomLevel} useServerMode={useServer} activeRibbonTab={editorRibbonTab} />
+              openTabIds.map((tabId) => {
+                const doc = workspace.documents?.[tabId];
+                if (!doc) return null;
+                const isSelectedDoc = activeDocId === tabId;
+                return (
+                  <div key={doc.id} className={isSelectedDoc ? 'h-full w-full min-h-0 flex flex-col flex-1' : 'hidden'}>
+                    <WonNoteDocumentEditor
+                      document={doc}
+                      onUpdateDocument={handleUpdateDocumentDebounced}
+                      zoomLevel={zoomLevel}
+                      useServerMode={useServer}
+                      activeRibbonTab={editorRibbonTab}
+                    />
+                  </div>
+                );
+              })
             ) : activeTable ? (
               <DataTableViewer
                 table={activeTable}
@@ -2257,7 +2438,7 @@ export default function App() {
                 }}
                 aiEnabled={aiEnabled}
               />
-            ) : (
+            ) : !isLoading ? (
               <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400">
                 <TableIcon className="w-12 h-12 stroke-1 mb-2 text-stone-300 dark:text-stone-600" />
                 <h3 className="font-semibold text-stone-600 dark:text-stone-300">열린 노트가 없습니다</h3>
@@ -2281,6 +2462,11 @@ export default function App() {
                     샘플 템플릿 불러오기
                   </button>
                 </div>
+              </div>
+            ) : (
+              <div className="h-full flex flex-col items-center justify-center p-8 text-center text-stone-400">
+                <Loader2 className="w-8 h-8 animate-spin text-amber-500 mb-2" />
+                <p className="text-xs text-stone-500">로딩 중...</p>
               </div>
             )}
             {activeTable?.accessLevel === 'read' && <div className="pointer-events-none absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-full border border-indigo-200 bg-white/95 px-4 py-2 text-xs font-semibold text-indigo-800 shadow-lg backdrop-blur dark:border-indigo-800 dark:bg-stone-900/95 dark:text-indigo-200">그룹 읽기 전용 보드 · 편집 권한이 없습니다</div>}
@@ -2397,15 +2583,17 @@ export default function App() {
         onClose={closeModal}
         useServer={useServer}
         serverUrl={serverUrl}
-        onToggleUseServer={(newUseServer, newUrl) => {
+        onToggleUseServer={async (newUseServer, newUrl) => {
           const isFileProtocol = typeof window !== 'undefined' && window.location.protocol.startsWith('file:');
           const nextUseServer = isFileProtocol ? false : newUseServer;
-          setUseServer(nextUseServer);
+          const nextServerUrl = newUrl || serverUrl;
           localStorage.setItem(STORAGE_KEYS.useServer, String(nextUseServer));
-          if (newUrl) {
-            setServerUrl(newUrl);
-            localStorage.setItem(STORAGE_KEYS.serverUrl, newUrl);
-          }
+          localStorage.setItem(STORAGE_KEYS.serverUrl, nextServerUrl);
+          setUseServer(nextUseServer);
+          setServerUrl(nextServerUrl);
+          const nextRepository = WorkspaceRepositoryFactory.getRepository({ useServer: nextUseServer, serverUrl: nextServerUrl });
+          const syncedWorkspace = await nextRepository.loadWorkspace();
+          setWorkspace(ensureWorkspaceTree(syncedWorkspace));
         }}
         onRefreshData={loadWorkspaceData}
       />}
@@ -2514,7 +2702,7 @@ export default function App() {
         onUpdateTable={handleUpdateTable}
         onUpdateRow={handleSaveRowFromEditor}
         onRefreshData={loadWorkspaceData}
-        initialTab={aiAgentInitialTab}
+        initialTab={activeDocId ? 'editor' : (aiAgentInitialTab || 'data')}
       />}
 
       {/* 13. Calendar Notification Alarm Toast */}
@@ -2589,6 +2777,68 @@ export default function App() {
         onConfirm={handleConfirmAddSampleTemplates}
         isLoading={isLoading}
       />}
+
+      {/* 21. Transparent Deletion Progress Overlay */}
+      {pendingCloseDocumentId && workspace.documents?.[pendingCloseDocumentId] && createPortal(
+        <div className="fixed inset-0 z-[1100000] flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm" role="dialog" aria-modal="true" aria-labelledby="save-before-close-title">
+          <div className="w-full max-w-md space-y-4 rounded-2xl border border-stone-200 bg-white p-6 shadow-2xl dark:border-stone-700 dark:bg-stone-900">
+            <h2 id="save-before-close-title" className="text-base font-bold text-stone-900 dark:text-stone-100">저장되지 않은 변경사항이 있습니다</h2>
+            <p className="text-sm leading-6 text-stone-600 dark:text-stone-300"><strong>{workspace.documents[pendingCloseDocumentId].title}</strong> 노트에 저장되지 않은 변경사항이 있습니다. 저장한 뒤 {pendingSwitchToId ? '다른 항목으로 이동할까요?' : '탭을 닫을까요?'}</p>
+            <div className="flex justify-end gap-2 pt-2">
+              <button type="button" disabled={isSavingBeforeTabClose} onClick={() => { setPendingCloseDocumentId(null); setPendingSwitchToId(null); }} className="rounded-lg border border-stone-300 px-3 py-2 text-sm text-stone-700 hover:bg-stone-100 disabled:opacity-50 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800">계속 편집</button>
+              <button type="button" disabled={isSavingBeforeTabClose} onClick={() => void saveAndClosePendingDocument()} className="rounded-lg bg-amber-500 px-3 py-2 text-sm font-semibold text-stone-950 hover:bg-amber-400 disabled:opacity-50">{isSavingBeforeTabClose ? '저장 중…' : pendingSwitchToId ? '저장하고 이동' : '저장하고 닫기'}</button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 21. Transparent Deletion Progress Overlay */}
+      {isDeletingTreeItem && createPortal(
+        <div className="fixed inset-0 z-[999999] bg-stone-950/30 backdrop-blur-xs flex flex-col items-center justify-center p-4 animate-in fade-in duration-150 select-none">
+          <div className="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-800 rounded-2xl p-6 shadow-2xl flex flex-col items-center gap-3 text-center max-w-sm w-full animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center border border-rose-500/30 animate-pulse">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-sm text-stone-900 dark:text-stone-100">
+              안전하게 삭제 및 동기화 중...
+            </h3>
+            <p className="text-xs text-stone-500 dark:text-stone-400 leading-relaxed">
+              데이터베이스에서 항목을 완전하게 제거하고 서버와 동기화하고 있습니다.
+            </p>
+            <div className="flex items-center gap-2 text-xs font-semibold text-amber-600 dark:text-amber-400 mt-1">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              <span>잠시만 기다려주세요...</span>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* 22. Deletion Error Confirmation Popup Modal */}
+      {deleteErrorModalMessage && createPortal(
+        <div className="fixed inset-0 z-[999999] bg-stone-950/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150 select-none">
+          <div className="bg-white dark:bg-stone-900 border border-stone-200 dark:border-stone-700 rounded-2xl p-6 shadow-2xl flex flex-col items-center gap-3 text-center max-w-md w-full animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-rose-500/15 text-rose-600 dark:text-rose-400 flex items-center justify-center border border-rose-500/30">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-base text-stone-900 dark:text-stone-100">
+              삭제 처리 오류
+            </h3>
+            <p className="text-xs text-stone-600 dark:text-stone-300 font-medium bg-rose-50 dark:bg-rose-950/40 p-3 rounded-xl border border-rose-200 dark:border-rose-900/50 w-full text-left leading-relaxed font-mono">
+              {deleteErrorModalMessage}
+            </p>
+            <button
+              type="button"
+              onClick={() => setDeleteErrorModalMessage(null)}
+              className="mt-2 w-full py-2.5 bg-stone-900 hover:bg-stone-800 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer dark:bg-amber-500 dark:text-stone-950 dark:hover:bg-amber-400"
+            >
+              확인
+            </button>
+          </div>
+        </div>,
+        document.body
+      )}
       </Suspense>
     </div>
     </GlobalStatusBarProvider>

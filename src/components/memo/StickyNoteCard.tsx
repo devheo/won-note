@@ -260,19 +260,24 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
   }, [updateMetrics]);
 
   const colorStyle = BG_COLOR_STYLES[layout.bgColor] || BG_COLOR_STYLES.amber;
+  const computedZIndex = layout.isPinned ? 10000 + (layout.zIndex % 10000) : layout.zIndex;
 
   return (
     <div
       id={`sticky-note-${row.id}`}
+      tabIndex={0}
       style={{
         position: 'absolute',
         left: `${layout.x}px`,
         top: `${layout.y}px`,
         width: `${layout.width}px`,
         height: `${layout.height}px`,
-        zIndex: layout.zIndex,
+        zIndex: computedZIndex,
       }}
-      onClick={onBringToFront}
+      onClick={(e) => {
+        e.stopPropagation();
+        onBringToFront();
+      }}
       onDoubleClick={(e) => {
         const target = e.target as HTMLElement;
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'BUTTON' || target.closest('button')) return;
@@ -295,7 +300,12 @@ export const StickyNoteCard: React.FC<StickyNoteCardProps> = ({
             type="button"
             onClick={(e) => {
               e.stopPropagation();
-              onLayoutChange({ ...layout, isPinned: !layout.isPinned }, true);
+              const nextPinned = !layout.isPinned;
+              onLayoutChange({
+                ...layout,
+                isPinned: nextPinned,
+                zIndex: nextPinned ? Math.max(layout.zIndex, 1000) : layout.zIndex,
+              }, true);
             }}
             className={`p-1 rounded-lg transition-colors ${
               layout.isPinned

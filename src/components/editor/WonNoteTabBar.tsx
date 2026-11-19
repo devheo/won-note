@@ -1,10 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { WonNoteDocument } from '../../types';
-import { X, Plus, Copy, Edit2, FileText, Check, Trash2 } from 'lucide-react';
+import { WonNoteDocument, TableDocument } from '../../types';
+import { X, Plus, Copy, Edit2, FileText, Trash2, Table2 } from 'lucide-react';
 
 interface WonNoteTabBarProps {
   openTabIds: string[];
   documents: Record<string, WonNoteDocument>;
+  tables?: Record<string, TableDocument>;
+  activeTableId?: string | null;
   activeDocId: string | null;
   onSelectTab: (id: string) => void;
   onCloseTab: (id: string) => void;
@@ -28,6 +30,8 @@ const TAB_ACCENT_COLORS = [
 export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
   openTabIds,
   documents,
+  tables = {},
+  activeTableId = null,
   activeDocId,
   onSelectTab,
   onCloseTab,
@@ -95,8 +99,11 @@ export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
     <div className="flex items-center gap-1.5 px-3 py-1.5 bg-stone-100 dark:bg-[#1f1f1f] border-b border-stone-200 dark:border-stone-800 overflow-x-auto custom-scrollbar shrink-0 select-none relative">
       {openTabIds.map((id, index) => {
         const doc = documents[id];
-        if (!doc) return null;
-        const isActive = activeDocId === id;
+        const board = tables[id];
+        if (!doc && !board) return null;
+        const title = doc?.title || board?.title || '보드';
+        const isBoard = Boolean(board && !doc);
+        const isActive = activeDocId === id || activeTableId === id;
         const isEditing = editingTabId === id;
         const accentColor = TAB_ACCENT_COLORS[index % TAB_ACCENT_COLORS.length];
 
@@ -123,12 +130,12 @@ export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
             style={{
               borderTopColor: isActive ? undefined : 'transparent',
             }}
-            title="클릭하여 열기 · 우클릭하여 이름 변경 / 복사 / 삭제 / 닫기"
+            title={isBoard ? '클릭하여 보드 열기' : '클릭하여 노트 열기 · 우클릭하여 관리'}
           >
             {/* OneNote Color Accent Line */}
             <div className={`absolute top-0 left-0 right-0 h-[3px] ${accentColor} rounded-t-xl`} />
 
-            <FileText className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-amber-500' : 'text-stone-400'}`} />
+            {isBoard ? <Table2 className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-blue-500' : 'text-stone-400'}`} /> : <FileText className={`w-3.5 h-3.5 shrink-0 ${isActive ? 'text-amber-500' : 'text-stone-400'}`} />}
 
             {isEditing ? (
               <input
@@ -147,17 +154,17 @@ export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
               />
             ) : (
               <span
-                onDoubleClick={(e) => startEditing(id, doc.title, e)}
+                onDoubleClick={(e) => doc && startEditing(id, doc.title, e)}
                 className="max-w-[140px] truncate"
                 title="더블클릭 또는 우클릭하여 이름 변경"
               >
-                {doc.title || '새 노트'}
+                {title}
               </span>
             )}
 
             {/* Hover Actions */}
             <div className="flex items-center gap-0.5 shrink-0">
-              <button
+                <button
                 type="button"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -165,10 +172,10 @@ export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
                 }}
                 className="ml-1 inline-flex h-4 w-4 shrink-0 items-center justify-center border-0 bg-transparent text-stone-500 opacity-0 transition-opacity group-hover/tab:opacity-100 focus-visible:opacity-100 hover:text-rose-600 dark:text-stone-400 dark:hover:text-rose-300"
                 title="탭 닫기"
-                aria-label={`${doc.title || '새 노트'} 탭 닫기`}
+                  aria-label={`${title} 탭 닫기`}
               >
                 <X className="h-2.5 w-2.5" strokeWidth={2} />
-              </button>
+                </button>
             </div>
           </div>
         );
@@ -188,43 +195,60 @@ export const WonNoteTabBar: React.FC<WonNoteTabBarProps> = ({
       {contextMenu && (
         <div
           style={{ top: contextMenu.y, left: contextMenu.x }}
-          className="fixed z-[999999] w-44 bg-white dark:bg-stone-900 rounded-xl shadow-2xl border border-stone-200 dark:border-stone-700 py-1 text-xs font-medium text-stone-700 dark:text-stone-200 animate-in fade-in zoom-in-95 duration-100"
+          className="fixed z-[999999] w-48 bg-white dark:bg-stone-900 rounded-xl shadow-2xl border border-stone-200 dark:border-stone-700 py-1 text-xs font-medium text-stone-700 dark:text-stone-200 animate-in fade-in zoom-in-95 duration-100"
           onClick={(e) => e.stopPropagation()}
         >
-          <button
-            type="button"
-            onClick={() => {
-              const tab = documents[contextMenu.tabId];
-              if (tab) startEditing(contextMenu.tabId, tab.title);
-            }}
-            className="w-full px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2 cursor-pointer transition-colors"
-          >
-            <Edit2 className="w-3.5 h-3.5 text-amber-500" />
-            <span>이름 바꾸기</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onDuplicateTab(contextMenu.tabId);
-              setContextMenu(null);
-            }}
-            className="w-full px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2 cursor-pointer transition-colors"
-          >
-            <Copy className="w-3.5 h-3.5 text-sky-500" />
-            <span>노트 복사 (Duplicate)</span>
-          </button>
+          {documents[contextMenu.tabId] ? (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  const tab = documents[contextMenu.tabId];
+                  if (tab) startEditing(contextMenu.tabId, tab.title);
+                }}
+                className="w-full px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <Edit2 className="w-3.5 h-3.5 text-amber-500" />
+                <span>이름 바꾸기</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onDuplicateTab(contextMenu.tabId);
+                  setContextMenu(null);
+                }}
+                className="w-full px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <Copy className="w-3.5 h-3.5 text-sky-500" />
+                <span>노트 복사 (Duplicate)</span>
+              </button>
+              <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
+              <button
+                type="button"
+                onClick={() => {
+                  onDeleteNote(contextMenu.tabId);
+                  setContextMenu(null);
+                }}
+                className="w-full px-3 py-2 text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center gap-2 cursor-pointer transition-colors"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>노트 삭제</span>
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                const board = tables[contextMenu.tabId];
+                if (board) startEditing(contextMenu.tabId, board.title);
+              }}
+              className="w-full px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 flex items-center gap-2 cursor-pointer transition-colors"
+            >
+              <Edit2 className="w-3.5 h-3.5 text-amber-500" />
+              <span>보드 이름 바꾸기</span>
+            </button>
+          )}
           <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
-          <button
-            type="button"
-            onClick={() => {
-              onDeleteNote(contextMenu.tabId);
-              setContextMenu(null);
-            }}
-            className="w-full px-3 py-2 text-left hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-600 dark:text-rose-400 flex items-center gap-2 cursor-pointer transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>노트 삭제</span>
-          </button>
           <button
             type="button"
             onClick={() => {

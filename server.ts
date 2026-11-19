@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import fs from 'node:fs';
 import path from 'path';
 import os from 'os';
 import { convertLegacyPpt } from './server/pptConversion';
@@ -16,6 +17,8 @@ import { checkChatS3Bucket, chatAttachmentsUseS3 } from './server/chatS3';
 import { listAdminFiles, deleteAdminFile } from './server/adminFiles';
 import {
   initDatabase,
+  tableExists,
+  deleteTreeItemCascadeForUser,
   getWorkspaceDataForUser,
   saveWorkspaceDataForUser,
   saveTreeForUser,
@@ -55,7 +58,15 @@ import {
   pushSyncNotes,
   saveDocumentHistorySnapshot,
   listDocumentHistory,
+  getAdminDbStats,
+  getAdminDbTableRow,
+  listAdminDbTableRows,
+  vacuumDatabase,
+  persistDatabase,
 } from './server/db';
+import { DATABASE_PATHS } from './server/dbConstants';
+const { sqlite: DB_FILE_PATH, userData: USER_DATA_PATH } = DATABASE_PATHS;
+const DEFAULT_MISSING_IMAGE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>';
 import {
   checkOllamaStatus,
   generateOllamaResponse,
@@ -142,6 +153,65 @@ async function startServer() {
     try {
       const success = await deleteAdminFile(req.params.id);
       res.json({ success });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Admin DB Management Endpoints ---
+  app.get('/api/admin/db/stats', requireMaster, (_req, res) => {
+    try {
+      res.json(getAdminDbStats());
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/db/tables/:tableName/rows', requireMaster, (req, res) => {
+    try {
+      const offset = Number(req.query.offset) || 0;
+      const limit = Number(req.query.limit) || 50;
+      res.json(listAdminDbTableRows(req.params.tableName, offset, limit, String(req.query.search || '')));
+    } catch (err: any) {
+      res.status(400).json({ error: err.message || '테이블 데이터를 불러오지 못했습니다.' });
+    }
+  });
+  app.get('/api/admin/db/tables/:tableName/rows/:rowOffset', requireMaster, (req, res) => {
+    try { res.json(getAdminDbTableRow(req.params.tableName, Number(req.params.rowOffset) || 0, String(req.query.search || ''))); }
+    catch (err: any) { res.status(404).json({ error: err.message || '레코드를 불러오지 못했습니다.' }); }
+  });
+
+  app.post('/api/admin/db/vacuum', requireMaster, (_req, res) => {
+    try {
+      const stats = vacuumDatabase();
+      broadcastWorkspaceUpdate({ type: 'database_optimized', lastUpdated: getLastUpdatedTimestamp() });
+      res.json({ success: true, message: 'SQLite 데이터베이스 최적화(VACUUM)를 완료했습니다.', stats });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/admin/db/clean-orphans', requireMaster, (_req, res) => {
+    try {
+      const result = cleanDatabaseConsistency();
+      const stats = vacuumDatabase();
+      broadcastWorkspaceUpdate({ type: 'database_cleaned', lastUpdated: getLastUpdatedTimestamp() });
+      res.json({ success: true, message: `고아 테이블/레코드 ${result.dropped.length}개를 정리했습니다.`, dropped: result.dropped, kept: result.kept, stats });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/admin/db/download', requireMaster, (_req, res) => {
+    try {
+      persistDatabase(true);
+      if (fs.existsSync(DB_FILE_PATH)) {
+        res.download(DB_FILE_PATH, 'wonnote_backup.sqlite');
+      } else if (fs.existsSync(USER_DATA_PATH)) {
+        res.download(USER_DATA_PATH, 'wonnote_backup.json');
+      } else {
+        res.status(404).json({ error: '데이터베이스 파일을 찾을 수 없습니다.' });
+      }
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -522,7 +592,7 @@ const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
     try {
       saveWorkspaceDataForUser(req.body, req.authUser?.id, req.authUser?.role);
       broadcastWorkspaceUpdate({ type: 'workspace_updated', lastUpdated: getLastUpdatedTimestamp() });
-      res.json({ success: true, message: 'Workspace saved to SQLite DB' });
+      res.json({ success: true, message: 'Workspace saved to SQLite DB', lastUpdated: getLastUpdatedTimestamp() });
     } catch (err: any) {
       console.error('[API] Failed to save workspace:', err);
       res.status(500).json({ error: err.message });
@@ -534,7 +604,7 @@ const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
       const document = { ...req.body, id: req.params.id };
       saveDocument(document);
       broadcastWorkspaceUpdate({ type: 'document_updated', lastUpdated: getLastUpdatedTimestamp() });
-      res.json({ success: true });
+      res.json({ success: true, lastUpdated: getLastUpdatedTimestamp() });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -608,10 +678,23 @@ const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
       }
       saveTreeForUser(tree, req.authUser?.id, req.authUser?.role);
       broadcastWorkspaceUpdate({ type: 'tree_updated', lastUpdated: getLastUpdatedTimestamp() });
-      res.json({ success: true, count: tree.length });
+      res.json({ success: true, count: tree.length, lastUpdated: getLastUpdatedTimestamp() });
     } catch (err: any) {
       console.error('[API] Failed to save tree:', err);
       res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete(`${API_PATHS.tree}/:id`, (req, res) => {
+    try {
+      const result = deleteTreeItemCascadeForUser(req.params.id, req.authUser?.id, req.authUser?.role);
+      broadcastWorkspaceUpdate({ type: 'tree_updated', lastUpdated: result.lastUpdated });
+      res.json(result);
+    } catch (err: any) {
+      console.error('[API] Failed to delete tree item:', err);
+      const msg = err?.message || '항목 삭제 처리 실패';
+      const status = msg.includes('권한') ? 403 : 400;
+      res.status(status).json({ error: msg });
     }
   });
 
@@ -629,7 +712,7 @@ const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
       if (!req.authUser) { res.status(401).json({ error: '로그인이 필요합니다.' }); return; }
       setTablePermissions(req.params.id, req.authUser.id, req.authUser.role, String(req.body?.visibility || ''), Array.isArray(req.body?.groups) ? req.body.groups : []);
       broadcastWorkspaceUpdate({ type: 'table_permissions_updated', lastUpdated: getLastUpdatedTimestamp(), tableId: req.params.id });
-      res.json({ success: true });
+      res.json({ success: true, lastUpdated: getLastUpdatedTimestamp() });
     } catch (error) { res.status(403).json({ error: error instanceof Error ? error.message : '권한 설정 저장 실패' }); }
   });
   app.get(API_PATHS.tableByIdPattern, (req, res) => {
@@ -649,7 +732,7 @@ const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
     try {
       saveTableForUser({ ...req.body, id: req.params.id }, req.authUser?.id, req.authUser?.role);
       broadcastWorkspaceUpdate({ type: 'table_updated', lastUpdated: getLastUpdatedTimestamp(), tableId: req.params.id });
-      res.json({ success: true });
+      res.json({ success: true, lastUpdated: getLastUpdatedTimestamp() });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -673,12 +756,18 @@ const DEFAULT_MISSING_FILE_HTML = `<!DOCTYPE html>
 
   app.delete(API_PATHS.tableByIdPattern, (req, res) => {
     try {
-      if (!canManageTable(req.params.id, req.authUser?.id, req.authUser?.role)) { res.status(403).json({ error: '보드 소유자만 삭제할 수 있습니다.' }); return; }
+      if (tableExists(req.params.id) && !canManageTable(req.params.id, req.authUser?.id, req.authUser?.role)) {
+        res.status(403).json({ error: '보드 소유자만 삭제할 수 있습니다.' });
+        return;
+      }
       deleteTable(req.params.id);
       broadcastWorkspaceUpdate({ type: 'table_deleted', lastUpdated: getLastUpdatedTimestamp(), tableId: req.params.id });
       res.json({ success: true });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      console.error('[API] Failed to delete table:', err);
+      const msg = err?.message || '테이블 삭제 처리 실패';
+      const status = msg.includes('권한') ? 403 : 500;
+      res.status(status).json({ error: msg });
     }
   });
 

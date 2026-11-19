@@ -178,12 +178,12 @@ export type UserData = WorkspaceData;
  */
 export interface IWorkspaceRepository {
   loadWorkspace(signal?: AbortSignal): Promise<WorkspaceData>;
-  saveWorkspace(data: WorkspaceData): Promise<void>;
+  saveWorkspace(data: WorkspaceData): Promise<number | void>;
   getTable(tableId: string, signal?: AbortSignal): Promise<TableDocument | null>;
-  saveTable(table: TableDocument): Promise<void>;
+  saveTable(table: TableDocument): Promise<number | void>;
   deleteTable(tableId: string): Promise<void>;
-  saveTree(tree: TreeItem[]): Promise<void>;
-  saveDocument?(document: WonNoteDocument): Promise<void>;
+  saveTree(tree: TreeItem[]): Promise<number | void>;
+  saveDocument?(document: WonNoteDocument): Promise<number | void>;
   deleteDocument?(documentId: string): Promise<void>;
   mergeWorkspace(imported: WorkspaceData, mode: 'merge' | 'replace' | 'keep_both'): Promise<WorkspaceData>;
   getStorageInfo(): Promise<{ type: 'indexeddb' | 'server'; status: 'connected' | 'offline'; totalItems: number; sizeBytes?: number }>;

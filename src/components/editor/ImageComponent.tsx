@@ -157,6 +157,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
         <div
           contentEditable={false}
           className="absolute top-full mt-2 left-0 z-50 flex items-center flex-nowrap gap-1 bg-white/95 dark:bg-[#1e1e1e]/95 text-stone-800 dark:text-white px-2.5 py-1 rounded-xl shadow-2xl border border-stone-200/90 dark:border-stone-600/80 backdrop-blur-sm text-xs select-none whitespace-nowrap min-w-max pointer-events-auto"
+          style={{ transform: 'scale(var(--won-note-inverse-zoom, 1))', transformOrigin: 'top left' }}
         >
           {/* Notion/Excel-style 6-dot Drag Handle */}
           <div
@@ -311,6 +312,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
           contentEditable={false}
           onMouseDown={handleMouseDown}
           className="absolute -bottom-2 -right-2 w-5 h-5 bg-amber-500 hover:bg-amber-400 text-stone-950 rounded-full flex items-center justify-center cursor-nwse-resize shadow-lg z-30 transition-transform hover:scale-125 border-2 border-white dark:border-stone-900 select-none"
+          style={{ transform: 'scale(var(--won-note-inverse-zoom, 1))', transformOrigin: 'center' }}
           title="드래그하여 이미지 크기 조절"
         >
           <GripHorizontal className="w-3 h-3 text-stone-950" />
@@ -322,6 +324,7 @@ export const ImageComponent: React.FC<ReactNodeViewProps> = ({
         <div
           contentEditable={false}
           className="absolute bottom-3 right-3 bg-stone-900/90 text-white px-2 py-0.5 rounded text-[10px] font-mono font-bold z-40 pointer-events-none shadow"
+          style={{ transform: 'scale(var(--won-note-inverse-zoom, 1))', transformOrigin: 'bottom right' }}
         >
           {resizingWidth}
         </div>

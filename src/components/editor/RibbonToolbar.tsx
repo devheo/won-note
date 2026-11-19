@@ -55,12 +55,13 @@ import {
 import { TableColumn } from '../../types';
 import { DOMSerializer } from '@tiptap/pm/model';
 import { DrawingStylePicker } from './DrawingStylePicker';
-import { FontSizePixelControl, InsertShapeControls, ListToolbarControls, ShapeSizeControls, TableBorderToolbarControl } from './DocumentToolbarControls';
+import { CodeHighlightInserter, FontSizePixelControl, InsertShapeControls, ListToolbarControls, ShapeSizeControls, TableBorderToolbarControl } from './DocumentToolbarControls';
+import { EditorEditTools } from './EditorEditTools';
 
 interface RibbonToolbarProps {
   editor: any;
-  activeRibbonTab: 'home' | 'insert' | 'draw';
-  setActiveRibbonTab: (tab: 'home' | 'insert' | 'draw') => void;
+  activeRibbonTab: 'home' | 'edit' | 'insert' | 'draw';
+  setActiveRibbonTab: (tab: 'home' | 'edit' | 'insert' | 'draw') => void;
   activeTopDialog: string | null;
   setActiveTopDialog: (dialog: any) => void;
   savedSelectionRef: React.MutableRefObject<{ from: number; to: number } | null>;
@@ -157,6 +158,18 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const mdFileInputRef = useRef<HTMLInputElement | null>(null);
   const pptxFileInputRef = useRef<HTMLInputElement | null>(null);
+  const [, setSelectionTick] = useState(0);
+
+  useEffect(() => {
+    if (!editor) return;
+    const rerender = () => setSelectionTick(t => t + 1);
+    editor.on('selectionUpdate', rerender);
+    editor.on('transaction', rerender);
+    return () => {
+      editor.off('selectionUpdate', rerender);
+      editor.off('transaction', rerender);
+    };
+  }, [editor]);
   const excelFileInputRef = useRef<HTMLInputElement | null>(null);
   const pdfFileInputRef = useRef<HTMLInputElement | null>(null);
   const markdownFileInputRef = useRef<HTMLInputElement | null>(null);
@@ -236,7 +249,16 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
 
   const applyOneNoteTag = (tag: string) => {
     if (!tag) return;
-    editor.chain().focus().setMark('oneNoteTag', { tag }).run();
+    const labels: Record<string, string> = {
+      todo: '☐ 할 일', important: '★ 중요', question: '? 질문', idea: '💡 아이디어',
+    };
+    const label = labels[tag] || '★ 중요';
+    const { empty } = editor.state.selection;
+    if (empty) {
+      editor.chain().focus().insertContent(`<span data-won-note-tag="${tag}" class="won-note-inline-tag px-1.5 py-0.5 rounded text-xs font-semibold">${label}</span> `).run();
+    } else {
+      editor.chain().focus().setMark('oneNoteTag', { tag }).run();
+    }
     onNotify?.('선택 영역에 태그를 추가했습니다.');
   };
 
@@ -351,6 +373,19 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
           >
             <Type className="w-3.5 h-3.5" />
             <span>홈</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveRibbonTab('edit')}
+            className={`px-3.5 py-1.5 text-xs font-semibold rounded-t-lg transition-all border-t border-x flex items-center gap-1.5 ${
+              activeRibbonTab === 'edit'
+                ? 'bg-white dark:bg-stone-900 text-amber-600 dark:text-amber-400 border-stone-200 dark:border-stone-800 -mb-[1px] shadow-xs'
+                : 'border-transparent text-stone-600 dark:text-stone-400 hover:text-stone-900 dark:hover:text-stone-200 hover:bg-stone-100 dark:hover:bg-stone-800/60'
+            }`}
+          >
+            <ClipboardCopy className="w-3.5 h-3.5" />
+            <span>편집</span>
           </button>
 
           <button
@@ -899,6 +934,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
               <Pencil className="h-3.5 w-3.5 text-indigo-600" /><span>그리기</span>
             </button>
             <InsertShapeControls editor={editor} />
+            <CodeHighlightInserter editor={editor} />
             <ShapeSizeControls editor={editor} />
             <input ref={pptxFileInputRef} type="file" accept=".pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
             <input ref={markdownFileInputRef} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={event => { void handleInsertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
@@ -1056,19 +1092,7 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
             <span className="mr-1 text-[10px] font-semibold text-stone-500">펜</span>
             {([['pen', <Pencil size={14}/>, '펜'], ['highlighter', <HighlighterIcon size={14}/>, '형광펜'], ['eraser', <Eraser size={14}/>, '지우개'], ['select', <Type size={14}/>, '선택·이동']] as const).map(([mode, icon, label]) => <button key={mode} type="button" onMouseDown={event => event.preventDefault()} onClick={() => { if (mode !== 'select') onInsertDrawing?.(); setDrawingTool?.(mode); }} className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 ${drawingTool === mode ? 'border-indigo-300 bg-indigo-100 font-semibold text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/70 dark:text-indigo-200' : 'border-stone-200 text-stone-700 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800'}`}>{icon}<span>{label}</span></button>)}
             <DrawingStylePicker color={drawingColor} width={drawingWidth} onColorChange={color => setDrawingColor?.(color)} onWidthChange={nextWidth => setDrawingWidth?.(nextWidth)}/>
-            <button
-              type="button"
-              onClick={() => setActiveTopDialog(activeTopDialog === 'border' ? null : 'border')}
-              className={`px-2.5 py-1.5 rounded-lg border flex items-center gap-1.5 transition-colors font-medium shadow-2xs ${
-                activeTopDialog === 'border'
-                  ? 'bg-amber-100 dark:bg-amber-950/80 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-700'
-                  : 'bg-white dark:bg-stone-800 hover:bg-stone-100 dark:hover:bg-stone-700/80 text-stone-700 dark:text-stone-200 border-stone-200 dark:border-stone-700'
-              }`}
-              title="표 테두리 설정 (모든 테두리, 바깥쪽, 굵은 테두리, 가로줄, 테두리 없음, 색상)"
-            >
-              <Grid className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
-              <span>표 테두리</span>
-            </button>
+            <TableBorderToolbarControl editor={editor} />
 
             <div className="flex items-center gap-1 px-2 py-1 bg-stone-100/70 dark:bg-stone-800/60 rounded-lg border border-stone-200/60 dark:border-stone-700/60">
               <span className="text-[10px] font-medium text-stone-500 dark:text-stone-400 mr-0.5">셀 색:</span>
@@ -1199,6 +1223,8 @@ export const RibbonToolbar: React.FC<RibbonToolbarProps> = memo(({
             )}
           </div>
         )}
+
+        {activeRibbonTab === 'edit' && <EditorEditTools editor={editor} onNotify={onNotify} />}
       </div>
     </div>
   );

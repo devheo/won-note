@@ -214,31 +214,11 @@ const validFolderIds = new Set<string>(
   };
 }
 
-/**
- * Merges server tree into local tree while preserving local ordering and items
- * that may not have reached the server yet.
- */
+/** Server tree is authoritative after a successful metadata fetch. */
 export function mergeTrees(localTree: TreeItem[], serverTree: TreeItem[]): TreeItem[] {
-  if (!localTree || !Array.isArray(localTree)) return serverTree || [];
-  if (!serverTree || !Array.isArray(serverTree)) return localTree;
-
-  const localMap = new Map(localTree.map((item) => [item.id, item]));
-  const merged = [...localTree];
-
-  serverTree.forEach((serverItem) => {
-    if (!localMap.has(serverItem.id)) {
-      merged.push({ ...serverItem });
-    } else {
-      const idx = merged.findIndex((t) => t.id === serverItem.id);
-      if (idx !== -1 && (serverItem.updatedAt || 0) > (merged[idx].updatedAt || 0)) {
-        merged[idx] = {
-          ...merged[idx],
-          title: serverItem.title || merged[idx].title,
-          updatedAt: serverItem.updatedAt,
-        };
-      }
-    }
-  });
-
-  return merged;
+  if (!Array.isArray(serverTree)) return Array.isArray(localTree) ? localTree : [];
+  // Keeping local copies of removed or moved nodes caused clients to diverge:
+  // the old merge only appended server nodes and updated titles, ignoring order,
+  // parentId changes, and deletions. A successful server response is canonical.
+  return serverTree.map(item => ({ ...item }));
 }

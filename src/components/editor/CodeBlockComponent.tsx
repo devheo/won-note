@@ -322,7 +322,28 @@ export const CodeBlockComponent: React.FC<ReactNodeViewProps> = ({
     const raw = node?.textContent || '';
     if (!raw) return;
     const formatted = formatJavaOrGeneralCode(raw);
-    navigator.clipboard.writeText(formatted);
+    if (editor && typeof getPos === 'function') {
+      try {
+        const pos = getPos();
+        if (typeof pos === 'number') {
+          const { state, dispatch } = editor.view;
+          const codeBlockNode = state.doc.nodeAt(pos);
+          if (codeBlockNode) {
+            const tr = state.tr.replaceWith(
+              pos + 1,
+              pos + codeBlockNode.nodeSize - 1,
+              state.schema.text(formatted)
+            );
+            dispatch(tr);
+          }
+        }
+      } catch (err) {
+        console.warn('In-place format failed, copying formatted code instead:', err);
+      }
+    }
+    try {
+      navigator.clipboard.writeText(formatted);
+    } catch (_) {}
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };

@@ -493,6 +493,7 @@ export async function initDatabase(): Promise<Database> {
  */
 export function reloadDatabaseFromDisk(): WorkspaceData {
   if (!SQL) throw new Error('SQL.js not initialized');
+  if (persistTimer) { clearTimeout(persistTimer); persistTimer = null; }
   if (fs.existsSync(DB_FILE_PATH)) {
     console.log('[SQLite] Reloading database from disk:', DB_FILE_PATH);
     const fileBuffer = fs.readFileSync(DB_FILE_PATH);
@@ -1088,6 +1089,25 @@ export function getTable(tableId: string): TableDocument | null {
   return ws.tables[tableId] || null;
 }
 
+export function tableExists(tableId: string): boolean {
+  if (!dbInstance) return false;
+  const ids = Array.from(
+    new Set([
+      tableId,
+      tableId.replace(/-/g, '_'),
+      tableId.replace(/_/g, '-'),
+      tableId.replace(/^table[-_]/, ''),
+      `table_${tableId.replace(/^table[-_]/, '')}`,
+      `table-${tableId.replace(/^table[-_]/, '')}`,
+    ])
+  );
+  for (const tid of ids) {
+    const res = dbInstance.exec('SELECT 1 FROM tables WHERE id = ?', [toSqliteParam(tid)]);
+    if (res?.[0]?.values?.length) return true;
+  }
+  return false;
+}
+
 export function canAccessTable(tableId: string, userId?: string, role?: string): boolean {
   const res = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(tableId)]);
   if (!res?.[0]?.values?.length) return false;
@@ -1101,6 +1121,7 @@ export function canAccessTable(tableId: string, userId?: string, role?: string):
 }
 
 export function canWriteTable(tableId: string, userId?: string, role?: string): boolean {
+  if (!tableExists(tableId)) return true;
   if (role === 'master') return canAccessTable(tableId, userId, role);
   const res = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(tableId)]);
   if (!res?.[0]?.values?.length) return false;
@@ -1116,6 +1137,7 @@ export function canWriteTable(tableId: string, userId?: string, role?: string): 
 }
 
 export function canManageTable(tableId: string, userId?: string, role?: string): boolean {
+  if (!tableExists(tableId)) return true;
   if (role === 'master') return canAccessTable(tableId, userId, role);
   const res = dbInstance?.exec('SELECT visibility, owner_id FROM tables WHERE id = ?', [toSqliteParam(tableId)]);
   if (!res?.[0]?.values?.length) return false;
@@ -1595,14 +1617,38 @@ export function deleteDocument(documentId: string): void {
   syncDbToUserDataJson(false);
 }
 
+let isTransactionActive = false;
+
+export function runInTransaction<T>(action: () => T): T {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const isOuter = !isTransactionActive;
+  if (isOuter) {
+    dbInstance.run('BEGIN TRANSACTION;');
+    isTransactionActive = true;
+  }
+  try {
+    const result = action();
+    if (isOuter) {
+      dbInstance.run('COMMIT;');
+      isTransactionActive = false;
+    }
+    return result;
+  } catch (err) {
+    if (isOuter) {
+      isTransactionActive = false;
+      try { dbInstance.run('ROLLBACK;'); } catch {}
+    }
+    throw err;
+  }
+}
+
 /**
  * Delete a TableDocument from SQLite and drop any physical table
  */
 export function deleteTable(tableId: string): void {
   if (!dbInstance) throw new Error('Database not initialized');
   const now = Date.now();
-  dbInstance.run('BEGIN TRANSACTION;');
-  try {
+  runInTransaction(() => {
     const ids = Array.from(
       new Set([
         tableId,
@@ -1615,13 +1661,13 @@ export function deleteTable(tableId: string): void {
     );
 
     for (const tid of ids) {
-      dbInstance.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(tid)]);
-      dbInstance.run("DELETE FROM notes WHERE table_id = ?;", [toSqliteParam(tid)]);
-      dbInstance.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(tid)]);
-      dbInstance.run("DELETE FROM calendar_events WHERE table_id = ?;", [toSqliteParam(tid)]);
-      dbInstance.run("DELETE FROM row_images WHERE table_id = ?;", [toSqliteParam(tid)]);
-      dbInstance.run("DELETE FROM tables WHERE id = ?;", [toSqliteParam(tid)]);
-      dbInstance.run("DELETE FROM tree_items WHERE id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM table_rows WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM notes WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM table_columns WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM calendar_events WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM row_images WHERE table_id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM tables WHERE id = ?;", [toSqliteParam(tid)]);
+      dbInstance!.run("DELETE FROM tree_items WHERE id = ?;", [toSqliteParam(tid)]);
     }
 
     // Also drop physical table if it exists in SQLite
@@ -1648,19 +1694,15 @@ export function deleteTable(tableId: string): void {
     for (const ptName of possibleTableNames) {
       if (!systemTables.includes(ptName)) {
         try {
-          dbInstance.run(`DROP TABLE IF EXISTS "${ptName}";`);
+          dbInstance!.run(`DROP TABLE IF EXISTS "${ptName}";`);
         } catch (dropErr) {
           console.warn(`[SQLite] Failed dropping physical table ${ptName}:`, dropErr);
         }
       }
     }
 
-    dbInstance.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
-    dbInstance.run('COMMIT;');
-  } catch (err) {
-    dbInstance.run('ROLLBACK;');
-    throw err;
-  }
+    dbInstance!.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('exportedAt', ?);", [String(now)]);
+  });
 
   touchServerUpdate();
   persistDatabase(false);
@@ -2070,6 +2112,77 @@ export function deleteRowImage(id: string): boolean {
     console.warn('[SQLite] deleteRowImage failed:', err);
     return false;
   }
+}
+
+/**
+ * Recursively find all descendant tree item IDs under rootId in SQLite
+ */
+export function findTreeDescendantIds(rootId: string): string[] {
+  if (!dbInstance) return [rootId];
+  try {
+    const res = dbInstance.exec('SELECT id, parent_id FROM tree_items;');
+    if (!res[0] || !res[0].values) return [rootId];
+
+    const allItems = res[0].values.map((row) => ({
+      id: String(row[0] || ''),
+      parentId: row[1] ? String(row[1]) : null,
+    }));
+
+    const getChildren = (pId: string): string[] => {
+      const children = allItems.filter((t) => t.parentId === pId);
+      let ids = [pId];
+      children.forEach((c) => {
+        ids = [...ids, ...getChildren(c.id)];
+      });
+      return ids;
+    };
+
+    return getChildren(rootId);
+  } catch {
+    return [rootId];
+  }
+}
+
+/**
+ * Server-authoritative tree item deletion API helper.
+ * Validates user write permissions for all tables in deletion cascade before removing.
+ */
+export function deleteTreeItemCascadeForUser(
+  itemId: string,
+  userId?: string,
+  userRole?: string
+): { success: boolean; deletedIds: string[]; lastUpdated: number } {
+  if (!dbInstance) throw new Error('Database not initialized');
+
+  const idsToDelete = findTreeDescendantIds(itemId);
+
+  // Permission check for all tables in deletion set
+  for (const id of idsToDelete) {
+    if (getTable(id) && !canWriteTable(id, userId, userRole)) {
+      throw new Error('쓰기 권한이 없는 보드가 포함되어 있어 삭제할 수 없습니다.');
+    }
+  }
+
+  runInTransaction(() => {
+    const docs = getStoredDocuments();
+    idsToDelete.forEach((id) => {
+      deleteTable(id);
+      delete docs[id];
+      dbInstance!.run('DELETE FROM tree_items WHERE id = ?;', [toSqliteParam(id)]);
+    });
+
+    dbInstance!.run("INSERT OR REPLACE INTO workspace_meta (key, value) VALUES ('documents', ?);", [JSON.stringify(docs)]);
+  });
+
+  touchServerUpdate();
+  persistDatabase(false);
+  syncDbToUserDataJson(false);
+
+  return {
+    success: true,
+    deletedIds: idsToDelete,
+    lastUpdated: getLastUpdatedTimestamp(),
+  };
 }
 
 /** Insert one received copy. Other rows/tables are never replaced or deleted. */
@@ -2569,4 +2682,102 @@ export function pushSyncNotes(notes: any[]): {
     throw err;
   }
 }
+
+export function getAdminDbStats() {
+  if (!dbInstance) throw new Error('Database not initialized');
+  let fileSize = 0;
+  try {
+    if (fs.existsSync(DB_FILE_PATH)) {
+      fileSize = fs.statSync(DB_FILE_PATH).size;
+    }
+  } catch {}
+
+  const countQuery = (tableName: string): number => {
+    const exists = dbInstance!.exec("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", [tableName]);
+    if (!exists[0]?.values?.length) return 0;
+    const result = dbInstance!.exec(`SELECT COUNT(*) FROM "${tableName}"`);
+    return Number(result[0]?.values?.[0]?.[0] ?? 0);
+  };
+
+  let wsTablesCount = 0;
+  let wsTreeCount = 0;
+  let wsNotesCount = 0;
+  let wsRowsCount = 0;
+  try {
+    const ws = getWorkspaceData();
+    wsTablesCount = Object.keys(ws.tables || {}).length;
+    wsTreeCount = (ws.tree || []).length;
+    wsNotesCount = Object.keys(ws.documents || {}).length;
+    Object.values(ws.tables || {}).forEach((t) => {
+      if (Array.isArray(t.rows)) wsRowsCount += t.rows.length;
+    });
+  } catch {}
+
+  const dbTablesCount = countQuery('tables');
+  const dbTreeCount = countQuery('tree_items');
+  const dbNotesCount = countQuery('notes');
+  const dbRowsCount = countQuery('table_rows');
+
+  return {
+    fileSize,
+    filePath: DB_FILE_PATH,
+    lastUpdated: getLastUpdatedTimestamp(),
+    counts: {
+      tables: Math.max(wsTablesCount, dbTablesCount),
+      treeItems: Math.max(wsTreeCount, dbTreeCount),
+      tableRows: Math.max(wsRowsCount, dbRowsCount),
+      notes: Math.max(wsNotesCount, dbNotesCount),
+      tableColumns: countQuery('table_columns'),
+      calendarEvents: countQuery('calendar_events'),
+      rowImages: countQuery('row_images'),
+      documentHistory: countQuery('document_history'),
+      authUsers: countQuery('auth_users'),
+      userGroups: countQuery('user_groups'),
+    },
+  };
+}
+
+export function listAdminDbTableRows(tableName: string, offset = 0, limit = 50, search = '') {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const allowed = new Set(['workspace_meta', 'tree_items', 'tables', 'table_columns', 'calendar_events', 'document_chunks', 'row_images', 'table_rows', 'notes', 'document_history', 'auth_users', 'auth_sessions', 'auth_login_history', 'user_groups', 'group_memberships', 'board_group_permissions', 'chat_conversations', 'chat_members', 'chat_messages', 'chat_attachments', 'table_assets']);
+  if (!allowed.has(tableName)) throw new Error('허용되지 않은 테이블입니다.');
+  const safeLimit = Math.max(1, Math.min(tableName === 'notes' ? 10 : 50, Math.floor(limit)));
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const schema = dbInstance.exec(`PRAGMA table_info("${tableName}")`)[0]?.values || [];
+  const columns = schema.map(row => String(row[1]));
+  const needle = search.trim().slice(0, 200);
+  const where = needle ? ` WHERE ${columns.map(column => `CAST("${column}" AS TEXT) LIKE ?`).join(' OR ')}` : '';
+  const params = needle ? columns.map(() => `%${needle}%`) : [];
+  const total = Number(dbInstance.exec(`SELECT COUNT(*) FROM "${tableName}"${where}`, params)[0]?.values?.[0]?.[0] || 0);
+  const result = dbInstance.exec(`SELECT rowid AS __admin_rowid, * FROM "${tableName}"${where} LIMIT ${safeLimit} OFFSET ${safeOffset}`, params)[0];
+  const allColumns = ['__admin_rowid', ...columns];
+  const rows = (result?.values || []).map(row => Object.fromEntries(allColumns.map((column, index) => {
+    const value = row[index];
+    if (value instanceof Uint8Array) return [column, `[BLOB ${value.byteLength} bytes]`];
+    if (typeof value === 'string' && value.length > 240) return [column, `${value.slice(0, 240)} … [미리보기]`];
+    return [column, value];
+  })));
+  return { tableName, columns: allColumns, rows, total, offset: safeOffset, limit: safeLimit, search: needle };
+}
+
+export function getAdminDbTableRow(tableName: string, rowId: number, search = '') {
+  if (!dbInstance) throw new Error('Database not initialized');
+  const page = listAdminDbTableRows(tableName, rowId, 1, search);
+  const id = page.rows[0]?.__admin_rowid;
+  if (id === undefined) throw new Error('레코드를 찾을 수 없습니다.');
+  const result = dbInstance.exec(`SELECT * FROM "${tableName}" WHERE rowid = ?`, [id])[0];
+  if (!result?.values?.length) throw new Error('레코드를 찾을 수 없습니다.');
+  return Object.fromEntries(page.columns.slice(1).map((column, index) => {
+    const value = result.values[0][index];
+    return [column, value instanceof Uint8Array ? `[BLOB ${value.byteLength} bytes]` : value];
+  }));
+}
+
+export function vacuumDatabase() {
+  if (!dbInstance) throw new Error('Database not initialized');
+  dbInstance.run('VACUUM;');
+  persistDatabase(true);
+  return getAdminDbStats();
+}
+
 

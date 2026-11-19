@@ -834,6 +834,12 @@
   margin: 0.25rem 0.4rem !important;
 }
 
+/* Off-screen Content-Visibility Optimization for Long Documents */
+.tiptap > * {
+  content-visibility: auto;
+  contain-intrinsic-size: 1px 60px;
+}
+
 /* TipTap Table Styles with Resizable Cells, Clear Borders & Dark Mode */
 .tiptap table,
 .wonbee-rendered-table table,
@@ -1000,6 +1006,22 @@ table[style*="--table-border-color"],
 .wonbee-rich-table:not([data-border-style]) td,
 .wonbee-rich-table:not([data-border-style]) th {
   border: 1px solid var(--table-border-color, #cbd5e1) !important;
+}
+
+/* High-Performance Wide Table Optimization for Many Columns */
+.table-fixed td,
+.table-fixed th {
+  contain: layout style;
+}
+
+/* Explicit per-cell borders set by the Excel-style toolbar take precedence over table defaults. */
+.tiptap td[data-cell-border],
+.tiptap th[data-cell-border] {
+  border-color: transparent;
+}
+.tiptap td[data-cell-border="none"],
+.tiptap th[data-cell-border="none"] {
+  border: none !important;
 }
 
 /* Table Border Variations */

@@ -17,6 +17,20 @@ import { ensureWorkspaceTree, mergeTrees } from '../../utils/workspaceTreeUtils'
 import { deduplicatedFetchJson } from '../api/requestDeduplicator';
 import { fetchBridge } from '../httpBridge';
 
+export const LOCAL_SERVER_VERSION_KEY = 'wonbee_local_server_version';
+
+function rememberServerVersion(version: unknown): number | void {
+  const timestamp = Number(version);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+  if (typeof localStorage !== 'undefined') localStorage.setItem(LOCAL_SERVER_VERSION_KEY, String(timestamp));
+  return timestamp;
+}
+
+async function readWriteVersion(response: Response): Promise<number | void> {
+  const payload = await response.json().catch(() => ({}));
+  return rememberServerVersion(payload.lastUpdated);
+}
+
 export function mergeWorkspaces(
   current: WorkspaceData,
   imported: WorkspaceData,
@@ -134,7 +148,7 @@ export class IndexedDBWorkspaceRepository implements IWorkspaceRepository {
     return wonbeeDB.loadWorkspace();
   }
 
-  async saveWorkspace(data: WorkspaceData): Promise<void> {
+  async saveWorkspace(data: WorkspaceData): Promise<number | void> {
     return wonbeeDB.saveFullWorkspace(data);
   }
 
@@ -485,7 +499,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     }
   }
 
-  async saveWorkspace(data: WorkspaceData): Promise<void> {
+  async saveWorkspace(data: WorkspaceData): Promise<number | void> {
     const ensured = ensureWorkspaceTree(data);
     await this.localFallback.saveWorkspace(ensured);
 
@@ -500,6 +514,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
+      return await readWriteVersion(res);
     } catch (err) {
       console.warn('[Repository] Server saveWorkspace offline fallback:', err);
     }
@@ -517,7 +532,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     }
   }
 
-  async saveTable(table: TableDocument): Promise<void> {
+  async saveTable(table: TableDocument): Promise<number | void> {
     await this.localFallback.saveTable(table);
 
     try {
@@ -531,7 +546,9 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
+      const version = await readWriteVersion(res);
       await wonbeeDexieDB.markTableClean(table.id);
+      return version;
     } catch (err) {
       console.warn('[Repository] Server saveTable offline fallback:', err);
     }
@@ -627,7 +644,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
       const res = await fetchBridge(`${this.serverUrl}/tables/${tableId}`, {
         method: 'DELETE',
       });
-      if (!res.ok) {
+      if (!res.ok && res.status !== 404) {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
@@ -636,7 +653,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
     }
   }
 
-  async saveTree(tree: TreeItem[]): Promise<void> {
+  async saveTree(tree: TreeItem[]): Promise<number | void> {
     await this.localFallback.saveTree(tree);
 
     try {
@@ -649,12 +666,13 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         const errJson = await res.json().catch(() => ({}));
         throw new Error(errJson.error || `HTTP ${res.status}`);
       }
+      return await readWriteVersion(res);
     } catch (err) {
       console.warn('[Repository] Server saveTree offline fallback:', err);
     }
   }
 
-  async saveDocument(document: WonNoteDocument): Promise<void> {
+  async saveDocument(document: WonNoteDocument): Promise<number | void> {
     await this.localFallback.saveDocument(document);
     try {
       if (!(await this.pushDirtyAssets())) throw new Error('Image assets are waiting for server synchronization');
@@ -664,6 +682,7 @@ export class ServerApiWorkspaceRepository implements IWorkspaceRepository {
         body: JSON.stringify(document),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await readWriteVersion(res);
     } catch (err) {
       console.warn('[Repository] Server saveDocument offline fallback:', err);
     }

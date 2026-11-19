@@ -37,6 +37,7 @@ export default function ChatWindow() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [presence, setPresence] = useState<Record<string, Presence['status']>>({});
   const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [draggingFile, setDraggingFile] = useState(false);
   const [imagePreview, setImagePreview] = useState<{ src: string; filename: string } | null>(null);
@@ -242,8 +243,9 @@ export default function ChatWindow() {
 
   const sendMessage = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (!activeId || (!draft.trim() && !file && !selectedDocument)) return;
+    if (sending || !activeId || (!draft.trim() && !file && !selectedDocument)) return;
     try {
+      setSending(true);
       setError('');
       if (isClientMode) {
         const attachment = file ? await saveClientChatAttachment(file) : undefined;
@@ -270,7 +272,8 @@ export default function ChatWindow() {
       });
       setMessages(previous => previous.some(item => item.id === message.id) ? previous : [...previous, message]);
       setDraft(''); setFile(null); setDocument(null);
-    } catch (reason) { setError(reason instanceof Error ? reason.message : '메시지를 보내지 못했습니다.'); }
+    } catch (reason) { setError(reason instanceof Error ? `전송 실패: ${reason.message}` : '전송 실패: 메시지를 보내지 못했습니다.'); }
+    finally { setSending(false); }
   };
 
   const downloadLocalAttachment = async (attachmentId: string) => {
@@ -510,7 +513,7 @@ export default function ChatWindow() {
           </button>
         </div>
       )}
-      <form onSubmit={sendMessage} className="border-t border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900">{(file || selectedDocument) && <div className="mb-2 flex items-center gap-2 text-xs text-stone-600 dark:text-stone-300">{file ? <Paperclip size={14}/> : <FileText size={14}/>}<span className="truncate">{file?.name || selectedDocument?.title}</span><button type="button" onClick={() => { setFile(null); setDocument(null); }} title="첨부 취소"><X size={14}/></button></div>}<div className="flex items-end gap-2"><label title="파일 첨부" className="cursor-pointer rounded-lg p-2 text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800"><Paperclip size={19}/><input type="file" className="hidden" onChange={event => { const chosen = event.target.files?.[0]; if (chosen) { if (chosen.size > 20 * 1024 * 1024) setError('첨부 파일은 20MB 이하로 선택해 주세요.'); else { setFile(chosen); setDocument(null); } event.target.value = ''; } }}/></label><select title="문서 공유" value={selectedDocument?.id || ''} onChange={event => { const selected = documents.find(item => item.id === event.target.value) || null; setDocument(selected); setFile(null); }} className="max-w-48 rounded-lg border border-stone-300 bg-transparent px-2 py-2 text-xs dark:border-stone-700"><option value="">문서 공유</option>{documents.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select><textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(event); } }} rows={1} placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)" className="max-h-32 min-h-10 flex-1 resize-y rounded-xl border border-stone-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-stone-700"/><button disabled={!activeId || (!draft.trim() && !file && !selectedDocument)} title="전송" className="rounded-xl bg-indigo-600 p-2.5 text-white disabled:opacity-40"><Send size={18}/></button></div></form>
+      <form onSubmit={sendMessage} className="border-t border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900">{(file || selectedDocument) && <div className="mb-2 flex items-center gap-2 text-xs text-stone-600 dark:text-stone-300">{file ? <Paperclip size={14}/> : <FileText size={14}/>}<span className="truncate">{file?.name || selectedDocument?.title}</span><button type="button" onClick={() => { setFile(null); setDocument(null); }} title="첨부 취소"><X size={14}/></button></div>}<div className="flex items-end gap-2"><label title="파일 첨부" className="cursor-pointer rounded-lg p-2 text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800"><Paperclip size={19}/><input type="file" className="hidden" onChange={event => { const chosen = event.target.files?.[0]; if (chosen) { if (chosen.size > 20 * 1024 * 1024) setError('첨부 파일은 20MB 이하로 선택해 주세요.'); else { setFile(chosen); setDocument(null); } event.target.value = ''; } }}/></label><select title="문서 공유" value={selectedDocument?.id || ''} onChange={event => { const selected = documents.find(item => item.id === event.target.value) || null; setDocument(selected); setFile(null); }} className="max-w-48 rounded-lg border border-stone-300 bg-transparent px-2 py-2 text-xs dark:border-stone-700"><option value="">문서 공유</option>{documents.map(item => <option key={item.id} value={item.id}>{item.title}</option>)}</select><textarea value={draft} onChange={event => setDraft(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(event); } }} rows={1} placeholder={sending ? '전송 중…' : '메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)'} className="max-h-32 min-h-10 flex-1 resize-y rounded-xl border border-stone-300 bg-transparent px-3 py-2 text-sm outline-none focus:border-indigo-500 dark:border-stone-700"/><button disabled={sending || !activeId || (!draft.trim() && !file && !selectedDocument)} title="전송" className="rounded-xl bg-indigo-600 p-2.5 text-white disabled:opacity-40"><Send size={18}/></button></div></form>
     </section>
   </main>;
 }

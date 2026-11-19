@@ -20,7 +20,7 @@ interface UseWorkspaceInitOptions {
  */
 export function useWorkspaceInit({ repository }: UseWorkspaceInitOptions) {
   const [workspace, setWorkspace] = useState<WorkspaceData>(INITIAL_WORKSPACE_DATA);
-  const [activeTableId, setActiveTableId] = useState<string | null>(null);
+  const [activeTableId, setActiveTableId] = useState<string | null>(() => typeof localStorage !== 'undefined' ? localStorage.getItem('wonbee_active_table_id') : null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<'loading' | 'success' | 'error'>('loading');

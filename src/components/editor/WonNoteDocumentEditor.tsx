@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Editor, mergeAttributes, Node } from '@tiptap/core';
+import { Editor, Extension, mergeAttributes, Node } from '@tiptap/core';
 import { EditorContent, ReactNodeViewRenderer, useEditor } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Collaboration from '@tiptap/extension-collaboration';
@@ -8,6 +8,7 @@ import CollaborationCaret from '@tiptap/extension-collaboration-caret';
 import { WebsocketProvider } from 'y-websocket';
 import * as Y from 'yjs';
 import CodeBlockLowlight from '@tiptap/extension-code-block-lowlight';
+import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model';
 import { createLowlight, common } from 'lowlight';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
@@ -27,12 +28,27 @@ import Link from '@tiptap/extension-link';
 import HorizontalRule from '@tiptap/extension-horizontal-rule';
 import { CommentExtension } from './CommentExtension';
 import { DrawingExtension } from './DrawingExtension';
-import { ListMarkerAttributes, NoteTableBorderStyle, WonBeeShape } from './DocumentEditorExtensions';
-import { FontSizePixelControl, InsertShapeControls, ListToolbarControls, ShapeSizeControls, TableBorderToolbarControl } from './DocumentToolbarControls';
+import { CustomTable, ListMarkerAttributes, NoteTableBorderStyle, NoteTableCellBorders, NoteTableRowHeight, TextBlockIndent, WonBeeShape } from './DocumentEditorExtensions';
+import { CodeHighlightInserter, FontSizePixelControl, InsertShapeControls, ListToolbarControls, ShapeSizeControls, TableBorderToolbarControl } from './DocumentToolbarControls';
 import { DrawingOverlay } from './DrawingOverlay';
 import { DrawingStylePicker } from './DrawingStylePicker';
 import { useYjsComments } from './useYjsComments';
 import { NOTE_FONT_FAMILIES } from '../../constants/editor';
+import { OneNoteTagMark, SubscriptMark, SuperscriptMark } from './OneNoteStyleExtensions';
+import { Mark } from '@tiptap/core';
+
+const TextBackgroundColorMark = Mark.create({
+  name: 'textBackgroundColor',
+  addAttributes() { return { color: { default: '#fff176', parseHTML: element => (element as HTMLElement).style.backgroundColor || null, renderHTML: attrs => ({ style: `background-color: ${attrs.color}` }) } }; },
+  parseHTML() { return [{ tag: 'span[style*="background-color"]' }]; },
+  renderHTML({ HTMLAttributes }) { return ['span', mergeAttributes(HTMLAttributes), 0]; },
+});
+const TextForegroundColorMark = Mark.create({
+  name: 'textForegroundColor',
+  addAttributes() { return { color: { default: '#292524', parseHTML: element => (element as HTMLElement).style.color || null, renderHTML: attrs => ({ style: `color: ${attrs.color}` }) } }; },
+  parseHTML() { return [{ tag: 'span[style*="color"]' }]; },
+  renderHTML({ HTMLAttributes }) { return ['span', mergeAttributes(HTMLAttributes), 0]; },
+});
 import {
   Bold,
   Code,
@@ -69,18 +85,32 @@ import {
   FileSpreadsheet,
   FileText,
   FileDown,
+  Subscript as SubscriptIcon,
+  Superscript as SuperscriptIcon,
+  RemoveFormatting,
+  Video,
+  Scissors,
+  Copy,
+  ClipboardPaste,
+  Combine,
+  Split,
+  Rows,
+  Columns,
 } from 'lucide-react';
 import { WonNoteDocument } from '../../types';
 import { ImageComponent } from './ImageComponent';
+import { CodeBlockComponent } from './CodeBlockComponent';
 import { registerNoteEditor } from '../../services/noteEditorBridge';
 import { usePersistedYDoc } from '../../hooks/usePersistedYDoc';
 import { useDocumentHistory } from '../../hooks/useDocumentHistory';
 import { DocumentHistoryPanel } from './DocumentHistoryPanel';
 import { selectCommentAnchorAt } from '../../utils/commentSelection';
 import { useStatusBar } from '../common/GlobalStatusBar';
-import { markdownToHtml } from '../../utils/markdownHelper';
+import { isLikelyMarkdown, markdownToHtml } from '../../utils/markdownHelper';
 import { convertTextDataToEditorContent } from '../../utils/csvParser';
 import { escapeHtml } from '../../utils/codeHighlighter';
+import { EditorEditTools } from './EditorEditTools';
+import { changeTextBlockIndent } from '../../utils/editorIndent';
 
 const WonNoteImage = Image.extend({
   inline: true,
@@ -143,12 +173,100 @@ const CustomTextStyle = TextStyle.extend({
   },
 });
 
+const TabKeyExtension = Extension.create({
+  name: 'tabKeySupport',
+  addKeyboardShortcuts() {
+    return {
+      Tab: () => {
+        if (this.editor.isActive('codeBlock')) {
+          this.editor.commands.insertContent('    ');
+          return true;
+        }
+        if (this.editor.isActive('table')) {
+          return false;
+        }
+        changeTextBlockIndent(this.editor, 24);
+        return true; // Always consume Tab key within editor to prevent focus escaping to zoom/toolbar buttons
+      },
+      'Shift-Tab': () => {
+        if (this.editor.isActive('table')) {
+          return false;
+        }
+        changeTextBlockIndent(this.editor, -24);
+        return true; // Always consume Shift-Tab key within editor to prevent focus escaping
+      },
+    };
+  },
+});
+
+function handleEqualizeRowHeights(editor: any) {
+  if (!editor || !editor.isActive('table')) return;
+  const { state, view } = editor;
+  const { doc, selection } = state;
+  let tablePos: number | null = null;
+  doc.descendants((node: any, pos: number) => {
+    if (node.type.name === 'table' && tablePos === null) {
+      if (pos <= selection.from && pos + node.nodeSize >= selection.to) {
+        tablePos = pos;
+      }
+    }
+  });
+  if (tablePos === null) return;
+  const tableNode = doc.nodeAt(tablePos);
+  if (!tableNode) return;
+
+  let tr = state.tr;
+  tableNode.descendants((node: any, pos: number) => {
+    if (node.type.name === 'tableRow') {
+      const absPos = tablePos! + 1 + pos;
+      tr = tr.setNodeMarkup(absPos, undefined, { ...node.attrs, rowHeight: 32 });
+    }
+  });
+  view.dispatch(tr);
+}
+
+function handleEqualizeColumnWidths(editor: any) {
+  if (!editor || !editor.isActive('table')) return;
+  editor.chain().focus().unsetCellAttribute('colwidth').run();
+}
+
+function handleCut(editor: any) {
+  if (!editor) return;
+  try {
+    const text = editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ');
+    if (text) navigator.clipboard.writeText(text);
+    editor.chain().focus().deleteSelection().run();
+  } catch {
+    document.execCommand('cut');
+  }
+}
+
+function handleCopy(editor: any) {
+  if (!editor) return;
+  try {
+    const text = editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ');
+    if (text) navigator.clipboard.writeText(text);
+  } catch {
+    document.execCommand('copy');
+  }
+}
+
+async function handlePaste(editor: any) {
+  if (!editor) return;
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) editor.chain().focus().insertContent(text).run();
+  } catch {
+    document.execCommand('paste');
+  }
+}
+
 interface WonNoteDocumentEditorProps {
   document: WonNoteDocument;
   onUpdateDocument: (updatedDocument: WonNoteDocument) => void;
   zoomLevel?: number;
   useServerMode?: boolean;
-  activeRibbonTab?: 'home' | 'insert' | 'draw';
+  activeRibbonTab?: 'home' | 'edit' | 'insert' | 'draw';
 }
 
 export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ document, onUpdateDocument, zoomLevel = 100, useServerMode = false, activeRibbonTab = 'home' }) => {
@@ -180,10 +298,23 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
   const [isEditorContentReady, setIsEditorContentReady] = useState(false);
   const [showDocumentLoader, setShowDocumentLoader] = useState(false);
   const [insertMessage, setInsertMessage] = useState<string | null>(null);
+  const [, setSelectionTick] = useState(0);
   const [collaborationState, setCollaborationState] = useState(useServerMode ? (import.meta.env.VITE_YJS_WS_URL ? '연결 중' : '로컬 저장 · Yjs 서버 미설정') : '이 기기에 저장됨');
   const [drawingTool, setDrawingTool] = useState<'select' | 'pen' | 'highlighter' | 'eraser'>('select');
   const [drawingColor, setDrawingColor] = useState('#1f2937');
   const [drawingWidth, setDrawingWidth] = useState(1);
+  const [showHighlightPalette, setShowHighlightPalette] = useState(false);
+  const [showTextColorPalette, setShowTextColorPalette] = useState(false);
+  const [customTextColor, setCustomTextColor] = useState('#292524');
+  const [customHighlightColor, setCustomHighlightColor] = useState('#fff176');
+  const [palettePosition, setPalettePosition] = useState({ left: 16, top: 80 });
+  const highlightColors = ['#fff176', '#ffe082', '#ffccbc', '#f8bbd0', '#e1bee7', '#c5cae9', '#bbdefb', '#b2dfdb', '#c8e6c9', '#dcedc8', '#eeeeee', '#ffffff'];
+  const openColorPalette = (event: React.MouseEvent<HTMLButtonElement>, type: 'text' | 'background') => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    setPalettePosition({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 208)), top: Math.min(rect.bottom + 6, window.innerHeight - 170) });
+    if (type === 'text') { setShowTextColorPalette(value => !value); setShowHighlightPalette(false); }
+    else { setShowHighlightPalette(value => !value); setShowTextColorPalette(false); }
+  };
 
   useEffect(() => {
     if (!editorContextMenu) return;
@@ -245,13 +376,43 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         CommentExtension.configure({ onCommentClick: setActiveCommentId }),
         ...(collaboration.provider ? [CollaborationCaret.configure({ provider: collaboration.provider, user: { name: '사용자', color: '#4f46e5' } })] : []),
       ],
-      CodeBlockLowlight.configure({ lowlight }),
+      CodeBlockLowlight.extend({
+        draggable: true,
+        selectable: true,
+        addAttributes() {
+          return {
+            ...this.parent?.(),
+            width: {
+              default: '100%',
+              parseHTML: (element: HTMLElement) => element.getAttribute('data-code-width') || element.style.width || '100%',
+              renderHTML: (attributes: Record<string, unknown>) => attributes.width
+                ? { 'data-code-width': String(attributes.width), style: attributes.width !== '100%' ? `width: ${attributes.width}; max-width: 100%;` : undefined }
+                : {},
+            },
+            height: {
+              default: null,
+              parseHTML: (element: HTMLElement) => element.getAttribute('data-code-height') || element.style.height || null,
+              renderHTML: (attributes: Record<string, unknown>) => attributes.height
+                ? { 'data-code-height': String(attributes.height), style: `height: ${attributes.height}; max-height: ${attributes.height};` }
+                : {},
+            },
+            align: {
+              default: 'left',
+              parseHTML: (element: HTMLElement) => element.getAttribute('data-code-align') || 'left',
+              renderHTML: (attributes: Record<string, unknown>) => attributes.align ? { 'data-code-align': String(attributes.align) } : {},
+            },
+          };
+        },
+        addNodeView() {
+          return ReactNodeViewRenderer(CodeBlockComponent);
+        },
+      }).configure({ lowlight, defaultLanguage: 'auto' }),
       TaskList,
       TaskItem.configure({ nested: true }),
       Underline,
       WonNoteImage.configure({ allowBase64: true }),
       Placeholder.configure({ placeholder: '생각을 자유롭게 적어보세요…' }),
-      Table.configure({ resizable: true }),
+      CustomTable.configure({ resizable: true }),
       TableRow,
       TableHeader,
       TableCell,
@@ -260,18 +421,69 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       CustomTextStyle,
       FontFamily,
       Color,
+      SubscriptMark,
+      SuperscriptMark,
+      OneNoteTagMark,
+      TextBackgroundColorMark,
+      TextForegroundColorMark,
       Link.configure({ openOnClick: false }),
       HorizontalRule,
       PdfPage,
       DrawingExtension,
       ListMarkerAttributes,
       NoteTableBorderStyle,
+      NoteTableCellBorders,
+      NoteTableRowHeight,
+      TextBlockIndent,
       WonBeeShape,
+      TabKeyExtension,
     ],
     content: undefined,
     editorProps: {
       attributes: {
         class: 'prose won-note-prose focus:outline-none min-h-[calc(100vh-220px)] px-8 py-7 text-stone-800 dark:text-stone-100 max-w-none',
+      },
+      handlePaste: (view, event) => {
+        const clipboard = event.clipboardData;
+        if (!clipboard) return false;
+        const files = Array.from(clipboard.files || []);
+        const markdownFile = files.find(file => /\.(md|markdown)$/i.test(file.name) || /^(text\/(x-)?markdown)$/i.test(file.type));
+        const insertMarkdown = (source: string) => {
+          const markdown = source.replace(/^\uFEFF/, '').trim();
+          if (!markdown) return false;
+          const html = markdownToHtml(markdown);
+          const container = window.document.createElement('div');
+          container.innerHTML = html;
+          const slice = ProseMirrorDOMParser.fromSchema(view.state.schema).parseSlice(container);
+          view.dispatch(view.state.tr.replaceSelection(slice).scrollIntoView());
+          view.focus();
+          return true;
+        };
+        if (markdownFile) {
+          event.preventDefault();
+          const reader = new FileReader();
+          reader.onload = () => {
+            insertMarkdown(String(reader.result || ''));
+          };
+          reader.readAsText(markdownFile);
+          return true;
+        }
+        // Some apps expose Markdown under its own MIME type and leave
+        // text/plain empty (or put a rendered HTML flavor first).
+        const markdownMime = clipboard.getData('text/markdown') || clipboard.getData('text/x-markdown');
+        if (markdownMime.trim()) {
+          event.preventDefault();
+          return insertMarkdown(markdownMime);
+        }
+        const text = (clipboard.getData('text/plain') || '').replace(/^\uFEFF/, '');
+        // Clipboard providers may include an HTML flavor alongside the raw
+        // Markdown source. Prefer parsing the source so Markdown syntax is not
+        // inserted as literal text when both flavors are present.
+        if (text.trim() && isLikelyMarkdown(text)) {
+          event.preventDefault();
+          return insertMarkdown(text);
+        }
+        return false;
       },
     },
     onUpdate: ({ editor: activeEditor }) => {
@@ -279,7 +491,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       // React state only after typing pauses briefly.
       pendingEditorRef.current = activeEditor;
       if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
-      updateTimerRef.current = setTimeout(flushEditorUpdate, 250);
+      updateTimerRef.current = setTimeout(flushEditorUpdate, 400);
     },
   }, [document.id, ydocReady]);
 
@@ -287,6 +499,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
     if (!editor) return;
     let frameId = 0;
     const refreshStatusBar = () => {
+      setSelectionTick(t => t + 1);
       if (frameId) return;
       frameId = window.requestAnimationFrame(() => {
         frameId = 0;
@@ -405,18 +618,31 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
     };
   }, [editor, document.id]);
 
-  useEffect(() => editor ? registerNoteEditor(document.id, editor) : undefined, [editor, document.id]);
+  useEffect(() => editor ? registerNoteEditor(document.id, editor, () => {
+    if (updateTimerRef.current) clearTimeout(updateTimerRef.current);
+    updateTimerRef.current = null;
+    pendingEditorRef.current = null;
+  }) : undefined, [editor, document.id]);
 
   useEffect(() => {
-    if (!editor || editor.isDestroyed || !ydocReady || (collaboration.provider && !collaboration.provider.synced)) return;
-    // Yjs is the source of truth in both offline and server modes. Initial content
-    // is seeded only into an empty CRDT document; stale React props must not replace it.
-    if (collaboration.ydoc.getXmlFragment('prosemirror').length > 0) {
+    if (!editor || editor.isDestroyed || !ydocReady) return;
+
+    const incoming = document.content || '<p></p>';
+    if (editor.isFocused) {
       setIsEditorContentReady(true);
       return;
     }
-    const incoming = document.content || '<p></p>';
-    if (editor.isFocused || editor.getHTML() === incoming) {
+    if (editor.getHTML() === incoming) {
+      setIsEditorContentReady(true);
+      return;
+    }
+
+    // Yjs CRDT is the source of truth when a live WebSocket provider is active.
+    // In standard HTTP REST / SQLite server mode (no live WS provider), update editor with remote content.
+    const isLiveWsConnected = Boolean(collaboration.provider && collaboration.provider.synced);
+    const yXmlLength = collaboration.ydoc.getXmlFragment('prosemirror').length;
+
+    if (isLiveWsConnected && yXmlLength > 0) {
       setIsEditorContentReady(true);
       return;
     }
@@ -556,7 +782,10 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       type="button"
       title={label}
       aria-label={label}
-      onClick={action}
+      onClick={() => {
+        action();
+        setSelectionTick(t => t + 1);
+      }}
       className={`rounded-lg p-2 transition-colors cursor-pointer ${
         active
           ? 'bg-amber-500 text-stone-950 font-bold shadow-2xs'
@@ -570,32 +799,44 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
   const indentList = () => {
     if (editor.isActive('listItem')) (editor.chain().focus() as any).sinkListItem('listItem').run();
     else if (editor.isActive('taskItem')) (editor.chain().focus() as any).sinkListItem('taskItem').run();
-    else editor.chain().focus().insertContent('    ').run();
+    else changeTextBlockIndent(editor, 24);
   };
   const outdentList = () => {
     if (editor.isActive('listItem')) (editor.chain().focus() as any).liftListItem('listItem').run();
     else if (editor.isActive('taskItem')) (editor.chain().focus() as any).liftListItem('taskItem').run();
-    else editor.chain().focus().lift('blockquote').run();
+    else changeTextBlockIndent(editor, -24);
   };
 
   if (!isDocumentReady || !editor) {
-    if (!showDocumentLoader) return null;
     return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-4 bg-[#fffdf8] px-6 text-center dark:bg-[#171717]" role="status" aria-live="polite" aria-label="문서 로딩 중">
+      <div className="relative flex h-full min-h-0 flex-col items-center justify-center gap-4 bg-[#fffdf8] px-6 text-center dark:bg-[#171717] animate-in fade-in duration-100" role="status" aria-live="polite" aria-label="문서 로딩 중">
+        {/* Top Animated Progress Bar */}
+        <div className="absolute top-0 left-0 right-0 h-1.5 bg-stone-200 dark:bg-stone-800 overflow-hidden z-50">
+          <div className="h-full bg-amber-500 animate-pulse w-3/4 transition-all duration-300" />
+        </div>
         <div className="relative flex h-20 w-20 items-center justify-center">
           <div className="absolute inset-0 rounded-full border-[5px] border-stone-200 dark:border-stone-700" />
           <div className="absolute inset-0 animate-spin rounded-full border-[5px] border-transparent border-t-amber-500" />
           <LoaderCircle className="h-8 w-8 text-amber-500" strokeWidth={2.2} />
         </div>
-        <div><p className="text-sm font-semibold text-stone-800 dark:text-stone-100">문서를 불러오고 있습니다</p><p className="mt-1 text-xs text-stone-500 dark:text-stone-400">{loadingMessage}</p></div>
+        <div>
+          <p className="text-sm font-bold text-stone-800 dark:text-stone-100">문서를 불러오고 있습니다...</p>
+          <p className="mt-1 text-xs text-stone-500 dark:text-stone-400">{loadingMessage}</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#fffdf8] dark:bg-[#171717]">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-[#fffdf8] dark:bg-[#171717]" onContextMenuCapture={event => {
+      if ((event.target as HTMLElement).closest('#won-note-document-context-menu')) return;
+      event.preventDefault();
+      const position = editor.view.posAtCoords({ left: event.clientX, top: event.clientY });
+      if (position && editor.state.selection.empty) editor.commands.setTextSelection(position.pos);
+      setEditorContextMenu({ x: event.clientX, y: event.clientY });
+    }}>
       {/* Enhanced Rich Toolbar matching RichEditorModal */}
-      <div id="won-note-editor-toolbar" className="flex min-w-0 flex-nowrap items-center gap-1 overflow-x-auto whitespace-nowrap border-b border-stone-200 bg-white px-4 py-2 text-xs shrink-0 dark:border-stone-800 dark:bg-stone-900 [&>*]:shrink-0" style={{ scrollbarWidth: 'none' }}>
+      <div id="won-note-editor-toolbar" className="flex min-w-0 flex-nowrap items-center gap-0.5 overflow-x-auto whitespace-nowrap border-b border-stone-200 bg-white px-2 py-1.5 text-xs shrink-0 dark:border-stone-800 dark:bg-stone-900 [&>*]:shrink-0 [&_button]:p-1.5 [&_button_svg]:h-3.5 [&_button_svg]:w-3.5" style={{ scrollbarWidth: 'none' }}>
         {activeRibbonTab === 'home' && <>
         {/* Home: text style, paragraph and list tools */}
         <select
@@ -608,7 +849,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
             if (family === 'default') editor.chain().focus().unsetFontFamily().run();
             else editor.chain().focus().setFontFamily(family).run();
           }}
-          className="h-8 max-w-36 rounded-lg border border-stone-200 bg-white px-2 text-xs text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
+          className="h-7 max-w-28 rounded-lg border border-stone-200 bg-white px-1.5 text-[11px] text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200"
         >
           {NOTE_FONT_FAMILIES.map(font => <option key={font.value} value={font.value}>{font.label}</option>)}
         </select>
@@ -619,6 +860,40 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         {tool('밑줄', <UnderlineIcon size={15} />, () => editor.chain().focus().toggleUnderline().run(), editor.isActive('underline'))}
         {tool('취소선', <Strikethrough size={15} />, () => editor.chain().focus().toggleStrike().run(), editor.isActive('strike'))}
         {tool('인라인 코드', <Code size={15} />, () => editor.chain().focus().toggleCode().run(), editor.isActive('code'))}
+        {tool('아래 첨자', <SubscriptIcon size={15} />, () => editor.chain().focus().toggleMark('subscript').run(), editor.isActive('subscript'))}
+        {tool('위 첨자', <SuperscriptIcon size={15} />, () => editor.chain().focus().toggleMark('superscript').run(), editor.isActive('superscript'))}
+        {tool('서식 지우기', <RemoveFormatting size={15} />, () => editor.chain().focus().unsetAllMarks().clearNodes().run())}
+        <select
+          aria-label="노트 태그"
+          title="선택한 텍스트에 노트 태그 적용 또는 커서 위치에 태그 삽입"
+          defaultValue=""
+          onMouseDown={event => event.stopPropagation()}
+          onChange={event => {
+            const tag = event.target.value;
+            if (tag) {
+              const labels: Record<string, string> = {
+                todo: '☐ 할 일', important: '★ 중요', question: '? 질문', idea: '💡 아이디어',
+              };
+              const label = labels[tag] || '★ 중요';
+              const { empty } = editor.state.selection;
+              if (empty) {
+                editor.chain().focus().insertContent(`<span data-won-note-tag="${tag}" class="won-note-inline-tag px-1.5 py-0.5 rounded text-xs font-semibold">${label}</span> `).run();
+              } else {
+                editor.chain().focus().setMark('oneNoteTag', { tag }).run();
+              }
+            }
+            event.target.value = '';
+          }}
+          className="h-7 rounded-lg border border-stone-200 bg-white px-2 text-[11px] font-medium text-stone-700 dark:border-stone-700 dark:bg-stone-800 dark:text-stone-200 cursor-pointer"
+        >
+          <option value="">태그</option>
+          <option value="todo">☐ 할 일</option>
+          <option value="important">★ 중요</option>
+          <option value="question">? 질문</option>
+          <option value="idea">💡 아이디어</option>
+        </select>
+        {tool('실행 취소', <Undo2 size={15}/>, () => editor.chain().focus().undo().run())}
+        {tool('다시 실행', <Redo2 size={15}/>, () => editor.chain().focus().redo().run())}
 
         {/* Headings */}
         {tool('제목 1', <Heading1 size={15} />, () => editor.chain().focus().toggleHeading({ level: 1 }).run(), editor.isActive('heading', { level: 1 }))}
@@ -646,14 +921,14 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
 
         {/* Colors & Highlights */}
         <div className="flex items-center gap-1">
-          <label className="flex items-center gap-1 cursor-pointer p-1.5 rounded-lg hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-300" title="글자 색상">
-            <Palette size={15} />
-            <input
-              type="color"
-              onInput={(e) => editor.chain().focus().setColor((e.target as HTMLInputElement).value).run()}
-              className="w-4 h-4 rounded border-0 cursor-pointer bg-transparent"
-            />
-          </label>
+          <div className="relative">
+            <button type="button" title="글자 색상" aria-label="글자 색상" onMouseDown={event => event.preventDefault()} onClick={event => openColorPalette(event, 'text')} className="flex items-center gap-1 rounded-lg p-1 text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"><Palette size={14}/><span className="h-2 w-4 rounded-sm" style={{ backgroundColor: customTextColor }}/></button>
+            {showTextColorPalette && <div style={{ left: palettePosition.left, top: palettePosition.top }} className="fixed z-[999999] w-48 rounded-xl border border-stone-200 bg-white p-2 shadow-2xl dark:border-stone-700 dark:bg-stone-900"><div className="mb-2 grid grid-cols-6 gap-1">{['#000000','#444444','#777777','#ffffff','#c62828','#ef5350','#e65100','#ff9800','#f9a825','#fdd835','#2e7d32','#66bb6a','#00838f','#26a69a','#1565c0','#42a5f5','#4527a0','#7e57c2'].map(color => <button key={color} type="button" aria-label={`글자색 ${color}`} title={color} onMouseDown={event => event.preventDefault()} onClick={() => { setCustomTextColor(color); editor.chain().focus().setMark('textForegroundColor', { color }).run(); setShowTextColorPalette(false); }} className="h-6 w-6 rounded border border-stone-300 dark:border-stone-600" style={{ backgroundColor: color }}/>)}</div><label className="flex cursor-pointer items-center justify-between rounded-lg border border-stone-200 px-2 py-1.5 text-[11px] text-stone-700 dark:border-stone-700 dark:text-stone-200">사용자 지정 색상<input type="color" aria-label="사용자 지정 글자색" value={customTextColor} onChange={event => { const color = event.target.value; setCustomTextColor(color); editor.chain().focus().setMark('textForegroundColor', { color }).run(); }} className="h-6 w-8 cursor-pointer border-0 bg-transparent"/></label></div>}
+          </div>
+          <div className="relative">
+            <button type="button" title="글자 배경색" aria-label="글자 배경색" onMouseDown={event => event.preventDefault()} onClick={event => openColorPalette(event, 'background')} className="flex items-center gap-1 rounded-lg p-1 text-stone-600 hover:bg-stone-100 dark:text-stone-300 dark:hover:bg-stone-800"><Highlighter size={14}/><span className="h-2 w-4 rounded-sm" style={{ backgroundColor: customHighlightColor }}/></button>
+            {showHighlightPalette && <div style={{ left: palettePosition.left, top: palettePosition.top }} className="fixed z-[999999] w-48 rounded-xl border border-stone-200 bg-white p-2 shadow-2xl dark:border-stone-700 dark:bg-stone-900"><div className="mb-2 grid grid-cols-6 gap-1">{highlightColors.map(color => <button key={color} type="button" aria-label={`배경색 ${color}`} title={color} onMouseDown={event => event.preventDefault()} onClick={() => { setCustomHighlightColor(color); editor.chain().focus().setMark('textBackgroundColor', { color }).run(); setShowHighlightPalette(false); }} className="h-6 w-6 rounded border border-stone-300 dark:border-stone-600" style={{ backgroundColor: color }}/>)}</div><label className="flex cursor-pointer items-center justify-between rounded-lg border border-stone-200 px-2 py-1.5 text-[11px] text-stone-700 dark:border-stone-700 dark:text-stone-200">사용자 지정 색상<input type="color" aria-label="사용자 지정 글자 배경색" value={customHighlightColor} onChange={event => { const color = event.target.value; setCustomHighlightColor(color); editor.chain().focus().setMark('textBackgroundColor', { color }).run(); }} className="h-6 w-8 cursor-pointer border-0 bg-transparent"/></label></div>}
+          </div>
           {tool('형광펜', <Highlighter size={15} />, () => editor.chain().focus().toggleHighlight().run(), editor.isActive('highlight'))}
         </div>
         </>}
@@ -670,6 +945,8 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
           setShowLinkInput(!showLinkInput);
         }, editor.isActive('link'))}
         {tool('이미지 삽입', <ImagePlus size={15} />, () => imageInputRef.current?.click())}
+        {tool('이미지 URL 삽입', <ImagePlus size={15}/>, () => { const url = window.prompt('이미지 URL을 입력하세요.'); if (url?.trim()) editor.chain().focus().setImage({ src: url.trim(), alt: '이미지' }).run(); })}
+        {tool('영상 삽입', <Video size={15}/>, () => { const url = window.prompt('영상 URL을 입력하세요. (YouTube 또는 MP4)'); if (url?.trim()) editor.chain().focus().insertContent(`<p><a href="${escapeHtml(url.trim())}">${escapeHtml(url.trim())}</a></p>`).run(); })}
         <input ref={pptxInputRef} type="file" accept=".pptx,.ppt,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
         <input ref={markdownInputRef} type="file" accept=".md,.markdown,text/markdown" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
         <input ref={docxInputRef} type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" className="hidden" onChange={event => { void insertFiles(Array.from(event.currentTarget.files || [])); event.currentTarget.value = ''; }} />
@@ -684,6 +961,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
         ] as const).map(item => <button key={item.label} type="button" title={item.title} aria-label={item.title} onClick={() => item.ref.current?.click()} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-stone-200 px-2.5 text-xs font-medium text-stone-700 transition-colors hover:bg-stone-100 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800">{item.icon}<span>{item.label}</span></button>)}
         {tool('표 삽입', <Table2 size={15} />, () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}
         {tool('코드 블록', <Code size={15} />, () => editor.chain().focus().toggleCodeBlock().run(), editor.isActive('codeBlock'))}
+        <CodeHighlightInserter editor={editor} />
         {tool('구분선', <Minus size={15} />, () => editor.chain().focus().setHorizontalRule().run())}
         </>}
 
@@ -696,6 +974,7 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
           <button type="button" title="실행 취소" onClick={() => editor.chain().focus().undo().run()} disabled={!editor.can().undo()} className="rounded-lg border border-stone-200 p-2 hover:bg-stone-100 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800"><Undo2 size={15}/></button>
           <button type="button" title="다시 실행" onClick={() => editor.chain().focus().redo().run()} disabled={!editor.can().redo()} className="rounded-lg border border-stone-200 p-2 hover:bg-stone-100 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800"><Redo2 size={15}/></button>
         </div>}
+        {activeRibbonTab === 'edit' && <EditorEditTools editor={editor} onNotify={setInsertMessage} />}
         {collaboration && <button type="button" title="댓글 패널" aria-label={`댓글 패널, ${comments.length}개`} onClick={() => setIsCommentPanelOpen(value => !value)} className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 transition-colors ${isCommentPanelOpen ? 'border-indigo-300 bg-indigo-100 text-indigo-700 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300' : 'border-stone-200 text-stone-600 hover:bg-stone-100 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-800'}`}><MessageSquare size={14} /><span>댓글</span><span className={`min-w-5 rounded-full px-1.5 text-center text-[10px] font-bold leading-5 ${comments.length ? 'bg-indigo-600 text-white' : 'bg-stone-200 text-stone-600 dark:bg-stone-700 dark:text-stone-300'}`}>{comments.length}</span></button>}
         {collaboration && <span className="ml-auto text-[11px] text-stone-500">{collaborationState || '연결 중'}</span>}
 
@@ -737,13 +1016,9 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       )}
 
       {/* Editor Content Area */}
-      <div ref={scrollContainerRef} className="relative flex-1 overflow-auto" onBlur={flushEditorUpdate} onContextMenu={event => {
-        event.preventDefault();
-        event.stopPropagation();
-        setEditorContextMenu({ x: event.clientX, y: event.clientY });
-      }}>
+      <div ref={scrollContainerRef} className="relative flex-1 overflow-auto" onBlur={flushEditorUpdate}>
         <div className="relative mx-auto min-h-full w-full max-w-[1440px] px-5 pb-12 pt-5">
-          <div style={{ zoom: `${zoomLevel}%` }} className="transition-[zoom] duration-150">
+          <div style={{ zoom: `${zoomLevel}%`, ['--won-note-inverse-zoom' as any]: 100 / zoomLevel }} className="transition-[zoom] duration-150">
             <EditorContent editor={editor} />
             <DrawingOverlay editor={editor} tool={drawingTool} color={drawingColor} width={drawingWidth} onFinish={() => setDrawingTool('select')} />
           </div>
@@ -752,73 +1027,218 @@ export const WonNoteDocumentEditor: React.FC<WonNoteDocumentEditorProps> = ({ do
       {editorContextMenu && (
         <div
           id="won-note-document-context-menu"
-          className="fixed z-[12000] min-w-56 rounded-xl border border-stone-200 bg-white p-1.5 text-xs shadow-2xl dark:border-stone-700 dark:bg-stone-900 text-stone-700 dark:text-stone-200"
+          className="fixed z-[12000] min-w-64 rounded-2xl border border-stone-200 bg-white/95 p-2 text-xs shadow-2xl backdrop-blur-md dark:border-stone-700 dark:bg-stone-900/95 text-stone-700 dark:text-stone-200 animate-in fade-in zoom-in-95 duration-100"
           style={{
-            left: Math.max(8, Math.min(editorContextMenu.x, window.innerWidth - 240)),
-            top: Math.max(8, Math.min(editorContextMenu.y, window.innerHeight - 340)),
+            left: Math.max(8, Math.min(editorContextMenu.x, window.innerWidth - 270)),
+            top: Math.max(8, Math.min(editorContextMenu.y, window.innerHeight - 450)),
           }}
-          onMouseDown={(event) => event.preventDefault()}
           onClickCapture={(event) => {
             const target = event.target as HTMLElement;
             if (!target.closest('button, input, select, [role="menuitem"]')) setEditorContextMenu(null);
           }}
         >
-          <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">텍스트 서식</div>
-          <div className="grid grid-cols-5 gap-1 p-1">
-            <button type="button" onClick={() => { editor?.chain().focus().toggleBold().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('bold') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="굵게"><Bold size={14} /></button>
-            <button type="button" onClick={() => { editor?.chain().focus().toggleItalic().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('italic') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="기울임"><Italic size={14} /></button>
-            <button type="button" onClick={() => { editor?.chain().focus().toggleUnderline().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('underline') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="밑줄"><UnderlineIcon size={14} /></button>
-            <button type="button" onClick={() => { editor?.chain().focus().toggleStrike().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('strike') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="취소선"><Strikethrough size={14} /></button>
-            <button type="button" onClick={() => { editor?.chain().focus().toggleHighlight().run(); setEditorContextMenu(null); }} className={`p-2 rounded-lg flex items-center justify-center hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer ${editor?.isActive('highlight') ? 'bg-amber-500/20 text-amber-600 font-bold' : ''}`} title="형광펜"><Highlighter size={14} /></button>
-          </div>
+          <div className="flex flex-col gap-1.5 p-0.5">
+            {/* 1. Excel-Style Floating Mini Formatting Toolbar at the top */}
+            <div className="flex items-center gap-1 p-1.5 bg-stone-100 dark:bg-stone-800/80 rounded-xl border border-stone-200 dark:border-stone-700 text-stone-800 dark:text-stone-100 select-none">
+              <select
+                value={editor.getAttributes('textStyle').fontFamily || 'default'}
+                onChange={(e) => {
+                  const family = e.target.value;
+                  editor.chain().focus();
+                  if (family === 'default') editor.chain().unsetFontFamily().run();
+                  else editor.chain().setFontFamily(family).run();
+                }}
+                className="h-6 max-w-[76px] text-[10px] rounded border border-stone-300 dark:border-stone-600 bg-white dark:bg-stone-900 px-1 font-sans cursor-pointer"
+              >
+                {NOTE_FONT_FAMILIES.map(font => <option key={font.value} value={font.value}>{font.label}</option>)}
+              </select>
 
-          <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
-          <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">단락 스타일</div>
-          <button type="button" onClick={() => { editor?.chain().focus().setParagraph().run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 cursor-pointer">본문</button>
-          <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 1 }).run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 font-bold cursor-pointer">제목 1 (H1)</button>
-          <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 2 }).run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 font-bold cursor-pointer">제목 2 (H2)</button>
-          <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 3 }).run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 font-bold cursor-pointer">제목 3 (H3)</button>
-          <button type="button" onClick={() => { editor?.chain().focus().toggleBlockquote().run(); setEditorContextMenu(null); }} className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2 cursor-pointer">인용구 (Quote)</button>
+              <FontSizePixelControl editor={editor} onApply={size => { editor.chain().focus(); editor.chain().setMark('textStyle', { fontSize: size }).run(); }} />
 
-          {editor?.isActive('table') && (
+              <div className="h-4 w-px bg-stone-300 dark:bg-stone-600 my-auto" />
+
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().toggleBold().run()}
+                className={`p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 cursor-pointer ${editor.isActive('bold') ? 'bg-amber-500 text-stone-950 font-bold' : ''}`}
+                title="굵게"
+              >
+                <Bold size={13} />
+              </button>
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().toggleItalic().run()}
+                className={`p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 cursor-pointer ${editor.isActive('italic') ? 'bg-amber-500 text-stone-950 font-bold' : ''}`}
+                title="기울임"
+              >
+                <Italic size={13} />
+              </button>
+
+              <button
+                type="button"
+                onClick={() => editor.chain().focus().setTextAlign('center').run()}
+                className={`p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 cursor-pointer ${editor.isActive({ textAlign: 'center' }) ? 'bg-amber-500 text-stone-950 font-bold' : ''}`}
+                title="가운데 정렬"
+              >
+                <AlignCenter size={13} />
+              </button>
+
+              <button
+                type="button"
+                onClick={(e) => openColorPalette(e, 'text')}
+                className="p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 flex items-center gap-0.5 cursor-pointer"
+                title="글자 색상"
+              >
+                <Palette size={13} />
+              </button>
+
+              <button
+                type="button"
+                onClick={(e) => openColorPalette(e, 'background')}
+                className="p-1 rounded hover:bg-stone-200 dark:hover:bg-stone-700 flex items-center gap-0.5 cursor-pointer"
+                title="셀 배경색"
+              >
+                <Highlighter size={13} />
+              </button>
+            </div>
+
+            {/* 2. Clipboard Operations (잘라내기, 복사하기, 붙여넣기) - Always shown */}
+            <div className="py-0.5 space-y-0.5">
+              <button
+                type="button"
+                onClick={() => { handleCut(editor); setEditorContextMenu(null); }}
+                className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center justify-between cursor-pointer text-xs font-medium"
+              >
+                <span className="flex items-center gap-2">
+                  <Scissors size={14} className="text-stone-500" />
+                  <span>잘라내기</span>
+                </span>
+                <span className="text-[10px] text-stone-400 font-mono">Ctrl+X</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { handleCopy(editor); setEditorContextMenu(null); }}
+                className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center justify-between cursor-pointer text-xs font-medium"
+              >
+                <span className="flex items-center gap-2">
+                  <Copy size={14} className="text-stone-500" />
+                  <span>복사하기</span>
+                </span>
+                <span className="text-[10px] text-stone-400 font-mono">Ctrl+C</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => { void handlePaste(editor); setEditorContextMenu(null); }}
+                className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center justify-between cursor-pointer text-xs font-medium"
+              >
+                <span className="flex items-center gap-2">
+                  <ClipboardPaste size={14} className="text-stone-500" />
+                  <span>붙여넣기</span>
+                </span>
+                <span className="text-[10px] text-stone-400 font-mono">Ctrl+V</span>
+              </button>
+            </div>
+
+            <div className="my-1 border-t border-stone-200 dark:border-stone-800" />
+
+            {/* 3. Conditional: Table tools vs Paragraph styles */}
+            {editor?.isActive('table') ? (
+              <div className="py-0.5 space-y-0.5">
+                <button
+                  type="button"
+                  onClick={() => { handleEqualizeRowHeights(editor); setEditorContextMenu(null); }}
+                  className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2.5 cursor-pointer text-xs font-medium"
+                >
+                  <Rows size={14} className="text-amber-500" />
+                  <span>행 높이를 같게</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { handleEqualizeColumnWidths(editor); setEditorContextMenu(null); }}
+                  className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2.5 cursor-pointer text-xs font-medium"
+                >
+                  <Columns size={14} className="text-amber-500" />
+                  <span>열 너비를 같게</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().mergeCells().run(); setEditorContextMenu(null); }}
+                  className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2.5 cursor-pointer text-xs font-medium"
+                >
+                  <Combine size={14} className="text-indigo-500" />
+                  <span>셀 합치기</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => { editor?.chain().focus().splitCell().run(); setEditorContextMenu(null); }}
+                  className="w-full px-3 py-1.5 text-left hover:bg-stone-100 dark:hover:bg-stone-800 rounded-lg flex items-center gap-2.5 cursor-pointer text-xs font-medium"
+                >
+                  <Split size={14} className="text-sky-500" />
+                  <span>셀 나누기</span>
+                </button>
+              <div className="my-1 border-t border-stone-200 dark:border-stone-800" />
+              <div className="grid grid-cols-2 gap-1 p-0.5 text-[11px]">
+                <button type="button" onClick={() => { editor?.chain().focus().addRowBefore().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded-md text-left hover:bg-amber-500/10 cursor-pointer">위 행 추가</button>
+                <button type="button" onClick={() => { editor?.chain().focus().addRowAfter().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded-md text-left hover:bg-amber-500/10 cursor-pointer">아래 행 추가</button>
+                <button type="button" onClick={() => { editor?.chain().focus().addColumnBefore().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded-md text-left hover:bg-amber-500/10 cursor-pointer">좌측 열 추가</button>
+                <button type="button" onClick={() => { editor?.chain().focus().addColumnAfter().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded-md text-left hover:bg-amber-500/10 cursor-pointer">우측 열 추가</button>
+              </div>
+              <div className="flex gap-1 p-0.5 text-[11px]">
+                <button type="button" onClick={() => { editor?.chain().focus().deleteRow().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-md text-center cursor-pointer">행 삭제</button>
+                <button type="button" onClick={() => { editor?.chain().focus().deleteColumn().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 dark:text-rose-400 rounded-md text-center cursor-pointer">열 삭제</button>
+                <button type="button" onClick={() => { editor?.chain().focus().deleteTable().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-600 text-white rounded-md text-center font-bold cursor-pointer">표 삭제</button>
+              </div>
+            </div>
+          ) : (
             <>
+              <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">텍스트 서식</div>
+              <div className="grid grid-cols-5 gap-1 p-1">
+                <button type="button" onClick={() => { editor?.chain().focus().toggleBold().run(); setEditorContextMenu(null); }} title="굵게"><Bold size={14} /></button>
+                <button type="button" onClick={() => { editor?.chain().focus().toggleItalic().run(); setEditorContextMenu(null); }} title="기울임"><Italic size={14} /></button>
+                <button type="button" onClick={() => { editor?.chain().focus().toggleUnderline().run(); setEditorContextMenu(null); }} title="밑줄"><UnderlineIcon size={14} /></button>
+                <button type="button" onClick={() => { editor?.chain().focus().toggleStrike().run(); setEditorContextMenu(null); }} title="취소선"><Strikethrough size={14} /></button>
+                <button type="button" onClick={() => { editor?.chain().focus().toggleHighlight().run(); setEditorContextMenu(null); }} title="형광펜"><Highlighter size={14} /></button>
+              </div>
               <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
-              <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">표(Table) 편집</div>
-              <div className="grid grid-cols-2 gap-1 p-1">
-                <button type="button" onClick={() => { editor?.chain().focus().addRowBefore().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">위 행 추가</button>
-                <button type="button" onClick={() => { editor?.chain().focus().addRowAfter().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">아래 행 추가</button>
-                <button type="button" onClick={() => { editor?.chain().focus().addColumnBefore().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">좌측 열 추가</button>
-                <button type="button" onClick={() => { editor?.chain().focus().addColumnAfter().run(); setEditorContextMenu(null); }} className="px-2 py-1 bg-stone-50 dark:bg-stone-800 rounded text-left hover:bg-amber-500/10 cursor-pointer">우측 열 추가</button>
-              </div>
-              <div className="flex gap-1 p-1">
-                <button type="button" onClick={() => { editor?.chain().focus().deleteRow().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 rounded text-center cursor-pointer">행 삭제</button>
-                <button type="button" onClick={() => { editor?.chain().focus().deleteColumn().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-50 dark:bg-rose-950/40 text-rose-600 rounded text-center cursor-pointer">열 삭제</button>
-                <button type="button" onClick={() => { editor?.chain().focus().deleteTable().run(); setEditorContextMenu(null); }} className="flex-1 px-2 py-1 bg-rose-600 text-white rounded text-center font-bold cursor-pointer">표 삭제</button>
-              </div>
+              <div className="px-3 py-1 font-bold text-[10px] text-stone-400 uppercase tracking-wider">단락 스타일</div>
+              <button type="button" onClick={() => { editor?.chain().focus().setParagraph().run(); setEditorContextMenu(null); }}>본문</button>
+              <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 1 }).run(); setEditorContextMenu(null); }}>제목 1 (H1)</button>
+              <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 2 }).run(); setEditorContextMenu(null); }}>제목 2 (H2)</button>
+              <button type="button" onClick={() => { editor?.chain().focus().toggleHeading({ level: 3 }).run(); setEditorContextMenu(null); }}>제목 3 (H3)</button>
+              <button type="button" onClick={() => { editor?.chain().focus().toggleBlockquote().run(); setEditorContextMenu(null); }}>인용구 (Quote)</button>
             </>
           )}
-
           <div className="my-1 border-t border-stone-100 dark:border-stone-800" />
           <button type="button" onClick={() => { setCommentDraft(''); setCommentComposer(editorContextMenu); setIsCommentPanelOpen(true); setEditorContextMenu(null); }} className="flex w-full items-center gap-2 rounded-lg bg-indigo-50 px-3 py-2 text-left font-semibold text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70 cursor-pointer"><MessageSquare size={14} />여기에 댓글 추가</button>
           <button type="button" onClick={() => { flushEditorUpdate(); void history.recordNow(editor?.getHTML() || document.content); setEditorContextMenu(null); history.setIsOpen(true); }} className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"><Clock3 size={14} className="text-stone-500" />문서 이력 보기</button>
+          </div>
         </div>
       )}
-      {collaboration && <aside aria-label="문서 댓글" className={`absolute inset-y-0 right-0 z-40 flex w-[min(22rem,92vw)] flex-col border-l border-stone-200 bg-white shadow-2xl transition-transform duration-200 dark:border-stone-700 dark:bg-stone-900 ${isCommentPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}>
-        <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-stone-700">
-          <div><h2 className="text-sm font-bold text-stone-800 dark:text-stone-100">댓글</h2><p className="text-[11px] text-stone-500">이 문서 · {comments.length}개</p></div>
-          <button type="button" aria-label="댓글 패널 닫기" onClick={() => setIsCommentPanelOpen(false)} className="rounded-md p-1.5 text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800"><X size={16} /></button>
-        </div>
-        <div className="flex-1 space-y-2 overflow-y-auto p-3">
-          {comments.map(comment => <article key={comment.id} className={`rounded-xl border p-3 text-xs ${activeCommentId === comment.id ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/30' : 'border-stone-200 dark:border-stone-700'}`}>
-            <button type="button" onClick={() => { setActiveCommentId(comment.id); focusComment(comment.id); }} className="w-full text-left">
-              <div className="flex items-center justify-between gap-2"><span className="font-semibold text-stone-800 dark:text-stone-100">{comment.author}</span><span className="text-[10px] text-stone-400">{new Date(comment.createdAt).toLocaleString()}</span></div>
-              <p className="my-2 whitespace-pre-wrap break-words text-stone-700 dark:text-stone-300">{comment.text}</p>
-              <span className={`text-[10px] ${comment.resolved ? 'text-emerald-600' : 'text-indigo-600 dark:text-indigo-300'}`}>{comment.resolved ? '해결됨' : '위치로 이동'}</span>
-            </button>
-            <div className="mt-2 flex gap-3 border-t border-stone-200 pt-2 dark:border-stone-700"><button type="button" onClick={() => resolveComment(comment.id, !comment.resolved)} className="inline-flex items-center gap-1 text-indigo-700 dark:text-indigo-300"><Check size={12} />{comment.resolved ? '다시 열기' : '해결'}</button><button type="button" onClick={() => deleteComment(comment.id)} className="text-rose-600">삭제</button></div>
-          </article>)}
-          {comments.length === 0 && <p className="rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-500 dark:bg-stone-800">편집 영역에서 마우스 오른쪽 버튼을 누르면 현재 위치에 댓글을 남길 수 있습니다.</p>}
-        </div>
+      {collaboration && <aside aria-label="문서 댓글" className={`absolute inset-y-0 right-0 z-[100] flex w-[min(22rem,92vw)] flex-col border-l border-stone-200 bg-white shadow-2xl transition-transform duration-200 dark:border-stone-700 dark:bg-stone-900 ${isCommentPanelOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'}`}>
+        {isCommentPanelOpen && (
+          <>
+            <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-stone-700">
+              <div><h2 className="text-sm font-bold text-stone-800 dark:text-stone-100">댓글</h2><p className="text-[11px] text-stone-500">이 문서 · {comments.length}개</p></div>
+              <button type="button" aria-label="댓글 패널 닫기" onMouseDown={(e) => e.preventDefault()} onClick={(e) => { e.stopPropagation(); setIsCommentPanelOpen(false); }} className="rounded-md p-1.5 text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800 cursor-pointer"><X size={16} /></button>
+            </div>
+            <div className="flex-1 space-y-2 overflow-y-auto p-3">
+              {comments.map(comment => <article key={comment.id} className={`rounded-xl border p-3 text-xs ${activeCommentId === comment.id ? 'border-indigo-400 bg-indigo-50 dark:bg-indigo-950/30' : 'border-stone-200 dark:border-stone-700'}`}>
+                <button type="button" onClick={() => { setActiveCommentId(comment.id); focusComment(comment.id); }} className="w-full text-left">
+                  <div className="flex items-center justify-between gap-2"><span className="font-semibold text-stone-800 dark:text-stone-100">{comment.author}</span><span className="text-[10px] text-stone-400">{new Date(comment.createdAt).toLocaleString()}</span></div>
+                  <p className="my-2 whitespace-pre-wrap break-words text-stone-700 dark:text-stone-300">{comment.text}</p>
+                  <span className={`text-[10px] ${comment.resolved ? 'text-emerald-600' : 'text-indigo-600 dark:text-indigo-300'}`}>{comment.resolved ? '해결됨' : '위치로 이동'}</span>
+                </button>
+                <div className="mt-2 flex gap-3 border-t border-stone-200 pt-2 dark:border-stone-700"><button type="button" onClick={() => resolveComment(comment.id, !comment.resolved)} className="inline-flex items-center gap-1 text-indigo-700 dark:text-indigo-300"><Check size={12} />{comment.resolved ? '다시 열기' : '해결'}</button><button type="button" onClick={() => deleteComment(comment.id)} className="text-rose-600">삭제</button></div>
+              </article>)}
+              {comments.length === 0 && <p className="rounded-lg bg-stone-50 p-3 text-xs leading-5 text-stone-500 dark:bg-stone-800">편집 영역에서 마우스 오른쪽 버튼을 누르면 현재 위치에 댓글을 남길 수 있습니다.</p>}
+            </div>
+          </>
+        )}
       </aside>}
       {collaboration && commentComposer && <div className="fixed z-[12000] w-[min(20rem,calc(100vw-1.5rem))] rounded-xl border border-indigo-200 bg-white p-3 shadow-2xl dark:border-indigo-900 dark:bg-stone-900" style={{ left: Math.max(12, Math.min(commentComposer.x, window.innerWidth - 340)), top: Math.max(12, Math.min(commentComposer.y, window.innerHeight - 180)) }}>
         <div className="mb-2 flex items-center justify-between"><span className="text-xs font-bold text-stone-700 dark:text-stone-200">현재 위치에 댓글</span><button type="button" aria-label="댓글 작성 닫기" onClick={() => setCommentComposer(null)} className="text-stone-400"><X size={14} /></button></div>

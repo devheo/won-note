@@ -80,6 +80,24 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
 
   const { updateMetrics } = useStatusBar();
 
+  // Handle Delete / Backspace key to delete selected memo card
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && activeMemoId) {
+        const activeEl = document.activeElement;
+        const tagName = activeEl?.tagName;
+        if (tagName === 'INPUT' || tagName === 'TEXTAREA' || activeEl?.getAttribute('contenteditable') === 'true') {
+          return; // Allow normal text typing/editing inside inputs and textareas
+        }
+        e.preventDefault();
+        onDeleteRow(activeMemoId);
+        setActiveMemoId(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [activeMemoId, onDeleteRow]);
+
   // Track and update GlobalStatusBar metrics for Memo Board
   useEffect(() => {
     const primaryCol = table.columns[0];
@@ -263,7 +281,7 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
   return (
     <div className="flex flex-col h-full bg-stone-100/60 dark:bg-[#141414] overflow-hidden select-none">
       {/* Top Toolbar Bar */}
-      <div className="px-6 py-2.5 bg-white dark:bg-stone-900 border-b border-stone-200 dark:border-stone-800 flex flex-wrap items-center justify-between gap-3 shrink-0">
+      <div className="px-6 py-2.5 bg-white dark:bg-stone-900 border-b border-stone-200 dark:border-stone-800 flex flex-nowrap items-center justify-between gap-3 shrink-0 overflow-x-auto whitespace-nowrap" style={{ scrollbarWidth: 'none' }}>
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="p-1.5 rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400 font-bold text-xs flex items-center gap-1.5">
@@ -366,7 +384,7 @@ export const MemoBoardView: React.FC<MemoBoardViewProps> = ({
           }
         }}
         onDoubleClick={handleCanvasDoubleClick}
-        className="memo-canvas-bg flex-1 min-h-[500px] overflow-auto relative p-8 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] dark:bg-[radial-gradient(#2d2d2d_1px,transparent_1px)] [background-size:16px_16px]"
+        className="memo-canvas-bg flex-1 min-h-[500px] overflow-auto relative z-0 isolate p-8 bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] dark:bg-[radial-gradient(#2d2d2d_1px,transparent_1px)] [background-size:16px_16px]"
       >
         {filteredRows.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center text-stone-400 py-16 pointer-events-none">
